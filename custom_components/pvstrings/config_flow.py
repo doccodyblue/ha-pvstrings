@@ -740,9 +740,16 @@ class StringSubentryFlow(_ReloadingSubentryFlow):
 
     @staticmethod
     def _geometry_changed(current: dict[str, Any], new: dict[str, Any]) -> bool:
+        """Does this edit need a new validity period?
+
+        The temperature coefficient belongs here even though it is not a
+        mounting angle: it is stored *in* the geometry row, so changing it
+        anywhere else would leave the form and the database disagreeing while
+        the forecast quietly keeps using the old value.
+        """
         return any(
             float(current.get(key, -999)) != float(new.get(key, -999))
-            for key in (CONF_AZIMUTH, CONF_TILT, CONF_KWP)
+            for key in (CONF_AZIMUTH, CONF_TILT, CONF_KWP, CONF_TEMP_COEFF)
         )
 
     async def async_step_geometry(

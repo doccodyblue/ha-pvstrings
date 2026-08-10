@@ -404,16 +404,26 @@ class Store:
     def update_curtailment_flags(
         self, rows: Iterable[tuple[int | None, int, str]]
     ) -> None:
-        """``(limit_binding, ts_utc, string_id)`` -- set once physics is known."""
+        """``(limit_binding, ts_utc, string_id)`` -- set once physics is known.
+
+        The verdict is re-evaluated whenever physics is recomputed, so it has
+        to be reversible: a row previously marked ``lower_bound`` must return
+        to ``measured`` when the limit turns out not to have been binding after
+        all.  Otherwise a single bad physics estimate censors that interval
+        permanently.  ``reconstructed`` is left alone -- that kind was not
+        derived from the binding test.
+        """
         payload = list(rows)
         if not payload:
             return
         with self._tx() as conn:
             conn.executemany(
-                "UPDATE string_5min SET limit_binding = ?, "
-                "value_kind = CASE WHEN ? = 1 THEN 'lower_bound' ELSE value_kind END "
+                "UPDATE string_5min SET limit_binding = ?, value_kind = CASE "
+                "  WHEN ? = 1 THEN 'lower_bound' "
+                "  WHEN ? = 0 AND value_kind = 'lower_bound' THEN 'measured' "
+                "  ELSE value_kind END "
                 "WHERE ts_utc = ? AND string_id = ?",
-                [(b, b, ts, sid) for b, ts, sid in payload],
+                [(b, b, b, ts, sid) for b, ts, sid in payload],
             )
 
     def set_value_kind(self, ts_utc: int, string_id: str, value_kind: str) -> None:

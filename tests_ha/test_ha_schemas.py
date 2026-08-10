@@ -120,7 +120,7 @@ class TestRealInput:
         out = cf.group_schema()(
             {
                 "name": "Speicher",
-                "limit_entity": "number.garage_limit_nonpersistent_relative",
+                "limit_entity": "number.inverter_limit_relative",
                 "inverter_max_ac_w": 1600,
                 "battery_coupled": True,
                 "soc_entity": "sensor.battery_soc",
@@ -130,7 +130,7 @@ class TestRealInput:
         assert out["inverter_max_ac_w"] == 1600
 
     def test_group_step_with_no_entities_at_all(self):
-        """A Zendure-style plant with nothing to curtail must still validate."""
+        """An all-in-one plant with nothing to curtail must still validate."""
         out = cf.group_schema()({"name": "Ohne Limit"})
         assert out["name"] == "Ohne Limit"
 

@@ -35,7 +35,7 @@ def _clear_conditions(engine: PhysicsEngine, index: pd.DatetimeIndex):
 class TestSolarGeometry:
     def test_solar_noon_is_near_local_apparent_noon(self, engine: PhysicsEngine):
         noon = engine.solar_noon_for(SUMMER_NOON)
-        # 9.58 deg east -> solar noon a bit before 12:00 UTC.
+        # 10 deg east -> solar noon a bit before 12:00 UTC.
         assert SUMMER_NOON - 3600 < noon < SUMMER_NOON
 
     def test_solar_noon_is_cached_per_day(self, engine: PhysicsEngine):

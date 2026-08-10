@@ -34,7 +34,7 @@ class TestOpenMeteo:
         return {"hourly": {"time": list(times), **series}}
 
     def test_requests_components_not_plane_of_array(self):
-        params = open_meteo_params(53.7, 9.5)
+        params = open_meteo_params(53.5, 10.0)
         variables = params["hourly"].split(",")
         assert "shortwave_radiation" in variables
         assert "direct_normal_irradiance" in variables
@@ -44,14 +44,14 @@ class TestOpenMeteo:
         assert not any("tilted" in name for name in variables)
 
     def test_unixtime_and_utc_are_requested(self):
-        params = open_meteo_params(53.7, 9.5)
+        params = open_meteo_params(53.5, 10.0)
         assert params["timeformat"] == "unixtime"
         assert params["timezone"] == "GMT"
         assert params["wind_speed_unit"] == "ms"
 
     def test_best_match_sends_no_model_override(self):
-        assert "models" not in open_meteo_params(53.7, 9.5, model="best_match")
-        assert open_meteo_params(53.7, 9.5, model="icon_seamless")["models"] == (
+        assert "models" not in open_meteo_params(53.5, 10.0, model="best_match")
+        assert open_meteo_params(53.5, 10.0, model="icon_seamless")["models"] == (
             "icon_seamless"
         )
 

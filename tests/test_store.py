@@ -216,3 +216,41 @@ class TestHousekeeping:
             first.add_geometry("s1", GeometrySegment(0, 180, 30, 1.8))
         with Store(path) as second:
             assert second.geometry_at("s1", 100).kwp == 1.8
+
+
+class TestCensoringIsReversible:
+    """The binding verdict is recomputed whenever physics is.
+
+    A row that was marked as a lower bound on one pass must be able to return
+    to being an exact measurement on the next -- otherwise a single bad physics
+    estimate censors that interval for good.
+    """
+
+    def _row(self, ts=300):
+        return (ts, "s1", 50.0, 600.0, 1.0, 10, 500.0, None, "measured")
+
+    def test_binding_censors(self, store: Store):
+        store.upsert_5min([self._row()])
+        store.update_curtailment_flags([(1, 300, "s1")])
+        assert store.fivemin_range("s1", 0, 900)[0]["value_kind"] == "lower_bound"
+
+    def test_clearing_the_verdict_restores_the_measurement(self, store: Store):
+        store.upsert_5min([self._row()])
+        store.update_curtailment_flags([(1, 300, "s1")])
+        store.update_curtailment_flags([(0, 300, "s1")])
+        row = store.fivemin_range("s1", 0, 900)[0]
+        assert row["limit_binding"] == 0
+        assert row["value_kind"] == "measured"
+
+    def test_unknown_verdict_leaves_the_kind_alone(self, store: Store):
+        store.upsert_5min([self._row()])
+        store.update_curtailment_flags([(1, 300, "s1")])
+        store.update_curtailment_flags([(None, 300, "s1")])
+        assert store.fivemin_range("s1", 0, 900)[0]["value_kind"] == "lower_bound"
+
+    def test_reconstructed_is_never_overwritten(self, store: Store):
+        """That kind did not come from the binding test, so it is not ours."""
+        store.upsert_5min([self._row()])
+        store.set_value_kind(300, "s1", "reconstructed")
+        store.update_curtailment_flags([(0, 300, "s1")])
+        assert store.fivemin_range("s1", 0, 900)[0]["value_kind"] == "reconstructed"

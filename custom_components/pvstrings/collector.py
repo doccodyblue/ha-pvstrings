@@ -214,10 +214,26 @@ class Collector:
         )
 
     async def _handle_flush(self, now: datetime) -> None:
+        """Close the interval this callback was scheduled for.
+
+        Deriving the boundary from ``utcnow()`` instead loses an interval
+        whenever the event loop runs late past the next boundary -- the skipped
+        window is then trimmed out of the buffers and gone.  Taking the
+        scheduled time and catching up any boundaries missed in between makes a
+        delayed loop cost latency rather than data.
+        """
         self._cancel_flush = None
         self._schedule_next_flush()
-        boundary = interval_start(dt_util.utcnow().timestamp())
-        await self.async_flush(boundary - INTERVAL_SECONDS)
+
+        scheduled = interval_start(now.timestamp() - 1)
+        current = interval_start(dt_util.utcnow().timestamp())
+        boundary = scheduled
+        while boundary <= current - INTERVAL_SECONDS:
+            if boundary > (self.stats.last_flush_ts or -1):
+                await self.async_flush(boundary)
+            boundary += INTERVAL_SECONDS
+        if scheduled > (self.stats.last_flush_ts or -1):
+            await self.async_flush(scheduled)
 
     async def async_flush(self, window_start: int) -> None:
         """Close and persist the interval starting at ``window_start``."""

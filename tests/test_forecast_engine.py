@@ -652,3 +652,86 @@ class TestTrackerCeiling:
         hourly = seeded_store.hourly_range(DAY_START, DAY_START + 24 * HOUR, "s3")
         assert any(row.value_kind == "lower_bound" for row in hourly)
         assert engine.model.factor("s3", "clear", "midday") >= 0.99
+
+
+class TestLearningCursor:
+    """The cursor must advance without ever stepping over unprocessed hours."""
+
+    def _prepare(self, engine: ForecastEngine, store: Store, hours: int) -> None:
+        clear_sky_forecast(engine, store, DAY_START - HOUR, DAY_START, hours)
+        index = engine._midpoint_index(DAY_START, DAY_START + hours * HOUR)
+        conditions = engine._actual_conditions(
+            index, DAY_START, DAY_START + hours * HOUR
+        )
+        power = engine._interval_power(index, conditions)
+        store.upsert_5min(
+            [
+                (ts, sid, w * 0.85 * 300 / 3600, w * 0.85, 1.0, 10, None, None,
+                 "measured")
+                for sid, series in power.items()
+                for ts, w in series.items()
+            ]
+        )
+
+    def test_a_backlog_is_worked_off_instead_of_skipped(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """After downtime longer than the window, the old hours must still be
+        learned -- previously the cursor jumped straight past them."""
+        self._prepare(engine, seeded_store, hours=48)
+        now = DAY_START + 48 * HOUR
+        seeded_store.set_cursor("model_learned", DAY_START)
+
+        first = engine.learn(now, max_hours=12)
+        cursor_after_first = seeded_store.get_cursor("model_learned")
+        assert cursor_after_first == DAY_START + 12 * HOUR, (
+            "the cursor must advance by one window, not jump to now"
+        )
+        assert first.hours_materialised > 0
+
+        total = first.hours_materialised
+        for _ in range(6):
+            total += engine.learn(now, max_hours=12).hours_materialised
+        assert seeded_store.get_cursor("model_learned") >= now - HOUR
+        assert total > first.hours_materialised, "later chunks were processed"
+
+    def test_cold_start_stays_bounded(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """With no cursor at all we look back a fixed window, not for ever."""
+        self._prepare(engine, seeded_store, hours=48)
+        engine.learn(DAY_START + 48 * HOUR, max_hours=6)
+        cursor = seeded_store.get_cursor("model_learned")
+        assert cursor <= DAY_START + 48 * HOUR
+        assert cursor >= DAY_START + 41 * HOUR
+
+    def test_nothing_to_do_leaves_the_cursor_untouched(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        seeded_store.set_cursor("model_learned", DAY_START + 100 * HOUR)
+        engine.learn(DAY_START + 48 * HOUR, max_hours=12)
+        assert seeded_store.get_cursor("model_learned") == DAY_START + 100 * HOUR
+
+
+class TestBiasIgnoresHindsight:
+    def test_an_analysis_issued_after_the_hour_is_not_scored(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """Open-Meteo's ``past_days`` returns rows for hours already over.
+
+        Those are analyses, not forecasts.  They are a fine yardstick, but
+        scoring them would flatter the short-horizon buckets with hindsight.
+        """
+        clear_sky_forecast(
+            engine, seeded_store, DAY_START - 26 * HOUR, DAY_START, 24, scale=1.3
+        )
+        # Issued a day *after* every target hour: horizon is negative.
+        clear_sky_forecast(
+            engine, seeded_store, DAY_START + 30 * HOUR, DAY_START, 24, scale=1.0
+        )
+        engine.learn(DAY_START + 24 * HOUR, max_hours=24)
+
+        noon_local = 14
+        assert engine.ghi_bias.factor(noon_local, 1.0) == pytest.approx(1.0), (
+            "the 0-6h bucket must not be trained on hindsight"
+        )

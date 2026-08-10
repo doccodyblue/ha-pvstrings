@@ -1,9 +1,8 @@
 """The smallest useful plant: one string, no extras.
 
-SPEC.md names two target systems, and the second one is a Zendure all-in-one
-with one to n strings.  Such a site has no weather station, no grid meter, no
-curtailment entity and no battery telemetry -- everything the integration knows
-comes from Open-Meteo and a single power sensor.
+One string, no weather station, no grid meter, no curtailment entity and no
+battery telemetry -- everything the integration knows comes from Open-Meteo and
+a single power sensor.  All-in-one balcony systems look exactly like this.
 
 These tests exist because "optional" is easy to claim and easy to break: one
 attribute access on a None entity is enough to take the whole forecast down for
@@ -32,8 +31,8 @@ def minimal_plant() -> PlantConfig:
         strings=(
             StringConfig(
                 string_id="only",
-                name="Balkonmodul",
-                power_entity="sensor.zendure_solar_power",
+                name="Balcony module",
+                power_entity="sensor.balcony_solar_power",
             ),
         ),
     )
@@ -41,7 +40,7 @@ def minimal_plant() -> PlantConfig:
 
 @pytest.fixture
 def minimal_engine(store: Store, minimal_plant: PlantConfig) -> ForecastEngine:
-    store.add_geometry("only", GeometrySegment(0, 180, 75, 0.8, note="Balkonbrüstung"))
+    store.add_geometry("only", GeometrySegment(0, 180, 75, 0.8, note="railing mount"))
     engine = ForecastEngine(minimal_plant, store)
     engine.load_models()
     return engine
@@ -56,7 +55,7 @@ class TestConfiguration:
         assert minimal_plant.groups == ()
 
     def test_only_the_power_sensor_is_tracked(self, minimal_plant: PlantConfig):
-        assert minimal_plant.tracked_entities == ("sensor.zendure_solar_power",)
+        assert minimal_plant.tracked_entities == ("sensor.balcony_solar_power",)
 
     def test_a_string_without_a_group_is_valid(self, minimal_plant: PlantConfig):
         assert minimal_plant.group_of("only") is None

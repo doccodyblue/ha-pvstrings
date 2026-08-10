@@ -711,11 +711,23 @@ class ForecastEngine:
         # be days of collected data, and the ``max_hours`` clamp below is what
         # keeps the catch-up bounded.
         cursor = self.store.get_cursor(CURSOR_LEARN, default=0)
-        start = max(cursor, last_closed - max_hours * HOUR)
+        if cursor <= 0:
+            # Cold start: look back a bounded window rather than crawling
+            # whatever happens to be in the database.
+            start = max(0, last_closed - max_hours * HOUR)
+        else:
+            # Warm start: continue exactly where the last run stopped.  Taking
+            # max(cursor, now - max_hours) here would silently drop everything
+            # older than the window after any downtime longer than it, and the
+            # cursor would then jump past those hours for good.
+            start = cursor
         if start > last_closed:
             return stats
 
-        end = last_closed + HOUR
+        # Advance by at most one window per run; the next hourly cycle picks up
+        # the rest, so a long outage catches up over a few cycles instead of
+        # blocking one of them for minutes.
+        end = min(last_closed + HOUR, start + max_hours * HOUR)
 
         self.evaluate_curtailment(start, end)
         stats.hours_materialised = self.materialise_hourly(start, end)
@@ -909,6 +921,12 @@ class ForecastEngine:
                 if issue["ghi_wm2"] is None:
                     continue
                 horizon = float(issue["horizon_h"])
+                if horizon < 0:
+                    # Issued after the hour it describes: that is an analysis,
+                    # not a forecast.  It makes a fine yardstick (above) but
+                    # scoring it would flatter the short-horizon buckets with
+                    # hindsight.
+                    continue
                 if horizon <= NOWCAST_MAX_HORIZON_H and truth == issue["ghi_wm2"]:
                     continue
                 if self.ghi_bias.observe(
