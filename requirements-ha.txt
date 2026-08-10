@@ -1,0 +1,11 @@
+# Heavier suite: validates the config-flow schemas against real Home Assistant
+# selectors.  Needs Python >= 3.14.2.
+#   python3.14 -m venv .venv-ha
+#   .venv-ha/bin/pip install -r requirements-ha.txt
+#   .venv-ha/bin/python -m pytest tests_ha
+homeassistant==2026.8.1
+voluptuous-serialize
+pvlib==0.11.2
+pandas>=2.0.0
+numpy>=1.24.0
+pytest>=8.0.0

@@ -1,0 +1,73 @@
+recalculate:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: pvstrings
+
+reset_learning:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: pvstrings
+
+purge:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: pvstrings
+
+add_geometry:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: pvstrings
+    string_id:
+      required: true
+      selector:
+        text:
+    azimuth:
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 360
+          step: 1
+          unit_of_measurement: "°"
+    tilt:
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 90
+          step: 1
+          unit_of_measurement: "°"
+    kwp:
+      required: true
+      selector:
+        number:
+          min: 0.01
+          max: 100
+          step: 0.01
+          unit_of_measurement: kWp
+    temp_coeff:
+      selector:
+        number:
+          min: -0.01
+          max: 0
+          # "any": the selector schema rejects any step below 0.001, and a
+          # temperature coefficient needs four decimal places.
+          step: any
+    valid_from:
+      selector:
+        date:
+    note:
+      selector:
+        text:

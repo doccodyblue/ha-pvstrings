@@ -1,0 +1,1035 @@
+"""Orchestration: forecast, learning cycle and scoring.
+
+This is where the pieces meet.  The order matters:
+
+1. Physics turns irradiance into a per-string potential.  No training involved.
+2. The GHI bias model corrects the *irradiance source* per (local hour, forecast
+   horizon) -- a +1 h and a +48 h forecast do not share a bias.
+3. The log-ratio model corrects whatever the physics still gets wrong, split
+   into a plant-wide part and a per-string part.
+
+The two learned layers are deliberately fed from different comparisons so they
+cannot both chase the same signal:
+
+* GHI bias learns from *forecast at horizon h* vs. *what the irradiance turned
+  out to be* (a measured pyranometer if the user has one, otherwise the same
+  source's newest short-horizon run for that target hour).  It never touches PV
+  data, so it works from day one on a site with no history.
+* The log-ratio model learns from *measured PV* vs. *physics driven by the best
+  available irradiance*, i.e. at horizon ~0.  It therefore sees model error, not
+  forecast error.
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any, Iterable, Mapping, Sequence
+from zoneinfo import ZoneInfo
+
+import numpy as np
+import pandas as pd
+
+from . import curtailment as curt
+from .aggregate import hourly_from_5min, interval_mid
+from .config import INTERVAL_SECONDS, GeometrySegment, PlantConfig
+from .learning import (
+    SCOPE_PLANT,
+    SCOPE_STRING,
+    SCOPE_STRING_DAYPART,
+    GhiBiasModel,
+    LogRatioModel,
+    Observation,
+    daypart,
+    weather_class,
+)
+from .physics import PhysicsEngine, to_index
+from .quality import (
+    QUALITY_NIGHT,
+    VALUE_LOWER_BOUND,
+    VALUE_MEASURED,
+    assess,
+)
+from .store import Store
+
+_LOGGER = logging.getLogger(__name__)
+
+HOUR = 3600
+INTERVALS_PER_HOUR = HOUR // INTERVAL_SECONDS
+
+#: Cursor names in ``learning_cursor``.
+CURSOR_HOURLY = "hourly_materialised"
+CURSOR_LEARN = "model_learned"
+CURSOR_BIAS = "ghi_bias_learned"
+
+#: A forecast issued at most this far ahead of the target hour counts as the
+#: "nowcast" -- our best guess at what the irradiance actually was.
+NOWCAST_MAX_HORIZON_H = 2
+
+#: Shading observations are only collected above this elevation; below it the
+#: ratio is dominated by the model's own low-sun uncertainty.
+SHADING_MIN_ELEVATION_DEG = 8.0
+
+METHOD_PHYSICS = "physics"
+METHOD_CORRECTED = "physics+learned"
+
+
+@dataclass(frozen=True, slots=True)
+class HourForecast:
+    """One forecast hour of one string."""
+
+    ts_utc: int
+    string_id: str
+    potential_kwh: float
+    physics_kwh: float
+    weather: str
+    part: str
+    method: str
+    correction: float
+
+    def as_log_row(self, issued_at_utc: int) -> tuple[Any, ...]:
+        return (
+            issued_at_utc,
+            self.ts_utc,
+            self.string_id,
+            round(self.potential_kwh, 5),
+            self.method,
+        )
+
+
+@dataclass(slots=True)
+class LearnStats:
+    hours_materialised: int = 0
+    observations_used: int = 0
+    observations_skipped: int = 0
+    bias_observations: int = 0
+    shading_observations: int = 0
+    censored_hours: int = 0
+    reconstructed_intervals: int = 0
+
+    def as_dict(self) -> dict[str, int]:
+        return {
+            "hours_materialised": self.hours_materialised,
+            "observations_used": self.observations_used,
+            "observations_skipped": self.observations_skipped,
+            "bias_observations": self.bias_observations,
+            "shading_observations": self.shading_observations,
+            "censored_hours": self.censored_hours,
+            "reconstructed_intervals": self.reconstructed_intervals,
+        }
+
+
+def floor_hour(ts_utc: float) -> int:
+    return int(ts_utc // HOUR * HOUR)
+
+
+class ForecastEngine:
+    """Stateful orchestrator.  One instance per config entry."""
+
+    def __init__(
+        self,
+        plant: PlantConfig,
+        store: Store,
+        physics: PhysicsEngine | None = None,
+    ) -> None:
+        self.plant = plant
+        self.store = store
+        self.physics = physics or PhysicsEngine(
+            latitude=plant.latitude,
+            longitude=plant.longitude,
+            elevation_m=plant.elevation_m,
+            albedo=plant.albedo,
+            transposition_model=plant.transposition_model,
+            time_zone=plant.time_zone,
+        )
+        self.model = LogRatioModel()
+        self.ghi_bias = GhiBiasModel()
+        self._tz = ZoneInfo(plant.time_zone)
+        self._monthly_weights: list[float] | None = None
+
+    # ------------------------------------------------------------------ #
+    # model state
+    # ------------------------------------------------------------------ #
+
+    def load_models(self) -> None:
+        self.model = LogRatioModel.from_rows(
+            plant=self.store.load_effects(SCOPE_PLANT),
+            string=self.store.load_effects(SCOPE_STRING),
+            string_daypart=self.store.load_effects(SCOPE_STRING_DAYPART),
+        )
+        self.ghi_bias = GhiBiasModel.from_rows(
+            self.store.load_ghi_bias(self.plant.forecast_source)
+        )
+
+    def save_models(self, now_ts: int) -> None:
+        for scope in (SCOPE_PLANT, SCOPE_STRING, SCOPE_STRING_DAYPART):
+            self.store.save_effects(scope, self.model.to_rows(scope), now_ts)
+        self.store.save_ghi_bias(
+            self.plant.forecast_source, self.ghi_bias.to_rows(), now_ts
+        )
+
+    # ------------------------------------------------------------------ #
+    # geometry
+    # ------------------------------------------------------------------ #
+
+    def geometry_at(self, string_id: str, ts_utc: int) -> GeometrySegment | None:
+        return self.store.geometry_at(string_id, ts_utc)
+
+    def _geometry_segments(
+        self, string_id: str, hours: Sequence[int]
+    ) -> list[tuple[GeometrySegment, list[int]]]:
+        """Group the requested hours by the geometry in force.
+
+        Almost always a single group -- but when an adjustable mount was moved
+        mid-window, the two halves must be computed against different tilts
+        rather than smeared into one wrong average.
+        """
+        grouped: list[tuple[GeometrySegment, list[int]]] = []
+        for hour in hours:
+            segment = self.geometry_at(string_id, hour)
+            if segment is None:
+                continue
+            if grouped and grouped[-1][0] == segment:
+                grouped[-1][1].append(hour)
+            else:
+                grouped.append((segment, [hour]))
+        return grouped
+
+    # ------------------------------------------------------------------ #
+    # irradiance on the five-minute grid
+    # ------------------------------------------------------------------ #
+
+    def _midpoint_index(self, start_ts: int, end_ts: int) -> pd.DatetimeIndex:
+        """Interval midpoints, which is where solar position must be evaluated."""
+        stamps = [
+            interval_mid(ts)
+            for ts in range(int(start_ts), int(end_ts), INTERVAL_SECONDS)
+        ]
+        return to_index(stamps)
+
+    def _hourly_frame(self, rows: Iterable[Mapping[str, Any]]) -> pd.DataFrame:
+        records = [dict(row) for row in rows]
+        if not records:
+            return pd.DataFrame()
+        frame = pd.DataFrame.from_records(records)
+        frame = frame.drop_duplicates(subset="ts_utc", keep="last")
+        frame = frame.set_index("ts_utc").sort_index()
+        return frame
+
+    def _downscale(
+        self,
+        index: pd.DatetimeIndex,
+        hourly: pd.DataFrame,
+        apply_bias: bool = True,
+        issued_at_utc: int | None = None,
+    ) -> pd.DataFrame:
+        """Spread hourly irradiance onto the five-minute grid.
+
+        Holding GHI constant across an hour is badly wrong near sunrise and
+        sunset, where the clear-sky curve moves by a factor of several within
+        the hour.  Instead we hold the **clear-sky index** constant and let the
+        clear-sky model supply the shape.  Temperature and wind are simply
+        interpolated -- they do not have that problem.
+        """
+        epochs = np.array([int(value.timestamp()) for value in index])
+        hour_keys = (epochs // HOUR) * HOUR
+
+        solar_position = self.physics.solar_position(index)
+        clearsky = self.physics.clearsky(index, solar_position=solar_position)
+
+        cs_frame = pd.DataFrame(
+            {
+                "hour": hour_keys,
+                "cs_ghi": clearsky["ghi"].to_numpy(),
+                "cs_dni": clearsky["dni"].to_numpy(),
+                "cs_dhi": clearsky["dhi"].to_numpy(),
+            },
+            index=index,
+        )
+        hour_means = cs_frame.groupby("hour")[["cs_ghi", "cs_dni", "cs_dhi"]].mean()
+
+        out = pd.DataFrame(index=index)
+        out["hour"] = hour_keys
+
+        def hourly_series(column: str) -> np.ndarray:
+            if column not in hourly.columns:
+                return np.full(len(index), np.nan)
+            return hourly[column].reindex(hour_keys).to_numpy(dtype=float)
+
+        fc_ghi = hourly_series("ghi_wm2")
+        fc_dni = hourly_series("dni_wm2")
+        fc_dhi = hourly_series("dhi_wm2")
+
+        if apply_bias and issued_at_utc is not None:
+            factors = np.array(
+                [
+                    self._bias_factor(int(hour), issued_at_utc)
+                    for hour in hour_keys
+                ]
+            )
+            fc_ghi = fc_ghi * factors
+            fc_dni = fc_dni * factors
+            fc_dhi = fc_dhi * factors
+
+        for name, forecast, cs_column in (
+            ("ghi", fc_ghi, "cs_ghi"),
+            ("dni", fc_dni, "cs_dni"),
+            ("dhi", fc_dhi, "cs_dhi"),
+        ):
+            hour_mean = hour_means[cs_column].reindex(hour_keys).to_numpy(dtype=float)
+            instant = cs_frame[cs_column].to_numpy(dtype=float)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                ratio = np.where(hour_mean > 1.0, forecast / hour_mean, 0.0)
+            values = np.where(np.isfinite(ratio), ratio * instant, np.nan)
+            # Below the clear-sky floor there is nothing to shape; fall back to
+            # the flat hourly value rather than producing a NaN hole.
+            values = np.where(hour_mean > 1.0, values, np.nan_to_num(forecast))
+            out[name] = np.clip(np.nan_to_num(values), 0.0, None)
+
+        for name, column, default in (
+            ("temp_c", "temp_c", 20.0),
+            ("wind_ms", "wind_ms", 1.0),
+            ("clouds_pct", "clouds_pct", np.nan),
+            ("rain_mm", "rain_mm", 0.0),
+        ):
+            series = pd.Series(hourly_series(column), index=index)
+            series = series.interpolate(limit_direction="both")
+            out[name] = series.fillna(default)
+
+        out["cs_ghi"] = cs_frame["cs_ghi"]
+        out["elevation"] = solar_position["apparent_elevation"].to_numpy()
+        return out
+
+    def _bias_factor(self, hour_ts: int, issued_at_utc: int) -> float:
+        hour_local = datetime.fromtimestamp(hour_ts, tz=self._tz).hour
+        horizon_h = max(0.0, (hour_ts - issued_at_utc) / HOUR)
+        return self.ghi_bias.factor(hour_local, horizon_h)
+
+    # ------------------------------------------------------------------ #
+    # forecast
+    # ------------------------------------------------------------------ #
+
+    def forecast(
+        self,
+        now_ts: int,
+        hours: int = 48,
+        apply_learning: bool = True,
+        start_ts: int | None = None,
+    ) -> list[HourForecast]:
+        """Per-string hourly potential over the horizon."""
+        start = floor_hour(start_ts if start_ts is not None else now_ts)
+        end = start + hours * HOUR
+        rows = self.store.latest_forecast(start, end, self.plant.forecast_source)
+        hourly = self._hourly_frame(rows)
+        if hourly.empty:
+            _LOGGER.debug("pvstrings: no weather forecast rows for %s..%s", start, end)
+            return []
+
+        index = self._midpoint_index(start, end)
+        conditions = self._downscale(
+            index, hourly, apply_bias=apply_learning, issued_at_utc=now_ts
+        )
+        return self._evaluate(
+            index, conditions, apply_learning=apply_learning, is_forecast=True
+        )
+
+    def _evaluate(
+        self,
+        index: pd.DatetimeIndex,
+        conditions: pd.DataFrame,
+        apply_learning: bool,
+        is_forecast: bool,
+    ) -> list[HourForecast]:
+        """Run physics for every string and fold to hourly energies."""
+        hour_keys = conditions["hour"].to_numpy()
+        unique_hours = sorted({int(hour) for hour in hour_keys})
+        classes = self._classify_hours(conditions)
+
+        results: list[HourForecast] = []
+        for string in self.plant.strings:
+            grouped = self._geometry_segments(string.string_id, unique_hours)
+            if not grouped:
+                _LOGGER.debug(
+                    "pvstrings: no geometry for string %s, skipping",
+                    string.string_id,
+                )
+                continue
+
+            per_hour: dict[int, float] = {}
+            for segment, hours_in_segment in grouped:
+                mask = np.isin(hour_keys, hours_in_segment)
+                if not mask.any():
+                    continue
+                sub_index = index[mask]
+                sub = conditions.loc[mask]
+                result = self.physics.run(
+                    sub_index,
+                    segment,
+                    ghi=pd.Series(sub["ghi"].to_numpy(), index=sub_index),
+                    dni=pd.Series(sub["dni"].to_numpy(), index=sub_index),
+                    dhi=pd.Series(sub["dhi"].to_numpy(), index=sub_index),
+                    temp_air=pd.Series(sub["temp_c"].to_numpy(), index=sub_index),
+                    wind_speed=pd.Series(sub["wind_ms"].to_numpy(), index=sub_index),
+                    system_efficiency=self.plant.efficiency_of(string.string_id),
+                    mount_type=string.mount_type,
+                )
+                power = result.dc_power_w.to_numpy()
+                if string.max_power_w:
+                    # The published forecast must respect the tracker ceiling:
+                    # promising 500 W through a channel that tops out at 430 W
+                    # is energy nobody can ever collect, and it would inflate
+                    # every accuracy figure.  The *uncensored* physics used for
+                    # the binding test stays uncapped -- see _interval_power.
+                    power = np.minimum(power, string.max_power_w)
+                energy = power * INTERVAL_SECONDS / HOUR / 1000.0
+                for hour, value in zip(sub["hour"].to_numpy(), energy):
+                    per_hour[int(hour)] = per_hour.get(int(hour), 0.0) + float(value)
+
+            for hour in unique_hours:
+                physics_kwh = per_hour.get(hour, 0.0)
+                weather, part = classes[hour]
+                correction = 1.0
+                method = METHOD_PHYSICS
+                if apply_learning and self.plant.learning_enabled and physics_kwh > 0:
+                    correction = self.model.factor(string.string_id, weather, part)
+                    method = METHOD_CORRECTED
+                results.append(
+                    HourForecast(
+                        ts_utc=hour,
+                        string_id=string.string_id,
+                        potential_kwh=physics_kwh * correction,
+                        physics_kwh=physics_kwh,
+                        weather=weather,
+                        part=part,
+                        method=method,
+                        correction=correction,
+                    )
+                )
+        return results
+
+    def _classify_hours(self, conditions: pd.DataFrame) -> dict[int, tuple[str, str]]:
+        """Weather class and daypart per hour."""
+        frame = conditions.groupby("hour").agg(
+            ghi=("ghi", "mean"),
+            cs_ghi=("cs_ghi", "mean"),
+            rain=("rain_mm", "max"),
+            clouds=("clouds_pct", "mean"),
+        )
+        out: dict[int, tuple[str, str]] = {}
+        for hour, row in frame.iterrows():
+            hour_ts = int(hour)
+            kc: float | None = None
+            if row["cs_ghi"] and row["cs_ghi"] > 20.0:
+                kc = float(row["ghi"]) / float(row["cs_ghi"])
+            clouds = None if pd.isna(row["clouds"]) else float(row["clouds"])
+            rain = None if pd.isna(row["rain"]) else float(row["rain"])
+            solar_noon = self.physics.solar_noon_for(hour_ts + HOUR / 2)
+            out[hour_ts] = (
+                weather_class(clearsky_index=kc, clouds_pct=clouds, rain_mm=rain),
+                daypart(hour_ts + HOUR / 2, solar_noon),
+            )
+        return out
+
+    def log_forecast(self, issued_at_utc: int, rows: Sequence[HourForecast]) -> int:
+        """Record the prediction so it can be scored later.
+
+        The issue time is quantised to the hour and hours that have already
+        started are dropped.  Two reasons:
+
+        * The coordinator recomputes every fifteen minutes.  Logging each run
+          under its own issue time would write four full 48-hour horizons per
+          hour and turn this table into the largest thing on disk.  Quantising
+          makes the later runs overwrite the earlier ones through the primary
+          key.
+        * With the issue quantised, a run computed at 14:10 would otherwise be
+          stamped 14:00 and then look like a forecast *for* the 14:00 hour that
+          predates it.  Only logging hours that have not begun makes hindsight
+          structurally impossible rather than merely discouraged.
+        """
+        issued_hour = floor_hour(issued_at_utc)
+        return self.store.log_forecast(
+            [row.as_log_row(issued_hour) for row in rows if row.ts_utc > issued_hour]
+        )
+
+    # ------------------------------------------------------------------ #
+    # curtailment evaluation on the five-minute grid
+    # ------------------------------------------------------------------ #
+
+    def evaluate_curtailment(self, start_ts: int, end_ts: int) -> int:
+        """Decide, per five-minute interval, whether output was actually held back.
+
+        Two independent ceilings can bite, and both have to be tested:
+
+        * the **group's** inverter limit, which applies to the sum over the
+          group.  Testing one string against a limit that covers three of them
+          never fires, and every clipped hour would be learned as if it were
+          free.
+        * the **string's own tracker ceiling**.  A 1600 W micro-inverter with
+          four trackers caps each channel near 430 W regardless of what the
+          module could deliver.  No limit entity ever reports that, so without
+          it the model concludes those strings weaken in bright sun.
+
+        The collector cannot do any of this: it knows the commanded limit but
+        not the potential.  Only once physics has run can a commanded limit be
+        told apart from an effective one.
+        """
+        index = self._midpoint_index(start_ts, end_ts)
+        if len(index) == 0:
+            return 0
+        conditions = self._actual_conditions(index, start_ts, end_ts)
+        if conditions is None:
+            return 0
+
+        potentials = self._interval_power(index, conditions)
+        rows: dict[str, dict[int, Any]] = {}
+        for string in self.plant.strings:
+            rows[string.string_id] = {
+                int(row["ts_utc"]): row
+                for row in self.store.fivemin_range(
+                    string.string_id, start_ts, end_ts
+                )
+            }
+
+        group_flags = self._group_binding(rows, potentials)
+
+        updates: list[tuple[int | None, int, str]] = []
+        for string in self.plant.strings:
+            series = potentials.get(string.string_id)
+            if series is None:
+                continue
+            for ts, row in rows[string.string_id].items():
+                physics_w = series.get(ts)
+                own = curt.is_binding(
+                    row["power_mean_w"], string.max_power_w, physics_w
+                )
+                shared = group_flags.get(string.curtailment_group_id, {}).get(ts)
+                binding = curt.combine_binding(own, shared)
+                if binding is None and row["limit_binding"] is None:
+                    continue
+                updates.append(
+                    (None if binding is None else int(binding), ts, string.string_id)
+                )
+        self.store.update_curtailment_flags(updates)
+        return len(updates)
+
+    def _group_binding(
+        self,
+        rows: dict[str, dict[int, Any]],
+        potentials: dict[str, dict[int, float]],
+    ) -> dict[str, dict[int, bool | None]]:
+        """Per group and interval: was the shared inverter limit in effect?"""
+        out: dict[str, dict[int, bool | None]] = {}
+        for group in self.plant.groups:
+            members = self.plant.strings_in_group(group.group_id)
+            if not members:
+                continue
+            stamps: set[int] = set()
+            for member in members:
+                stamps |= set(rows.get(member.string_id, {}))
+            flags: dict[int, bool | None] = {}
+            for ts in stamps:
+                measured = 0.0
+                physics = 0.0
+                limit: float | None = None
+                complete = True
+                for member in members:
+                    row = rows.get(member.string_id, {}).get(ts)
+                    power = row["power_mean_w"] if row is not None else None
+                    potential = potentials.get(member.string_id, {}).get(ts)
+                    if power is None or potential is None:
+                        complete = False
+                        break
+                    measured += power
+                    physics += potential
+                    if row["limit_commanded_w"] is not None:
+                        limit = row["limit_commanded_w"]
+                if not complete:
+                    # A partial sum would understate the group and hide a
+                    # binding limit, so we decline to judge rather than guess.
+                    flags[ts] = None
+                    continue
+                flags[ts] = curt.group_binding(measured, limit, physics)
+            out[group.group_id] = flags
+        return out
+
+    def _interval_power(
+        self, index: pd.DatetimeIndex, conditions: pd.DataFrame
+    ) -> dict[str, dict[int, float]]:
+        """Physical DC power per string per interval, keyed by interval start."""
+        epochs = [int(value.timestamp()) - INTERVAL_SECONDS // 2 for value in index]
+        hour_keys = conditions["hour"].to_numpy()
+        unique_hours = sorted({int(hour) for hour in hour_keys})
+
+        out: dict[str, dict[int, float]] = {}
+        for string in self.plant.strings:
+            grouped = self._geometry_segments(string.string_id, unique_hours)
+            if not grouped:
+                continue
+            values: dict[int, float] = {}
+            for segment, hours_in_segment in grouped:
+                mask = np.isin(hour_keys, hours_in_segment)
+                if not mask.any():
+                    continue
+                sub_index = index[mask]
+                sub = conditions.loc[mask]
+                result = self.physics.run(
+                    sub_index,
+                    segment,
+                    ghi=pd.Series(sub["ghi"].to_numpy(), index=sub_index),
+                    dni=pd.Series(sub["dni"].to_numpy(), index=sub_index),
+                    dhi=pd.Series(sub["dhi"].to_numpy(), index=sub_index),
+                    temp_air=pd.Series(sub["temp_c"].to_numpy(), index=sub_index),
+                    wind_speed=pd.Series(sub["wind_ms"].to_numpy(), index=sub_index),
+                    system_efficiency=self.plant.efficiency_of(string.string_id),
+                    mount_type=string.mount_type,
+                )
+                sub_epochs = [
+                    int(value.timestamp()) - INTERVAL_SECONDS // 2
+                    for value in sub_index
+                ]
+                for ts, power in zip(sub_epochs, result.dc_power_w.to_numpy()):
+                    values[int(ts)] = float(power)
+            out[string.string_id] = values
+        return out
+
+    def _actual_conditions(
+        self, index: pd.DatetimeIndex, start_ts: int, end_ts: int
+    ) -> pd.DataFrame | None:
+        """Best available reconstruction of the irradiance that actually occurred.
+
+        Preference order: a measured GHI (or illuminance) sensor, then the
+        source's shortest-horizon run for that hour.  Never a long-horizon
+        forecast -- that would fold forecast error into the model correction.
+        """
+        rows = self.store.latest_forecast(start_ts, end_ts, self.plant.forecast_source)
+        hourly = self._hourly_frame(rows)
+        if hourly.empty:
+            return None
+
+        conditions = self._downscale(index, hourly, apply_bias=False)
+        measured = self._measured_ghi(start_ts, end_ts)
+        if measured is not None and not measured.empty:
+            epochs = np.array(
+                [int(value.timestamp()) - INTERVAL_SECONDS // 2 for value in index]
+            )
+            aligned = measured.reindex(epochs)
+            replace = aligned.notna().to_numpy()
+            if replace.any():
+                ghi = conditions["ghi"].to_numpy().copy()
+                ghi[replace] = aligned.to_numpy()[replace]
+                conditions["ghi"] = ghi
+                # Components no longer match the measured GHI -- drop them and
+                # let the physics layer decompose with Erbs instead of mixing a
+                # measured global with a forecast split.
+                conditions["dni"] = np.nan
+                conditions["dhi"] = np.nan
+        return conditions
+
+    def _measured_ghi(self, start_ts: int, end_ts: int) -> pd.Series | None:
+        sources = self.plant.weather_sources
+        if not (sources.ghi_entity or sources.illuminance_entity):
+            return None
+        rows = self.store.weather_actual_range(start_ts, end_ts)
+        if not rows:
+            return None
+        values: dict[int, float] = {}
+        for row in rows:
+            if row["ghi_wm2"] is not None:
+                values[int(row["ts_utc"])] = float(row["ghi_wm2"])
+        if not values:
+            return None
+        return pd.Series(values).sort_index()
+
+    # ------------------------------------------------------------------ #
+    # hourly materialisation
+    # ------------------------------------------------------------------ #
+
+    def materialise_hourly(self, start_ts: int, end_ts: int) -> int:
+        """Fold five-minute rows into ``string_hourly``.
+
+        Hourly values are always derived, never measured separately, so the two
+        can never drift apart.
+        """
+        written = 0
+        payload: list[tuple[Any, ...]] = []
+        for hour in range(floor_hour(start_ts), floor_hour(end_ts), HOUR):
+            solar_noon = self.physics.solar_noon_for(hour + HOUR / 2)
+            mid_index = to_index([hour + HOUR / 2])
+            elevation = float(
+                self.physics.solar_position(mid_index)["apparent_elevation"].iloc[0]
+            )
+            for string in self.plant.strings:
+                rows = self.store.fivemin_range(
+                    string.string_id, hour, hour + HOUR
+                )
+                if not rows:
+                    continue
+                folded = hourly_from_5min(
+                    (
+                        int(row["ts_utc"]),
+                        row["energy_wh"],
+                        float(row["coverage"]),
+                        row["value_kind"],
+                        row["limit_binding"],
+                        row["limit_commanded_w"],
+                    )
+                    for row in rows
+                )
+                quality = assess(folded["coverage"], elevation).quality
+                payload.append(
+                    (
+                        hour,
+                        string.string_id,
+                        folded["energy_kwh"],
+                        folded["coverage"],
+                        folded["curtailed_fraction"],
+                        folded["limit_min_w"],
+                        folded["limit_max_w"],
+                        folded["limit_mean_w"],
+                        folded["value_kind"],
+                        quality,
+                    )
+                )
+                written += 1
+        self.store.upsert_hourly(payload)
+        return written
+
+    # ------------------------------------------------------------------ #
+    # learning cycle
+    # ------------------------------------------------------------------ #
+
+    def learn(self, now_ts: int, max_hours: int = 48) -> LearnStats:
+        """Process every hour that has closed since the last run.
+
+        Bounded by ``max_hours`` so a long outage cannot turn the first update
+        after a restart into a multi-minute blocking job.
+        """
+        stats = LearnStats()
+        last_closed = floor_hour(now_ts) - HOUR
+        # Default zero, not "one hour back": on a cold start there may already
+        # be days of collected data, and the ``max_hours`` clamp below is what
+        # keeps the catch-up bounded.
+        cursor = self.store.get_cursor(CURSOR_LEARN, default=0)
+        start = max(cursor, last_closed - max_hours * HOUR)
+        if start > last_closed:
+            return stats
+
+        end = last_closed + HOUR
+
+        self.evaluate_curtailment(start, end)
+        stats.hours_materialised = self.materialise_hourly(start, end)
+        self._learn_ghi_bias(start, end, stats)
+
+        if self.plant.learning_enabled:
+            self._learn_effects(start, end, stats)
+
+        self.store.set_cursor(CURSOR_LEARN, end)
+        self.store.set_cursor(CURSOR_HOURLY, end)
+        self.save_models(now_ts)
+        return stats
+
+    def _learn_effects(self, start_ts: int, end_ts: int, stats: LearnStats) -> None:
+        index = self._midpoint_index(start_ts, end_ts)
+        if len(index) == 0:
+            return
+        conditions = self._actual_conditions(index, start_ts, end_ts)
+        if conditions is None:
+            return
+
+        classes = self._classify_hours(conditions)
+        # One pvlib pass for the whole window, shared by the hourly fold and the
+        # shading collection.  Running the chain twice over the same intervals
+        # was pure waste in the hot path of every hourly update.
+        per_interval = self._interval_power(index, conditions)
+        hourly_physics = self._fold_hourly(per_interval)
+        actual = {
+            (row.ts_utc, row.string_id): row
+            for row in self.store.hourly_range(start_ts, end_ts)
+        }
+
+        self._collect_shading(index, per_interval, stats)
+
+        for (hour, string_id), row in sorted(actual.items()):
+            physics_kwh = hourly_physics.get(string_id, {}).get(hour)
+            if physics_kwh is None or physics_kwh <= 0.0:
+                stats.observations_skipped += 1
+                continue
+            if row.quality == QUALITY_NIGHT or row.energy_kwh is None:
+                continue
+            if row.value_kind == VALUE_LOWER_BOUND:
+                stats.censored_hours += 1
+
+            quality = assess(row.coverage, 90.0, row.value_kind)
+            if not quality.usable_for_learning:
+                stats.observations_skipped += 1
+                self.store.add_exclusion(
+                    hour, "low_coverage", string_id, f"coverage={row.coverage:.2f}"
+                )
+                continue
+
+            weather, part = classes.get(hour, ("partly_cloudy", "midday"))
+            used = self.model.observe(
+                Observation(
+                    string_id=string_id,
+                    weather=weather,
+                    part=part,
+                    measured_kwh=row.energy_kwh,
+                    physics_kwh=physics_kwh,
+                    weight=quality.weight,
+                    value_kind=row.value_kind,
+                )
+            )
+            if used:
+                stats.observations_used += 1
+            else:
+                stats.observations_skipped += 1
+
+    @staticmethod
+    def _fold_hourly(
+        per_interval: dict[str, dict[int, float]],
+    ) -> dict[str, dict[int, float]]:
+        """Interval watts -> hourly kWh, per string."""
+        out: dict[str, dict[int, float]] = {}
+        for string_id, values in per_interval.items():
+            folded: dict[int, float] = {}
+            for ts, power in values.items():
+                hour = floor_hour(ts)
+                folded[hour] = folded.get(hour, 0.0) + power * INTERVAL_SECONDS / HOUR / 1000.0
+            out[string_id] = folded
+        return out
+
+    def _collect_shading(
+        self,
+        index: pd.DatetimeIndex,
+        potentials: dict[str, dict[int, float]],
+        stats: LearnStats,
+    ) -> None:
+        """Store raw shading observations.  v1 only collects, never corrects.
+
+        Deliberately not rasterised on write: a fixed grid built from thin data
+        is a lossy commitment.  Raw azimuth/elevation pairs can be binned any
+        way we like once there is a year of them.
+        """
+        solar_position = self.physics.solar_position(index)
+        epochs = [
+            int(value.timestamp()) - INTERVAL_SECONDS // 2 for value in index
+        ]
+
+        payload: list[tuple[Any, ...]] = []
+        for string in self.plant.strings:
+            series = potentials.get(string.string_id)
+            if not series:
+                continue
+            rows = {
+                int(row["ts_utc"]): row
+                for row in self.store.fivemin_range(
+                    string.string_id, epochs[0], epochs[-1] + INTERVAL_SECONDS
+                )
+            }
+            for position, ts in enumerate(epochs):
+                row = rows.get(ts)
+                if row is None or row["power_mean_w"] is None:
+                    continue
+                if row["value_kind"] != VALUE_MEASURED or row["limit_binding"]:
+                    continue
+                if row["coverage"] < 0.8:
+                    continue
+                elevation = float(
+                    solar_position["apparent_elevation"].iloc[position]
+                )
+                if elevation < SHADING_MIN_ELEVATION_DEG:
+                    continue
+                physics_w = series.get(ts)
+                if not physics_w or physics_w <= 0:
+                    continue
+                ratio = float(row["power_mean_w"]) / physics_w
+                if not 0.0 <= ratio <= 2.0:
+                    continue
+                payload.append(
+                    (
+                        ts,
+                        string.string_id,
+                        float(solar_position["azimuth"].iloc[position]),
+                        elevation,
+                        ratio,
+                        float(row["coverage"]),
+                    )
+                )
+        self.store.add_shading_obs(payload)
+        stats.shading_observations = len(payload)
+
+    def _learn_ghi_bias(
+        self, start_ts: int, end_ts: int, stats: LearnStats
+    ) -> None:
+        """Compare each forecast issue against what the irradiance turned out to be.
+
+        Truth is a measured GHI sensor when the user has one; otherwise the
+        source's own shortest-horizon run for the same target hour.  The second
+        is not perfect truth, but it isolates *horizon* error, which is what the
+        bias buckets are supposed to correct.
+        """
+        rows = self.store.forecast_for_verification(
+            start_ts, end_ts, self.plant.forecast_source, max_horizon_h=72
+        )
+        if not rows:
+            return
+
+        by_hour: dict[int, list[Any]] = {}
+        for row in rows:
+            by_hour.setdefault(int(row["ts_utc"]), []).append(row)
+
+        measured = self._measured_ghi(start_ts, end_ts)
+        measured_hourly: dict[int, float] = {}
+        if measured is not None and not measured.empty:
+            frame = measured.to_frame("ghi")
+            frame["hour"] = (frame.index // HOUR) * HOUR
+            measured_hourly = {
+                int(hour): float(value)
+                for hour, value in frame.groupby("hour")["ghi"].mean().items()
+            }
+
+        for hour, issues in by_hour.items():
+            truth = measured_hourly.get(hour)
+            if truth is None:
+                nowcasts = [
+                    issue
+                    for issue in issues
+                    if issue["horizon_h"] <= NOWCAST_MAX_HORIZON_H
+                    and issue["ghi_wm2"] is not None
+                ]
+                if not nowcasts:
+                    continue
+                truth = float(max(nowcasts, key=lambda r: r["issued_at_utc"])["ghi_wm2"])
+            if truth <= 5.0:
+                continue
+
+            hour_local = datetime.fromtimestamp(hour, tz=self._tz).hour
+            for issue in issues:
+                if issue["ghi_wm2"] is None:
+                    continue
+                horizon = float(issue["horizon_h"])
+                if horizon <= NOWCAST_MAX_HORIZON_H and truth == issue["ghi_wm2"]:
+                    continue
+                if self.ghi_bias.observe(
+                    hour_local=hour_local,
+                    horizon_h=horizon,
+                    measured_ghi=truth,
+                    forecast_ghi=float(issue["ghi_wm2"]),
+                ):
+                    stats.bias_observations += 1
+
+    # ------------------------------------------------------------------ #
+    # scoring
+    # ------------------------------------------------------------------ #
+
+    def score(
+        self, start_ts: int, end_ts: int, lead_time_h: float = 0.0
+    ) -> dict[str, Any]:
+        """WMAPE, nMAE and bias -- separately for uncensored and all hours.
+
+        Only the uncensored figure describes model quality; the all-hours figure
+        describes everyday usefulness.  Reporting a single number without saying
+        which one it is, is how "78.6 % accuracy" ends up meaning nothing.
+        """
+        rows = self.store.forecast_vs_actual(start_ts, end_ts, lead_time_h)
+        nameplate = self._total_kwp()
+
+        uncensored: list[tuple[float, float]] = []
+        every: list[tuple[float, float]] = []
+        daily_uncensored: dict[str, list[float]] = {}
+        daily_all: dict[str, list[float]] = {}
+
+        for row in rows:
+            actual = row["energy_kwh"]
+            predicted = row["potential_kwh"]
+            if actual is None or predicted is None:
+                continue
+            if row["quality"] in (QUALITY_NIGHT, "missing"):
+                continue
+            day = datetime.fromtimestamp(int(row["ts_utc"]), tz=self._tz).strftime(
+                "%Y-%m-%d"
+            )
+            every.append((predicted, actual))
+            daily_all.setdefault(day, [0.0, 0.0])
+            daily_all[day][0] += predicted
+            daily_all[day][1] += actual
+            if row["value_kind"] == VALUE_MEASURED and not row["curtailed_fraction"]:
+                uncensored.append((predicted, actual))
+                daily_uncensored.setdefault(day, [0.0, 0.0])
+                daily_uncensored[day][0] += predicted
+                daily_uncensored[day][1] += actual
+
+        return {
+            "uncensored": _metrics(uncensored, daily_uncensored, nameplate),
+            "all_hours": _metrics(every, daily_all, nameplate),
+            "hours_scored": len(every),
+            "hours_uncensored": len(uncensored),
+            "lead_time_h": lead_time_h,
+        }
+
+    def _total_kwp(self) -> float:
+        total = 0.0
+        now = int(datetime.now(tz=timezone.utc).timestamp())
+        for string in self.plant.strings:
+            segment = self.geometry_at(string.string_id, now)
+            if segment:
+                total += segment.kwp
+        return total
+
+    def monthly_weights(self) -> list[float]:
+        """Clear-sky seasonality of the plant, cached.
+
+        Weighted by the strings' own geometry, so the seasonal extrapolation is
+        right for a steep winter-facing balcony as well as a flat roof.
+        """
+        if self._monthly_weights is not None:
+            return self._monthly_weights
+
+        now = int(datetime.now(tz=timezone.utc).timestamp())
+        weighted = np.zeros(12)
+        total_kwp = 0.0
+        for string in self.plant.strings:
+            segment = self.geometry_at(string.string_id, now)
+            if segment is None:
+                continue
+            share = np.array(
+                self.physics.monthly_clearsky_share(
+                    segment.tilt_deg, segment.azimuth_deg
+                )
+            )
+            weighted += share * segment.kwp
+            total_kwp += segment.kwp
+        if total_kwp <= 0:
+            self._monthly_weights = [1.0 / 12.0] * 12
+        else:
+            weighted /= weighted.sum()
+            self._monthly_weights = [float(value) for value in weighted]
+        return self._monthly_weights
+
+
+def _metrics(
+    pairs: Sequence[tuple[float, float]],
+    daily: Mapping[str, Sequence[float]],
+    nameplate_kwp: float,
+) -> dict[str, float | None]:
+    if not pairs:
+        return {"wmape": None, "nmae": None, "bias": None, "mae_kwh": None, "n": 0}
+
+    abs_error = sum(abs(p - a) for p, a in pairs)
+    signed_error = sum(p - a for p, a in pairs)
+
+    daily_actual = sum(values[1] for values in daily.values())
+    daily_abs = sum(abs(values[0] - values[1]) for values in daily.values())
+    wmape = daily_abs / daily_actual if daily_actual > 0 else None
+
+    nmae = abs_error / len(pairs) / nameplate_kwp if nameplate_kwp > 0 else None
+
+    return {
+        "wmape": round(wmape, 4) if wmape is not None else None,
+        "nmae": round(nmae, 5) if nmae is not None else None,
+        "bias": round(signed_error / len(pairs), 5),
+        "mae_kwh": round(abs_error / len(pairs), 5),
+        "n": len(pairs),
+        "days": len(daily),
+    }

@@ -1,0 +1,395 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "PV plant",
+        "description": "Location defaults to your Home Assistant coordinates. Open-Meteo needs no API key; pick a weather entity only if this instance has no outbound internet access.",
+        "data": {
+          "name": "Plant name",
+          "latitude": "Latitude",
+          "longitude": "Longitude",
+          "elevation": "Elevation",
+          "forecast_source": "Irradiance source",
+          "forecast_model": "Open-Meteo model",
+          "weather_entity": "Weather entity (fallback source)"
+        }
+      },
+      "economics": {
+        "title": "Tariffs",
+        "description": "Net metering means the meter physically runs backwards, so every exported kWh saves an imported one. That is temporary by nature -- the integration keeps calculating all three models side by side so you can see what a meter swap will cost.",
+        "data": {
+          "economics_mode": "Tariff model",
+          "price_per_kwh": "Electricity price",
+          "feed_in_tariff": "Feed-in tariff",
+          "investment_eur": "Investment",
+          "commissioning_date": "Commissioning date",
+          "battery_efficiency": "Battery round-trip efficiency"
+        }
+      }
+    },
+    "error": {
+      "weather_entity_required": "Pick a weather entity when using the Home Assistant weather source.",
+      "helper_overlaps": "This helper aggregates entities that another string already uses. Point each string at its physical channel instead -- otherwise one channel is counted twice and another is dropped."
+    },
+    "abort": {
+      "already_configured": "This plant is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "PV Strings options",
+        "menu_options": {
+          "economics": "Tariffs and amortisation",
+          "entities": "Plant and weather entities",
+          "advanced": "Model and collection",
+          "forecast": "Location and irradiance source"
+        }
+      },
+      "economics": {
+        "title": "Tariffs",
+        "data": {
+          "economics_mode": "Tariff model",
+          "price_per_kwh": "Electricity price",
+          "feed_in_tariff": "Feed-in tariff",
+          "investment_eur": "Investment",
+          "commissioning_date": "Commissioning date",
+          "battery_efficiency": "Battery round-trip efficiency"
+        }
+      },
+      "entities": {
+        "title": "Plant and weather entities",
+        "description": "All optional. A grid power sensor enables the export-aware savings calculation; a pyranometer or illuminance sensor lets the bias model learn against measured irradiance instead of the forecast's own analysis.",
+        "data": {
+          "grid_power_entity": "Grid power (+ import / - export)",
+          "house_load_entity": "House load",
+          "battery_soc_entity": "Battery state of charge",
+          "battery_power_entity": "Battery power",
+          "temperature_entity": "Outdoor temperature",
+          "humidity_entity": "Humidity",
+          "wind_speed_entity": "Wind speed",
+          "rain_entity": "Rainfall",
+          "pressure_entity": "Air pressure",
+          "ghi_entity": "Solar irradiance (GHI)",
+          "illuminance_entity": "Illuminance"
+        }
+      },
+      "advanced": {
+        "title": "Model and collection",
+        "description": "The watchdog only supplies support points when an entity goes quiet; event-driven updates are used as they arrive. Thirty seconds keeps ten support points in every five-minute window during an outage.",
+        "data": {
+          "albedo": "Ground reflectance",
+          "system_efficiency": "System efficiency",
+          "transposition_model": "Transposition model",
+          "watchdog_seconds": "Watchdog interval",
+          "learning_enabled": "Apply learned correction",
+          "retention_days": "Raw data retention"
+        }
+      },
+      "forecast": {
+        "title": "Location and irradiance source",
+        "data": {
+          "name": "Plant name",
+          "latitude": "Latitude",
+          "longitude": "Longitude",
+          "elevation": "Elevation",
+          "forecast_source": "Irradiance source",
+          "forecast_model": "Open-Meteo model",
+          "weather_entity": "Weather entity (fallback source)"
+        }
+      }
+    }
+  },
+  "config_subentries": {
+    "string": {
+      "title": "PV string",
+      "initiate_flow": {
+        "user": "Add string",
+        "reconfigure": "Edit string"
+      },
+      "entry_type": "String",
+      "step": {
+        "user": {
+          "title": "Add PV string",
+          "description": "Point this at the physical measurement channel, not at a min/max, template or group helper. Aggregate helpers double-count one channel and silently drop another, which is invisible in the plant total and fatal per string.",
+          "data": {
+            "name": "Name",
+            "power_entity": "Power sensor",
+            "azimuth": "Azimuth (0 = N, 90 = E, 180 = S, 270 = W)",
+            "tilt": "Tilt",
+            "kwp": "Nameplate",
+            "curtailment_group_id": "Curtailment group",
+            "temp_coeff": "Temperature coefficient",
+            "mount_type": "Mounting",
+            "energy_entity": "Energy sensor (cross-check only)",
+            "string_efficiency": "String efficiency override (0 = use plant value)",
+            "max_power_w": "Tracker ceiling in W (0 = none)"
+          }
+        },
+        "reconfigure": {
+          "title": "Edit PV string",
+          "description": "Recorded geometry periods:\n{history}",
+          "data": {
+            "name": "Name",
+            "power_entity": "Power sensor",
+            "azimuth": "Azimuth (0 = N, 90 = E, 180 = S, 270 = W)",
+            "tilt": "Tilt",
+            "kwp": "Nameplate",
+            "curtailment_group_id": "Curtailment group",
+            "temp_coeff": "Temperature coefficient",
+            "mount_type": "Mounting",
+            "energy_entity": "Energy sensor (cross-check only)",
+            "string_efficiency": "String efficiency override (0 = use plant value)",
+            "max_power_w": "Tracker ceiling in W (0 = none)"
+          }
+        },
+        "geometry": {
+          "title": "When does the new geometry apply?",
+          "description": "A changed tilt or azimuth is not an edit, it is a new validity period. Past data keeps being evaluated against the geometry that was actually installed -- otherwise the learning layer books a seasonally drifting mounting error as a weather or shading effect.\n\nRecorded periods:\n{history}",
+          "data": {
+            "geometry_mode": "Applies",
+            "valid_from": "Valid from",
+            "note": "Note (e.g. \"winter setting\")"
+          }
+        }
+      },
+      "error": {
+        "helper_overlaps": "This helper aggregates entities that another string already uses. Point each string at its physical channel instead."
+      }
+    },
+    "curtailment_group": {
+      "title": "Curtailment group",
+      "initiate_flow": {
+        "user": "Add curtailment group",
+        "reconfigure": "Edit curtailment group"
+      },
+      "entry_type": "Curtailment group",
+      "step": {
+        "user": {
+          "title": "Add curtailment group",
+          "description": "Strings that can only be curtailed together -- normally one group per inverter. A commanded limit is not curtailment: it only counts once the available power actually reaches it.",
+          "data": {
+            "name": "Name",
+            "limit_entity": "Relative limit (%)",
+            "inverter_max_ac_w": "Inverter nameplate AC power",
+            "limit_abs_entity": "Absolute limit (W)",
+            "battery_coupled": "Battery coupled",
+            "soc_entity": "Battery state of charge",
+            "soc_limit": "State of charge at which charging stops",
+            "battery_power_entity": "Battery power",
+            "export_limit_w": "Export limit (-1 = none)"
+          }
+        },
+        "reconfigure": {
+          "title": "Edit curtailment group",
+          "data": {
+            "name": "Name",
+            "limit_entity": "Relative limit (%)",
+            "inverter_max_ac_w": "Inverter nameplate AC power",
+            "limit_abs_entity": "Absolute limit (W)",
+            "battery_coupled": "Battery coupled",
+            "soc_entity": "Battery state of charge",
+            "soc_limit": "State of charge at which charging stops",
+            "battery_power_entity": "Battery power",
+            "export_limit_w": "Export limit (-1 = none)"
+          }
+        }
+      },
+      "error": {
+        "nameplate_required": "A relative limit in percent needs the inverter nameplate to be converted into watts."
+      }
+    }
+  },
+  "selector": {
+    "forecast_source": {
+      "options": {
+        "open_meteo": "Open-Meteo (components, no API key)",
+        "ha_weather": "Home Assistant weather entity (lower quality)"
+      }
+    },
+    "forecast_model": {
+      "options": {
+        "best_match": "Best match for the location",
+        "icon_seamless": "DWD ICON",
+        "gfs_seamless": "NOAA GFS",
+        "ecmwf_ifs025": "ECMWF IFS",
+        "meteofrance_seamless": "Meteo-France",
+        "ukmo_seamless": "UK Met Office",
+        "jma_seamless": "JMA",
+        "gem_seamless": "GEM"
+      }
+    },
+    "economics_mode": {
+      "options": {
+        "net_metering": "Net metering (meter runs backwards)",
+        "self_consumption": "Self-consumption plus feed-in tariff",
+        "feed_in": "Full feed-in"
+      }
+    },
+    "transposition_model": {
+      "options": {
+        "perez-driesse": "Perez-Driesse (default)",
+        "haydavies": "Hay-Davies",
+        "isotropic": "Isotropic (control baseline)"
+      }
+    },
+    "mount_type": {
+      "options": {
+        "open_rack": "Open rack",
+        "close_mount": "Close roof mount",
+        "insulated_back": "Insulated back (balcony, facade)",
+        "open_rack_polymer": "Open rack, polymer back"
+      }
+    },
+    "geometry_mode": {
+      "options": {
+        "now": "From now on",
+        "from_date": "From a specific date",
+        "correction": "It was wrong from the start (correct the last period)"
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "forecast_today": {
+        "name": "Forecast today"
+      },
+      "forecast_remaining": {
+        "name": "Forecast remaining today"
+      },
+      "forecast_tomorrow": {
+        "name": "Forecast tomorrow"
+      },
+      "forecast_next_hour": {
+        "name": "Forecast next hour"
+      },
+      "peak_hour_today": {
+        "name": "Peak hour today"
+      },
+      "produced_today": {
+        "name": "Produced today"
+      },
+      "deviation_yesterday": {
+        "name": "Deviation yesterday"
+      },
+      "wmape_7d": {
+        "name": "WMAPE 7 days"
+      },
+      "wmape_30d": {
+        "name": "WMAPE 30 days"
+      },
+      "bias_7d": {
+        "name": "Bias 7 days"
+      },
+      "savings_today": {
+        "name": "Savings today"
+      },
+      "savings_month": {
+        "name": "Savings this month"
+      },
+      "savings_total": {
+        "name": "Savings total"
+      },
+      "amortisation": {
+        "name": "Amortisation"
+      },
+      "model_observations": {
+        "name": "Model observations"
+      },
+      "collector_health": {
+        "name": "Collector coverage"
+      },
+      "string_forecast_today": {
+        "name": "Forecast today"
+      },
+      "string_forecast_remaining": {
+        "name": "Forecast remaining today"
+      },
+      "string_forecast_tomorrow": {
+        "name": "Forecast tomorrow"
+      },
+      "string_potential_now": {
+        "name": "Potential this hour"
+      },
+      "string_produced_today": {
+        "name": "Produced today"
+      },
+      "strings_detail": {
+        "name": "Configured strings"
+      },
+      "ghi_forecast": {
+        "name": "Forecast irradiance"
+      }
+    }
+  },
+  "services": {
+    "recalculate": {
+      "name": "Recalculate",
+      "description": "Fetch a fresh irradiance forecast and rebuild the prediction.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Plant",
+          "description": "Which plant to recalculate."
+        }
+      }
+    },
+    "reset_learning": {
+      "name": "Reset learning",
+      "description": "Discard all learned corrections and fall back to pure physics. Measurements are kept.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Plant",
+          "description": "Which plant to reset."
+        }
+      }
+    },
+    "purge": {
+      "name": "Purge raw data",
+      "description": "Delete raw five-minute data older than the retention period. Hourly aggregates, geometry and model state are kept.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Plant",
+          "description": "Which plant to purge."
+        }
+      }
+    },
+    "add_geometry": {
+      "name": "Add geometry period",
+      "description": "Record a new mounting geometry from a given date. Existing periods are left untouched, so historical data keeps being evaluated correctly.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Plant",
+          "description": "Which plant the string belongs to."
+        },
+        "string_id": {
+          "name": "String ID",
+          "description": "Subentry ID of the string, as shown in the diagnostics download."
+        },
+        "azimuth": {
+          "name": "Azimuth",
+          "description": "0 = north, 90 = east, 180 = south, 270 = west."
+        },
+        "tilt": {
+          "name": "Tilt",
+          "description": "0 = horizontal, 90 = vertical."
+        },
+        "kwp": {
+          "name": "Nameplate",
+          "description": "Installed DC power in kWp."
+        },
+        "temp_coeff": {
+          "name": "Temperature coefficient",
+          "description": "Pmax coefficient in 1/K, e.g. -0.004."
+        },
+        "valid_from": {
+          "name": "Valid from",
+          "description": "Start of the new period. Defaults to now."
+        },
+        "note": {
+          "name": "Note",
+          "description": "Free text, e.g. \"winter setting\"."
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,138 @@
+"""Quality classification and the commanded-vs-binding distinction."""
+
+from __future__ import annotations
+
+import pytest
+
+from core import curtailment as curt
+from core.quality import (
+    QUALITY_EXACT,
+    QUALITY_MISSING,
+    QUALITY_NIGHT,
+    QUALITY_PARTIAL,
+    VALUE_LOWER_BOUND,
+    VALUE_RECONSTRUCTED,
+    assess,
+    classify,
+)
+
+
+class TestQuality:
+    def test_full_coverage_is_exact(self):
+        assert classify(1.0, 40.0) == QUALITY_EXACT
+
+    def test_partial_coverage_above_threshold(self):
+        assert classify(0.85, 40.0) == QUALITY_PARTIAL
+
+    def test_missing_data_with_sun_up_is_missing(self):
+        assert classify(0.1, 40.0) == QUALITY_MISSING
+
+    def test_missing_data_with_sun_down_is_night(self):
+        """Dawn flicker between 0.0 and unavailable is information, not a gap."""
+        assert classify(0.1, 1.0) == QUALITY_NIGHT
+
+    def test_missing_hours_carry_no_learning_weight(self):
+        assert assess(0.1, 40.0).usable_for_learning is False
+
+    def test_partial_hours_are_weighted_by_coverage(self):
+        result = assess(0.85, 40.0)
+        assert result.weight == pytest.approx(0.85)
+        assert result.usable_for_learning is True
+
+    def test_censored_observations_are_down_weighted(self):
+        assert assess(1.0, 40.0, VALUE_LOWER_BOUND).weight == pytest.approx(0.5)
+        assert assess(1.0, 40.0, VALUE_RECONSTRUCTED).weight == pytest.approx(0.35)
+
+
+class TestBinding:
+    def test_limit_far_above_production_is_not_curtailment(self):
+        """1796 W limit, 600 W available -- the measurement is exact."""
+        assert curt.is_binding(600.0, 1796.0, 640.0) is False
+
+    def test_running_into_the_limit_is_curtailment(self):
+        assert curt.is_binding(1760.0, 1796.0, 2400.0) is True
+
+    def test_at_the_limit_but_physics_agrees_is_not_curtailment(self):
+        """Hitting the limit exactly when that is all the sun offers."""
+        assert curt.is_binding(1760.0, 1796.0, 1800.0) is False
+
+    def test_unknown_without_limit(self):
+        assert curt.is_binding(600.0, None, 640.0) is None
+
+    def test_unknown_without_physics(self):
+        """Distinct from False: the collector must not pre-empt physics."""
+        assert curt.is_binding(600.0, 1796.0, None) is None
+
+    def test_zero_limit_censors_everything(self):
+        assert curt.is_binding(5.0, 0.0, 800.0) is True
+
+    def test_value_kind_follows_binding(self):
+        assert curt.value_kind_for(True) == VALUE_LOWER_BOUND
+        assert curt.value_kind_for(False) == "measured"
+        assert curt.value_kind_for(None) == "measured"
+
+
+class TestPeerReconstruction:
+    def _peer(self, **kwargs):
+        base = dict(
+            string_id="s1", measured_w=800.0, physics_w=1000.0, binding=False
+        )
+        base.update(kwargs)
+        return curt.PeerSample(**base)
+
+    def test_reconstructs_from_a_free_peer(self):
+        result = curt.reconstruct_from_peers(
+            target_physics_w=900.0,
+            target_nameplate_w=1000.0,
+            peers=[self._peer()],
+            sun_elevation_deg=35.0,
+        )
+        assert result is not None
+        assert result.value_w == pytest.approx(720.0)
+        assert result.value_kind == VALUE_RECONSTRUCTED
+        assert result.weight <= 0.5
+
+    def test_low_sun_blocks_reconstruction(self):
+        assert (
+            curt.reconstruct_from_peers(900.0, 1000.0, [self._peer()], 5.0) is None
+        )
+
+    def test_curtailed_peer_is_no_reference(self):
+        assert (
+            curt.reconstruct_from_peers(
+                900.0, 1000.0, [self._peer(binding=True)], 35.0
+            )
+            is None
+        )
+
+    def test_shaded_peer_is_no_reference(self):
+        assert (
+            curt.reconstruct_from_peers(
+                900.0, 1000.0, [self._peer(shaded=True)], 35.0
+            )
+            is None
+        )
+
+    def test_disagreeing_peers_produce_nothing(self):
+        peers = [
+            self._peer(string_id="a", measured_w=900.0),
+            self._peer(string_id="b", measured_w=200.0),
+        ]
+        assert curt.reconstruct_from_peers(900.0, 1000.0, peers, 35.0) is None
+
+    def test_barely_loaded_target_is_skipped(self):
+        assert curt.reconstruct_from_peers(50.0, 1000.0, [self._peer()], 35.0) is None
+
+    def test_everything_curtailed_yields_no_point_value(self):
+        """Summer midday, battery full, load covered: a limit of the method."""
+        peers = [self._peer(string_id="a", binding=True), self._peer(string_id="b", binding=True)]
+        assert curt.reconstruct_from_peers(900.0, 1000.0, peers, 45.0) is None
+        assert curt.group_fully_curtailed([True, True]) is True
+        assert curt.group_fully_curtailed([True, None]) is True
+        assert curt.group_fully_curtailed([True, False]) is False
+        assert curt.group_fully_curtailed([None, None]) is False
+
+    def test_curtailed_fraction_ignores_unknowns(self):
+        assert curt.curtailed_fraction([True, False, None, True]) == pytest.approx(
+            2 / 3
+        )

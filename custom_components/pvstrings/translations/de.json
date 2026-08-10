@@ -1,0 +1,395 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "PV-Anlage",
+        "description": "Der Standort wird aus den Home-Assistant-Koordinaten vorbelegt. Open-Meteo braucht keinen API-Schlüssel; eine Wetter-Entität nur wählen, wenn diese Instanz keinen Internetzugang hat.",
+        "data": {
+          "name": "Anlagenname",
+          "latitude": "Breitengrad",
+          "longitude": "Längengrad",
+          "elevation": "Höhe über NN",
+          "forecast_source": "Einstrahlungsquelle",
+          "forecast_model": "Open-Meteo-Modell",
+          "weather_entity": "Wetter-Entität (Ersatzquelle)"
+        }
+      },
+      "economics": {
+        "title": "Tarife",
+        "description": "Rückwärtslaufender Zähler heißt: jede eingespeiste kWh spart tatsächlich eine bezogene. Das ist naturgemäß befristet — die Integration rechnet alle drei Modelle parallel, damit sichtbar ist, was der Zählertausch kostet.",
+        "data": {
+          "economics_mode": "Tarifmodell",
+          "price_per_kwh": "Strompreis",
+          "feed_in_tariff": "Einspeisevergütung",
+          "investment_eur": "Investition",
+          "commissioning_date": "Inbetriebnahme",
+          "battery_efficiency": "Speicher-Wirkungsgrad"
+        }
+      }
+    },
+    "error": {
+      "weather_entity_required": "Bei der Quelle „Home-Assistant-Wetter“ muss eine Wetter-Entität gewählt werden.",
+      "helper_overlaps": "Dieser Helfer fasst Entitäten zusammen, die bereits ein anderer Strang nutzt. Jeden Strang direkt auf seinen physischen Kanal zeigen lassen — sonst wird ein Kanal doppelt gezählt und ein anderer fällt weg."
+    },
+    "abort": {
+      "already_configured": "Diese Anlage ist bereits eingerichtet."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "PV-Strings-Optionen",
+        "menu_options": {
+          "economics": "Tarife und Amortisation",
+          "entities": "Anlagen- und Wetter-Entitäten",
+          "advanced": "Modell und Erfassung",
+          "forecast": "Standort und Einstrahlungsquelle"
+        }
+      },
+      "economics": {
+        "title": "Tarife",
+        "data": {
+          "economics_mode": "Tarifmodell",
+          "price_per_kwh": "Strompreis",
+          "feed_in_tariff": "Einspeisevergütung",
+          "investment_eur": "Investition",
+          "commissioning_date": "Inbetriebnahme",
+          "battery_efficiency": "Speicher-Wirkungsgrad"
+        }
+      },
+      "entities": {
+        "title": "Anlagen- und Wetter-Entitäten",
+        "description": "Alles optional. Ein Netzleistungs-Sensor schaltet die einspeisebewusste Wirtschaftlichkeitsrechnung frei; ein Pyranometer oder Helligkeitssensor lässt das Bias-Modell gegen gemessene Einstrahlung lernen statt gegen die eigene Analyse der Quelle.",
+        "data": {
+          "grid_power_entity": "Netzleistung (+ Bezug / − Einspeisung)",
+          "house_load_entity": "Hausverbrauch",
+          "battery_soc_entity": "Batterie-Ladestand",
+          "battery_power_entity": "Batterieleistung",
+          "temperature_entity": "Außentemperatur",
+          "humidity_entity": "Luftfeuchte",
+          "wind_speed_entity": "Windgeschwindigkeit",
+          "rain_entity": "Niederschlag",
+          "pressure_entity": "Luftdruck",
+          "ghi_entity": "Globalstrahlung (GHI)",
+          "illuminance_entity": "Beleuchtungsstärke"
+        }
+      },
+      "advanced": {
+        "title": "Modell und Erfassung",
+        "description": "Der Watchdog liefert nur Stützstellen, wenn eine Entität verstummt; Ereignisse werden verwendet, sobald sie eintreffen. 30 s halten auch im Ausfall zehn Stützstellen je Fünf-Minuten-Fenster.",
+        "data": {
+          "albedo": "Bodenreflexion",
+          "system_efficiency": "Systemwirkungsgrad",
+          "transposition_model": "Transpositionsmodell",
+          "watchdog_seconds": "Watchdog-Intervall",
+          "learning_enabled": "Gelernte Korrektur anwenden",
+          "retention_days": "Aufbewahrung der Rohdaten"
+        }
+      },
+      "forecast": {
+        "title": "Standort und Einstrahlungsquelle",
+        "data": {
+          "name": "Anlagenname",
+          "latitude": "Breitengrad",
+          "longitude": "Längengrad",
+          "elevation": "Höhe über NN",
+          "forecast_source": "Einstrahlungsquelle",
+          "forecast_model": "Open-Meteo-Modell",
+          "weather_entity": "Wetter-Entität (Ersatzquelle)"
+        }
+      }
+    }
+  },
+  "config_subentries": {
+    "string": {
+      "title": "PV-Strang",
+      "initiate_flow": {
+        "user": "Strang hinzufügen",
+        "reconfigure": "Strang bearbeiten"
+      },
+      "entry_type": "Strang",
+      "step": {
+        "user": {
+          "title": "PV-Strang hinzufügen",
+          "description": "Auf den physischen Messkanal zeigen, nicht auf einen min/max-, Template- oder Gruppen-Helfer. Summen-Helfer zählen einen Kanal doppelt und lassen einen anderen still unter den Tisch fallen — in der Anlagensumme unsichtbar, pro Strang tödlich.",
+          "data": {
+            "name": "Name",
+            "power_entity": "Leistungssensor",
+            "azimuth": "Azimut (0 = N, 90 = O, 180 = S, 270 = W)",
+            "tilt": "Neigung",
+            "kwp": "Nennleistung",
+            "curtailment_group_id": "Abregelungsgruppe",
+            "temp_coeff": "Temperaturkoeffizient",
+            "mount_type": "Montage",
+            "energy_entity": "Energiesensor (nur Gegenprüfung)",
+            "string_efficiency": "Abweichender Strang-Wirkungsgrad (0 = Anlagenwert)",
+            "max_power_w": "Maximalleistung des Trackers in W (0 = keine)"
+          }
+        },
+        "reconfigure": {
+          "title": "PV-Strang bearbeiten",
+          "description": "Erfasste Geometrie-Abschnitte:\n{history}",
+          "data": {
+            "name": "Name",
+            "power_entity": "Leistungssensor",
+            "azimuth": "Azimut (0 = N, 90 = O, 180 = S, 270 = W)",
+            "tilt": "Neigung",
+            "kwp": "Nennleistung",
+            "curtailment_group_id": "Abregelungsgruppe",
+            "temp_coeff": "Temperaturkoeffizient",
+            "mount_type": "Montage",
+            "energy_entity": "Energiesensor (nur Gegenprüfung)",
+            "string_efficiency": "Abweichender Strang-Wirkungsgrad (0 = Anlagenwert)",
+            "max_power_w": "Maximalleistung des Trackers in W (0 = keine)"
+          }
+        },
+        "geometry": {
+          "title": "Ab wann gilt die neue Geometrie?",
+          "description": "Eine geänderte Neigung oder Ausrichtung ist keine Korrektur, sondern ein neuer Gültigkeitsabschnitt. Altdaten werden weiter gegen die Geometrie gerechnet, die damals wirklich montiert war — sonst bucht die Lernschicht einen saisonal wandernden Montagefehler als Wetter- oder Verschattungseffekt ein.\n\nBisherige Abschnitte:\n{history}",
+          "data": {
+            "geometry_mode": "Gilt",
+            "valid_from": "Gültig ab",
+            "note": "Notiz (z. B. „Halter Winterstellung“)"
+          }
+        }
+      },
+      "error": {
+        "helper_overlaps": "Dieser Helfer fasst Entitäten zusammen, die bereits ein anderer Strang nutzt. Jeden Strang direkt auf seinen physischen Kanal zeigen lassen."
+      }
+    },
+    "curtailment_group": {
+      "title": "Abregelungsgruppe",
+      "initiate_flow": {
+        "user": "Abregelungsgruppe hinzufügen",
+        "reconfigure": "Abregelungsgruppe bearbeiten"
+      },
+      "entry_type": "Abregelungsgruppe",
+      "step": {
+        "user": {
+          "title": "Abregelungsgruppe hinzufügen",
+          "description": "Stränge, die nur gemeinsam abgeregelt werden können — normalerweise eine Gruppe je Wechselrichter. Ein gesetztes Limit ist noch keine Abregelung: es zählt erst, wenn die verfügbare Leistung es tatsächlich erreicht.",
+          "data": {
+            "name": "Name",
+            "limit_entity": "Relatives Limit (%)",
+            "inverter_max_ac_w": "Wechselrichter-Nennleistung AC",
+            "limit_abs_entity": "Absolutes Limit (W)",
+            "battery_coupled": "Speichergekoppelt",
+            "soc_entity": "Batterie-Ladestand",
+            "soc_limit": "Ladestand, ab dem nicht mehr geladen wird",
+            "battery_power_entity": "Batterieleistung",
+            "export_limit_w": "Einspeiselimit (−1 = keins)"
+          }
+        },
+        "reconfigure": {
+          "title": "Abregelungsgruppe bearbeiten",
+          "data": {
+            "name": "Name",
+            "limit_entity": "Relatives Limit (%)",
+            "inverter_max_ac_w": "Wechselrichter-Nennleistung AC",
+            "limit_abs_entity": "Absolutes Limit (W)",
+            "battery_coupled": "Speichergekoppelt",
+            "soc_entity": "Batterie-Ladestand",
+            "soc_limit": "Ladestand, ab dem nicht mehr geladen wird",
+            "battery_power_entity": "Batterieleistung",
+            "export_limit_w": "Einspeiselimit (−1 = keins)"
+          }
+        }
+      },
+      "error": {
+        "nameplate_required": "Ein relatives Limit in Prozent braucht die Wechselrichter-Nennleistung, um in Watt umgerechnet werden zu können."
+      }
+    }
+  },
+  "selector": {
+    "forecast_source": {
+      "options": {
+        "open_meteo": "Open-Meteo (Komponenten, kein API-Schlüssel)",
+        "ha_weather": "Home-Assistant-Wetter-Entität (geringere Qualität)"
+      }
+    },
+    "forecast_model": {
+      "options": {
+        "best_match": "Bestes Modell für den Standort",
+        "icon_seamless": "DWD ICON",
+        "gfs_seamless": "NOAA GFS",
+        "ecmwf_ifs025": "ECMWF IFS",
+        "meteofrance_seamless": "Météo-France",
+        "ukmo_seamless": "UK Met Office",
+        "jma_seamless": "JMA",
+        "gem_seamless": "GEM"
+      }
+    },
+    "economics_mode": {
+      "options": {
+        "net_metering": "Rückwärtslaufender Zähler (Ferraris)",
+        "self_consumption": "Eigenverbrauch plus Einspeisevergütung",
+        "feed_in": "Volleinspeisung"
+      }
+    },
+    "transposition_model": {
+      "options": {
+        "perez-driesse": "Perez-Driesse (Standard)",
+        "haydavies": "Hay-Davies",
+        "isotropic": "Isotrop (Kontroll-Baseline)"
+      }
+    },
+    "mount_type": {
+      "options": {
+        "open_rack": "Freiaufständerung",
+        "close_mount": "Dachparallel",
+        "insulated_back": "Rückseitig gedämmt (Balkon, Fassade)",
+        "open_rack_polymer": "Freiaufständerung, Polymer-Rückseite"
+      }
+    },
+    "geometry_mode": {
+      "options": {
+        "now": "Ab jetzt",
+        "from_date": "Ab einem bestimmten Datum",
+        "correction": "War von Anfang an falsch (letzten Abschnitt korrigieren)"
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "forecast_today": {
+        "name": "Prognose heute"
+      },
+      "forecast_remaining": {
+        "name": "Restprognose heute"
+      },
+      "forecast_tomorrow": {
+        "name": "Prognose morgen"
+      },
+      "forecast_next_hour": {
+        "name": "Prognose nächste Stunde"
+      },
+      "peak_hour_today": {
+        "name": "Beste Stunde heute"
+      },
+      "produced_today": {
+        "name": "Ertrag heute"
+      },
+      "deviation_yesterday": {
+        "name": "Abweichung gestern"
+      },
+      "wmape_7d": {
+        "name": "WMAPE 7 Tage"
+      },
+      "wmape_30d": {
+        "name": "WMAPE 30 Tage"
+      },
+      "bias_7d": {
+        "name": "Bias 7 Tage"
+      },
+      "savings_today": {
+        "name": "Ersparnis heute"
+      },
+      "savings_month": {
+        "name": "Ersparnis diesen Monat"
+      },
+      "savings_total": {
+        "name": "Ersparnis gesamt"
+      },
+      "amortisation": {
+        "name": "Amortisation"
+      },
+      "model_observations": {
+        "name": "Modell-Beobachtungen"
+      },
+      "collector_health": {
+        "name": "Erfassungsabdeckung"
+      },
+      "string_forecast_today": {
+        "name": "Prognose heute"
+      },
+      "string_forecast_remaining": {
+        "name": "Restprognose heute"
+      },
+      "string_forecast_tomorrow": {
+        "name": "Prognose morgen"
+      },
+      "string_potential_now": {
+        "name": "Potenzial diese Stunde"
+      },
+      "string_produced_today": {
+        "name": "Ertrag heute"
+      },
+      "strings_detail": {
+        "name": "Stränge"
+      },
+      "ghi_forecast": {
+        "name": "Einstrahlung Prognose"
+      }
+    }
+  },
+  "services": {
+    "recalculate": {
+      "name": "Neu berechnen",
+      "description": "Neue Einstrahlungsprognose holen und die Vorhersage neu aufbauen.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Anlage",
+          "description": "Welche Anlage neu berechnet wird."
+        }
+      }
+    },
+    "reset_learning": {
+      "name": "Lernen zurücksetzen",
+      "description": "Alle gelernten Korrekturen verwerfen und auf reine Physik zurückfallen. Messdaten bleiben erhalten.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Anlage",
+          "description": "Welche Anlage zurückgesetzt wird."
+        }
+      }
+    },
+    "purge": {
+      "name": "Rohdaten aufräumen",
+      "description": "Fünf-Minuten-Rohdaten älter als die Aufbewahrungsfrist löschen. Stundenwerte, Geometrie und Modellzustand bleiben erhalten.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Anlage",
+          "description": "Welche Anlage aufgeräumt wird."
+        }
+      }
+    },
+    "add_geometry": {
+      "name": "Geometrie-Abschnitt anlegen",
+      "description": "Eine neue Montagegeometrie ab einem Datum erfassen. Bestehende Abschnitte bleiben unangetastet, damit Altdaten weiter korrekt gerechnet werden.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Anlage",
+          "description": "Zu welcher Anlage der Strang gehört."
+        },
+        "string_id": {
+          "name": "Strang-ID",
+          "description": "Subentry-ID des Strangs, sichtbar im Diagnose-Download."
+        },
+        "azimuth": {
+          "name": "Azimut",
+          "description": "0 = Nord, 90 = Ost, 180 = Süd, 270 = West."
+        },
+        "tilt": {
+          "name": "Neigung",
+          "description": "0 = waagerecht, 90 = senkrecht."
+        },
+        "kwp": {
+          "name": "Nennleistung",
+          "description": "Installierte DC-Leistung in kWp."
+        },
+        "temp_coeff": {
+          "name": "Temperaturkoeffizient",
+          "description": "Pmax-Koeffizient in 1/K, z. B. −0,004."
+        },
+        "valid_from": {
+          "name": "Gültig ab",
+          "description": "Beginn des neuen Abschnitts. Standard: jetzt."
+        },
+        "note": {
+          "name": "Notiz",
+          "description": "Freitext, z. B. „Halter Winterstellung“."
+        }
+      }
+    }
+  }
+}
