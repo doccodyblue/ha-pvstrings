@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.3.2
+
+### Fixed
+
+- **The irradiance sensor read `unknown` every night.** A forecast of
+  0.0 W/m2 was tested for truthiness rather than against `None`, so a
+  perfectly good "dark" reading looked exactly like a dead weather source.
+  The power-scale lookup in the collector had the same shape and was
+  tightened alongside it.
+
 ## 1.3.1
 
 Ten defects from an independent multi-agent review, all introduced in the

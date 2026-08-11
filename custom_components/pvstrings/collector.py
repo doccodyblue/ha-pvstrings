@@ -298,7 +298,7 @@ class Collector:
         state = self.hass.states.get(entity_id)
         unit = state.attributes.get("unit_of_measurement") if state else None
         scaled = units.convert(1.0, unit, units.POWER)
-        return scaled if scaled else 1.0
+        return 1.0 if scaled is None else scaled
 
     def _limit_for(self, group_id: str | None, start: int, end: int) -> float | None:
         """Commanded limit in watts, or ``None`` when the group has none.

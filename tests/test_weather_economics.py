@@ -258,3 +258,32 @@ class TestAmortisation:
 
     def test_no_investment_is_already_paid_off(self):
         assert amortisation(0.0, 0.0, 100.0, date(2026, 8, 10)).progress_pct == 100.0
+
+
+class TestZeroIsAValue:
+    """Nought is an answer, absent is not.
+
+    The irradiance sensor read `unknown` every night because a forecast of
+    0.0 W/m2 was tested for truthiness rather than for None -- which looks
+    exactly like a dead weather source.
+    """
+
+    def test_a_zero_forecast_row_is_a_reading(self):
+        rows = parse_open_meteo(
+            {"hourly": {"time": [ISSUED + 3600], "shortwave_radiation": [0.0]}},
+            ISSUED,
+        )
+        assert rows[0].ghi_wm2 == 0.0
+        assert rows[0].ghi_wm2 is not None
+
+    def test_a_missing_forecast_row_is_absent(self):
+        rows = parse_open_meteo(
+            {"hourly": {"time": [ISSUED + 3600], "shortwave_radiation": [None]}},
+            ISSUED,
+        )
+        assert rows[0].ghi_wm2 is None
+
+    def test_the_two_are_distinguishable_downstream(self):
+        """Whatever consumes these must branch on None, never on falsiness."""
+        for value, expected in ((0.0, True), (None, False), (500.0, True)):
+            assert (value is not None) is expected

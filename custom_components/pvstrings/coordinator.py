@@ -464,7 +464,14 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         """
         hour = floor_hour(now_ts)
         rows = self.store.latest_forecast(hour, hour + HOUR, self.plant.forecast_source)
-        forecast = float(rows[0]["ghi_wm2"]) if rows and rows[0]["ghi_wm2"] else None
+        # ``is not None``, not truthiness: at night the forecast is a perfectly
+        # good 0.0 W/m2, and reading that as "no value" makes the sensor go
+        # unknown every evening -- indistinguishable from a broken source.
+        forecast = (
+            float(rows[0]["ghi_wm2"])
+            if rows and rows[0]["ghi_wm2"] is not None
+            else None
+        )
 
         measured = None
         actual = self.store.weather_actual_range(hour, hour + HOUR)
