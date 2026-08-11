@@ -1,5 +1,32 @@
 # PV Strings
 
+> ## ⚠️ Beta — largely unproven in the field
+>
+> This is version 1.1.0 of an integration that has been running on **exactly
+> one installation, for one day**. Treat every number it produces as
+> provisional.
+>
+> **What that means concretely:**
+>
+> - The learning layer needs weeks of data before its corrections mean
+>   anything. Until then you are looking at pure physics plus noise, and the
+>   accuracy sensors will show figures based on a handful of hours.
+> - Only Home Assistant **2026.8** has actually been run. The 2025.9 minimum
+>   was established by checking that the required APIs exist in that release,
+>   not by running it.
+> - The database schema may still change. There is a migration mechanism, but
+>   no upgrade path has been exercised yet, and a future version may ask you
+>   to start over.
+> - Expect breaking changes between minor versions until 2.0.
+>
+> **What is tested:** 249 automated tests cover the physics chain, the learning
+> rules, censoring, storage and the config-flow schemas — including the parts
+> that only fail against a real Home Assistant. The core logic is exercised;
+> the integration as a whole is not battle-hardened.
+>
+> Bug reports are very welcome. Please include the diagnostics download.
+
+
 A Home Assistant integration that forecasts and evaluates PV yield **per string**,
 not per plant.
 
