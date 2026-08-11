@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.2.2
+
+**Update immediately if you are on 1.1.0, 1.2.0 or 1.2.1 — those versions
+collect almost nothing.**
+
+### Fixed
+
+- **The collector flushed the wrong five-minute window.** The fix in 1.1.0 for
+  a delayed-event-loop problem was off by one interval: it persisted the window
+  that was *starting* rather than the one that had just closed. Every interval
+  was therefore written with roughly one second of data, coverage collapsed to
+  about 1/300, and every hour was then discarded as unusable.
+
+  Nothing failed visibly. The collector's own counters kept reporting healthy
+  sample rates and thousands of events, while `observations_used` sat at zero.
+
+  Data recorded under the affected versions cannot be recovered; the intervals
+  contain what was actually captured. Measurements are unaffected from the
+  moment you upgrade.
+
+  The boundary arithmetic is now a plain function in `core/aggregate.py` with
+  tests covering on-time, late and very late callbacks.
+
 ## 1.2.1
 
 ### Fixed

@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from core.aggregate import (
+    closed_interval,
     Sample,
     SampleBuffer,
     hourly_from_5min,
@@ -119,3 +120,36 @@ def test_hourly_fold_partial_hour_reports_partial_coverage():
     folded = hourly_from_5min(rows)
     assert folded["coverage"] == pytest.approx(0.5)
     assert folded["intervals"] == 6
+
+
+class TestClosedInterval:
+    """Which window a flush callback is responsible for.
+
+    Off by one interval here is silent and total: every window gets written
+    with about a second of data, coverage collapses to 1/300, and every hour is
+    then discarded as unusable -- while the collector's counters keep reporting
+    healthy sample rates.
+    """
+
+    BOUNDARY = 1_700_000_100  # on the five-minute grid
+
+    def test_the_interval_that_just_ended_is_returned(self):
+        # The flush is scheduled one second past the boundary.
+        assert closed_interval(self.BOUNDARY + 1) == self.BOUNDARY - 300
+
+    def test_not_the_one_that_is_starting(self):
+        assert closed_interval(self.BOUNDARY + 1) != self.BOUNDARY
+
+    def test_a_slightly_late_callback_still_closes_the_same_window(self):
+        for delay in (1, 5, 30, 120, 299):
+            assert closed_interval(self.BOUNDARY + delay) == self.BOUNDARY - 300, delay
+
+    def test_a_callback_a_full_interval_late_moves_on(self):
+        assert closed_interval(self.BOUNDARY + 301) == self.BOUNDARY
+
+    def test_exactly_on_the_boundary_closes_the_previous_window(self):
+        assert closed_interval(self.BOUNDARY) == self.BOUNDARY - 600
+
+    def test_result_is_always_on_the_grid(self):
+        for offset in range(0, 900, 37):
+            assert closed_interval(self.BOUNDARY + offset) % 300 == 0

@@ -24,6 +24,21 @@ def interval_start(ts_utc: float, seconds: int = INTERVAL_SECONDS) -> int:
     return int(math.floor(ts_utc / seconds) * seconds)
 
 
+def closed_interval(callback_ts: float, seconds: int = INTERVAL_SECONDS) -> int:
+    """Start of the interval that has just ended when a flush fires.
+
+    The flush is scheduled a moment *after* a boundary, so ``callback_ts``
+    already sits inside the interval that is only beginning.  The one to
+    persist starts a full interval earlier.
+
+    Getting this off by one interval is silent and total: every window is then
+    written with about a second of data, coverage collapses to 1/300, and every
+    hour is discarded as unusable -- while the collector's own counters keep
+    reporting healthy sample rates.
+    """
+    return int(math.floor((callback_ts - 1) / seconds) * seconds) - seconds
+
+
 def interval_mid(ts_utc: int, seconds: int = INTERVAL_SECONDS) -> float:
     """Midpoint of the interval that starts at ``ts_utc``.
 

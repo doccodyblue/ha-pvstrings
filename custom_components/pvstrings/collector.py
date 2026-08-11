@@ -33,6 +33,7 @@ from homeassistant.util import dt as dt_util
 
 from .core.aggregate import (
     INTERVAL_SECONDS,
+    closed_interval,
     SampleBuffer,
     integrate,
     interval_start,
@@ -214,26 +215,23 @@ class Collector:
         )
 
     async def _handle_flush(self, now: datetime) -> None:
-        """Close the interval this callback was scheduled for.
+        """Persist the interval that just closed, plus any the loop ran past.
 
-        Deriving the boundary from ``utcnow()`` instead loses an interval
-        whenever the event loop runs late past the next boundary -- the skipped
-        window is then trimmed out of the buffers and gone.  Taking the
-        scheduled time and catching up any boundaries missed in between makes a
-        delayed loop cost latency rather than data.
+        The catch-up is bounded by what the buffers still hold; asking for
+        older windows would only write empty ones.
         """
         self._cancel_flush = None
         self._schedule_next_flush()
 
-        scheduled = interval_start(now.timestamp() - 1)
-        current = interval_start(dt_util.utcnow().timestamp())
-        boundary = scheduled
-        while boundary <= current - INTERVAL_SECONDS:
-            if boundary > (self.stats.last_flush_ts or -1):
-                await self.async_flush(boundary)
+        last_closed = closed_interval(now.timestamp())
+        previous = self.stats.last_flush_ts
+        first = last_closed if previous is None else previous + INTERVAL_SECONDS
+        first = max(first, last_closed - BUFFER_RETENTION_S + INTERVAL_SECONDS)
+
+        boundary = first
+        while boundary <= last_closed:
+            await self.async_flush(boundary)
             boundary += INTERVAL_SECONDS
-        if scheduled > (self.stats.last_flush_ts or -1):
-            await self.async_flush(scheduled)
 
     async def async_flush(self, window_start: int) -> None:
         """Close and persist the interval starting at ``window_start``."""
