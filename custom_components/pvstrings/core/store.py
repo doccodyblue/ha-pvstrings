@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Sequence
 
-from .config import GeometrySegment
+from .config import INTERVAL_SECONDS, GeometrySegment
 
 HOUR = 3600
 from .quality import VALUE_MEASURED
@@ -250,6 +250,7 @@ class Store:
 
     def _migrate(self) -> None:
         assert self._conn is not None
+        pending: int | None = None
         with self._lock:
             current = self._conn.execute("PRAGMA user_version").fetchone()[0]
             self._conn.executescript(_SCHEMA)
@@ -257,7 +258,18 @@ class Store:
                 _LOGGER.debug(
                     "pvstrings schema %s -> %s at %s", current, SCHEMA_VERSION, self.path
                 )
+                pending = current
                 self._conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+        if pending is not None and pending < 2:
+            # plant_hourly became the source for whole-hour grid figures, and
+            # those are read over the whole period since commissioning.  Without
+            # this backfill an upgrading install would read zero export for all
+            # of its history and its lifetime savings would jump.
+            folded = self.materialise_plant_hourly()
+            if folded:
+                _LOGGER.info(
+                    "pvstrings: folded %s existing hours into plant_hourly", folded
+                )
 
     # -- geometry ---------------------------------------------------------- #
 
@@ -400,44 +412,65 @@ class Store:
             (string_id, start_ts, end_ts),
         )
 
+    def _hour_split(self, start_ts: int, end_ts: int) -> tuple[int, int]:
+        """Whole-hour span inside a window, as ``(first_hour, last_hour_end)``.
+
+        ``last_hour_end <= first_hour`` means the window contains no whole hour
+        at all -- the caller must then read raw rows over the *whole* window
+        and not treat the ends as two separate pieces, or a sub-hour window
+        gets counted twice.
+        """
+        return -(-start_ts // HOUR) * HOUR, end_ts // HOUR * HOUR
+
+    def _raw_energy_wh(
+        self, start_ts: int, end_ts: int, string_id: str | None
+    ) -> float:
+        if end_ts <= start_ts:
+            return 0.0
+        sql = (
+            "SELECT COALESCE(SUM(energy_wh), 0) AS wh FROM string_5min "
+            "WHERE ts_utc >= ? AND ts_utc < ?"
+        )
+        params: list[Any] = [start_ts, end_ts]
+        if string_id:
+            sql += " AND string_id = ?"
+            params.append(string_id)
+        return float(self._query(sql, params)[0]["wh"])
+
     def energy_kwh_between(
         self, start_ts: int, end_ts: int, string_id: str | None = None
     ) -> float:
         """Produced energy in a window.
 
-        Whole hours come from ``string_hourly`` and only the ragged ends from
-        the five-minute rows.  That is what lets raw data be discarded without
-        the lifetime totals quietly shrinking -- they are read over the whole
-        period since commissioning.
+        Whole hours come from ``string_hourly`` where that row exists, so raw
+        data can be discarded without the lifetime totals shrinking.  Hours
+        that have *not* been folded up yet still fall back to the raw rows --
+        treating a missing aggregate as zero would make today's production
+        collapse whenever the learning cycle stalls, while the collector keeps
+        recording perfectly good data.
         """
-        first_hour = -(-start_ts // HOUR) * HOUR      # ceil onto the hour grid
-        last_hour_end = end_ts // HOUR * HOUR
-        total = 0.0
+        first_hour, last_hour_end = self._hour_split(start_ts, end_ts)
+        if last_hour_end <= first_hour:
+            return self._raw_energy_wh(start_ts, end_ts, string_id) / 1000.0
 
-        if last_hour_end > first_hour:
-            sql = (
-                "SELECT COALESCE(SUM(energy_kwh), 0) AS kwh FROM string_hourly "
-                "WHERE ts_utc >= ? AND ts_utc < ?"
-            )
-            params: list[Any] = [first_hour, last_hour_end]
-            if string_id:
-                sql += " AND string_id = ?"
-                params.append(string_id)
-            total += float(self._query(sql, params)[0]["kwh"])
+        sql = (
+            "SELECT ts_utc, COALESCE(SUM(energy_kwh), 0) AS kwh FROM string_hourly "
+            "WHERE ts_utc >= ? AND ts_utc < ?"
+        )
+        params: list[Any] = [first_hour, last_hour_end]
+        if string_id:
+            sql += " AND string_id = ?"
+            params.append(string_id)
+        sql += " GROUP BY ts_utc"
+        folded = {int(r["ts_utc"]): float(r["kwh"]) for r in self._query(sql, params)}
 
-        for lo, hi in ((start_ts, min(first_hour, end_ts)),
-                       (max(last_hour_end, start_ts), end_ts)):
-            if hi <= lo:
-                continue
-            sql = (
-                "SELECT COALESCE(SUM(energy_wh), 0) AS wh FROM string_5min "
-                "WHERE ts_utc >= ? AND ts_utc < ?"
-            )
-            params = [lo, hi]
-            if string_id:
-                sql += " AND string_id = ?"
-                params.append(string_id)
-            total += float(self._query(sql, params)[0]["wh"]) / 1000.0
+        total = sum(folded.values())
+        for hour in range(first_hour, last_hour_end, HOUR):
+            if hour not in folded:
+                total += self._raw_energy_wh(hour, hour + HOUR, string_id) / 1000.0
+
+        total += self._raw_energy_wh(start_ts, first_hour, string_id) / 1000.0
+        total += self._raw_energy_wh(last_hour_end, end_ts, string_id) / 1000.0
         return total
 
     def update_curtailment_flags(
@@ -674,81 +707,90 @@ class Store:
                 payload,
             )
 
-    def materialise_plant_hourly(self, start_ts: int, end_ts: int) -> int:
+    def materialise_plant_hourly(
+        self, start_ts: int | None = None, end_ts: int | None = None
+    ) -> int:
         """Fold plant state into hourly energies so the raw rows can go.
 
         Import and export are accumulated separately rather than netted: a
-        house that draws 500 W for half an hour and exports 500 W for the other
-        half has a net of zero and two very different tariff outcomes.
+        house drawing 500 W for half an hour and exporting 500 W for the other
+        half nets to zero and has two very different tariff outcomes.
+
+        With no bounds it folds everything present, which is what the schema
+        migration needs -- an install upgrading from schema 1 has months of
+        plant state and no aggregate, and reading that as zero export would
+        silently rewrite its lifetime savings.
         """
-        payload: list[tuple[Any, ...]] = []
-        hours_ = 300.0 / 3600.0
-        for hour in range(start_ts // HOUR * HOUR, end_ts, HOUR):
-            rows = self._query(
-                "SELECT grid_power_w, house_load_w, battery_soc_pct "
-                "FROM plant_state_5min WHERE ts_utc >= ? AND ts_utc < ?",
-                (hour, hour + HOUR),
+        where, params = "", []
+        if start_ts is not None:
+            where += " AND ts_utc >= ?"
+            params.append(start_ts // HOUR * HOUR)
+        if end_ts is not None:
+            where += " AND ts_utc < ?"
+            params.append(end_ts)
+        hours_ = INTERVAL_SECONDS / 3600.0 / 1000.0
+        with self._tx() as conn:
+            cursor = conn.execute(
+                f"""
+                INSERT INTO plant_hourly
+                    (ts_utc, imported_kwh, exported_kwh, house_kwh, battery_soc_pct)
+                SELECT ts_utc / {HOUR} * {HOUR} AS hour,
+                       SUM(CASE WHEN grid_power_w > 0 THEN grid_power_w ELSE 0 END) * ?,
+                       -SUM(CASE WHEN grid_power_w < 0 THEN grid_power_w ELSE 0 END) * ?,
+                       SUM(COALESCE(house_load_w, 0)) * ?,
+                       AVG(battery_soc_pct)
+                  FROM plant_state_5min
+                 WHERE 1=1{where}
+                 GROUP BY hour
+                ON CONFLICT (ts_utc) DO UPDATE SET
+                    imported_kwh    = excluded.imported_kwh,
+                    exported_kwh    = excluded.exported_kwh,
+                    house_kwh       = excluded.house_kwh,
+                    battery_soc_pct = excluded.battery_soc_pct
+                """,
+                (hours_, hours_, hours_, *params),
             )
-            if not rows:
-                continue
-            grid = [r["grid_power_w"] for r in rows if r["grid_power_w"] is not None]
-            house = [r["house_load_w"] for r in rows if r["house_load_w"] is not None]
-            soc = [r["battery_soc_pct"] for r in rows if r["battery_soc_pct"] is not None]
-            payload.append(
-                (
-                    hour,
-                    sum(v for v in grid if v > 0) * hours_ / 1000.0 if grid else None,
-                    -sum(v for v in grid if v < 0) * hours_ / 1000.0 if grid else None,
-                    sum(house) * hours_ / 1000.0 if house else None,
-                    sum(soc) / len(soc) if soc else None,
-                )
-            )
-        if payload:
-            with self._tx() as conn:
-                conn.executemany(
-                    "INSERT INTO plant_hourly "
-                    "(ts_utc, imported_kwh, exported_kwh, house_kwh, battery_soc_pct) "
-                    "VALUES (?, ?, ?, ?, ?) "
-                    "ON CONFLICT (ts_utc) DO UPDATE SET "
-                    "  imported_kwh = excluded.imported_kwh, "
-                    "  exported_kwh = excluded.exported_kwh, "
-                    "  house_kwh = excluded.house_kwh, "
-                    "  battery_soc_pct = excluded.battery_soc_pct",
-                    payload,
-                )
-        return len(payload)
+            return cursor.rowcount
+
+    def _raw_grid_kwh(self, start_ts: int, end_ts: int) -> tuple[float, float]:
+        if end_ts <= start_ts:
+            return 0.0, 0.0
+        rows = self._query(
+            "SELECT grid_power_w FROM plant_state_5min "
+            "WHERE ts_utc >= ? AND ts_utc < ? AND grid_power_w IS NOT NULL",
+            (start_ts, end_ts),
+        )
+        scale = INTERVAL_SECONDS / 3600.0 / 1000.0
+        return (
+            sum(r["grid_power_w"] for r in rows if r["grid_power_w"] > 0) * scale,
+            -sum(r["grid_power_w"] for r in rows if r["grid_power_w"] < 0) * scale,
+        )
 
     def grid_energy_kwh(self, start_ts: int, end_ts: int) -> tuple[float, float]:
-        """Imported and exported kWh, hourly where available.
+        """Imported and exported kWh, hourly where the aggregate exists."""
+        first_hour, last_hour_end = self._hour_split(start_ts, end_ts)
+        if last_hour_end <= first_hour:
+            return self._raw_grid_kwh(start_ts, end_ts)
 
-        Same split as :meth:`energy_kwh_between`: whole hours from the
-        aggregate, ragged ends from the raw rows.
-        """
-        first_hour = -(-start_ts // HOUR) * HOUR
-        last_hour_end = end_ts // HOUR * HOUR
-        imported = exported = 0.0
+        rows = self._query(
+            "SELECT ts_utc, imported_kwh, exported_kwh FROM plant_hourly "
+            "WHERE ts_utc >= ? AND ts_utc < ?",
+            (first_hour, last_hour_end),
+        )
+        folded = {int(r["ts_utc"]): r for r in rows}
+        imported = sum(float(r["imported_kwh"] or 0.0) for r in rows)
+        exported = sum(float(r["exported_kwh"] or 0.0) for r in rows)
 
-        if last_hour_end > first_hour:
-            row = self._query(
-                "SELECT COALESCE(SUM(imported_kwh), 0) AS i, "
-                "COALESCE(SUM(exported_kwh), 0) AS e FROM plant_hourly "
-                "WHERE ts_utc >= ? AND ts_utc < ?",
-                (first_hour, last_hour_end),
-            )[0]
-            imported += float(row["i"]); exported += float(row["e"])
+        for hour in range(first_hour, last_hour_end, HOUR):
+            if hour not in folded:
+                i, e = self._raw_grid_kwh(hour, hour + HOUR)
+                imported += i
+                exported += e
 
-        hours_ = 300.0 / 3600.0
-        for lo, hi in ((start_ts, min(first_hour, end_ts)),
-                       (max(last_hour_end, start_ts), end_ts)):
-            if hi <= lo:
-                continue
-            rows = self._query(
-                "SELECT grid_power_w FROM plant_state_5min "
-                "WHERE ts_utc >= ? AND ts_utc < ? AND grid_power_w IS NOT NULL",
-                (lo, hi),
-            )
-            imported += sum(r["grid_power_w"] for r in rows if r["grid_power_w"] > 0) * hours_ / 1000.0
-            exported += -sum(r["grid_power_w"] for r in rows if r["grid_power_w"] < 0) * hours_ / 1000.0
+        for lo, hi in ((start_ts, first_hour), (last_hour_end, end_ts)):
+            i, e = self._raw_grid_kwh(lo, hi)
+            imported += i
+            exported += e
         return imported, exported
 
     # -- forecast log ------------------------------------------------------ #
@@ -933,6 +975,7 @@ class Store:
         raw_days: int = 90,
         issue_days: int = 14,
         exclusion_days: int = 90,
+        shading_days: int = 730,
     ) -> dict[str, int]:
         """Tiered retention: condense first, then discard.
 
@@ -976,13 +1019,18 @@ class Store:
             # Forecast issues: past the verification window keep only the run
             # that came closest to the target hour -- the best estimate of what
             # the irradiance actually was.
+            # Keep the run closest to the target hour -- the best estimate of
+            # what the irradiance actually was.  Ordering by ABS() rather than
+            # filtering to horizon >= 0 matters: an hour that was already past
+            # when it was first fetched has *only* negative horizons, the
+            # subquery would return NULL, "<> NULL" is NULL, and every row for
+            # that hour would survive for ever.
             cur = conn.execute(
                 "DELETE FROM weather_forecast WHERE ts_utc < ? AND issued_at_utc <> ("
                 "  SELECT f.issued_at_utc FROM weather_forecast f"
                 "   WHERE f.ts_utc = weather_forecast.ts_utc"
                 "     AND f.source = weather_forecast.source"
-                "     AND f.horizon_h >= 0"
-                "   ORDER BY f.horizon_h ASC LIMIT 1)",
+                "   ORDER BY ABS(f.horizon_h) ASC, f.issued_at_utc DESC LIMIT 1)",
                 (issue_cut,),
             )
             deleted["weather_forecast_issues"] = cur.rowcount
@@ -1003,6 +1051,25 @@ class Store:
                 (now_ts - exclusion_days * 86400,),
             )
             deleted["exclusions"] = cur.rowcount
+
+            # Shading observations are raw material for an analysis that needs
+            # a year of them, so they get a long horizon of their own rather
+            # than the raw one -- but not an unbounded life.
+            cur = conn.execute(
+                "DELETE FROM shading_obs WHERE ts_utc < ?",
+                (now_ts - shading_days * 86400,),
+            )
+            deleted["shading_obs"] = cur.rowcount
+
+            # Backstop: nothing may outlive every rule above.  The condensing
+            # rules keep one row per target hour indefinitely, which is the
+            # point, but only within a horizon.
+            hard_cut = now_ts - max(shading_days, 2 * 365) * 86400
+            for table in ("weather_forecast", "forecast_log"):
+                cur = conn.execute(
+                    f"DELETE FROM {table} WHERE ts_utc < ?", (hard_cut,)
+                )
+                deleted[f"{table}_expired"] = cur.rowcount
 
         return deleted
 

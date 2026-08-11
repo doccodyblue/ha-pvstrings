@@ -608,15 +608,15 @@ class _ReloadingSubentryFlow(ConfigSubentryFlow):
     """Shared behaviour: adding a subentry must rebuild the plant."""
 
     def _created(self, title: str, data: dict[str, Any]) -> SubentryFlowResult:
-        """Finish a subentry and rebuild the plant.
+        """Finish a subentry.
 
-        Home Assistant reloads the parent entry when a subentry is
-        *reconfigured*, but not when one is *added*.  Without this the new
-        string exists in the registry while the coordinator still runs on the
-        old plant configuration -- its sensors come up unavailable and the
-        plant total silently omits it.
+        No explicit reload here.  ``async_add_subentry`` goes through
+        ``_async_update_entry``, which notifies the update listeners, and this
+        integration registers one -- so the reload already happens, and after
+        the subentry exists rather than before it.  Scheduling another one here
+        rebuilt the plant twice per added string: two teardowns, two sets of
+        entities going unavailable, and the collector losing its buffers twice.
         """
-        self.hass.config_entries.async_schedule_reload(self._get_entry().entry_id)
         return self.async_create_entry(title=title, data=data)
 
 

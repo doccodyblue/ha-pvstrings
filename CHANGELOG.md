@@ -1,5 +1,45 @@
 # Changelog
 
+## 1.3.1
+
+Ten defects from an independent multi-agent review, all introduced in the
+changes of the previous day. **Anyone on 1.3.0 should update**: two of them
+distort energy and money figures.
+
+### Fixed
+
+- **Unfolded hours read as zero production.** Whole hours came exclusively
+  from the hourly aggregate, which only the learning cycle writes. If learning
+  stalled, or after an outage longer than its 48-hour catch-up window, today's
+  production and every savings figure collapsed toward zero while the
+  collector kept recording correctly. Hours without an aggregate now fall back
+  to the raw rows.
+- **Upgrades read zero grid export.** `plant_hourly` was introduced in 1.3.0
+  and never backfilled, so an existing install saw no export for its whole
+  history and its lifetime savings jumped upward. The schema migration now
+  folds the existing plant state.
+- **Sub-hour windows were counted twice** wherever local midnight is off the
+  UTC hour grid (India, Adelaide, Newfoundland). The two ragged ends of a
+  window overlapped when it contained no whole hour.
+- **kW power sensors were stored a thousand times too small.** The live plant
+  power sensor converted units, the collector did not, so everything derived
+  from stored data was wrong while the live reading looked correct.
+- **Hours beyond the source's horizon became 0.00 kWh** instead of unknown, so
+  the day-after-tomorrow sensor read a confident zero on any weather entity
+  publishing fewer than 72 hours.
+- **The collector could fall silent after a backwards clock step**, which is
+  routine on hardware without an RTC once NTP corrects the boot time.
+- **Adding a string reloaded the integration twice**, and the first reload ran
+  before the new subentry existed.
+- **Analysis-only forecast hours were never pruned** -- a SQL NULL comparison
+  meant every row for such an hour survived for ever.
+- **`shading_obs` lost its retention entirely** in the 1.3.0 rewrite. It now
+  has a long horizon of its own (two years), since it is raw material for an
+  analysis that needs a year of data.
+- **A partial plant power sum was published as a valid measurement.** With
+  some strings unavailable it now goes unavailable rather than letting energy
+  integrations quietly accumulate a too-low total.
+
 ## 1.3.0
 
 ### Added

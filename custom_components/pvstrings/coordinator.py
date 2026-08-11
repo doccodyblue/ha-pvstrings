@@ -96,17 +96,27 @@ class PvStringsData:
     def plant_between(self, start_ts: int, end_ts: int) -> float:
         return sum(value for ts, value in self.plant_hourly if start_ts <= ts < end_ts)
 
+    def plant_between_or_none(self, start_ts: int, end_ts: int) -> float | None:
+        """Sum, or ``None`` when the source covered none of the window.
+
+        Zero and "not forecast" are different answers, and a day sensor that
+        confidently reports 0.00 kWh because the weather entity only publishes
+        24 hours is worse than one that admits it does not know.
+        """
+        hours = [v for ts, v in self.plant_hourly if start_ts <= ts < end_ts]
+        return sum(hours) if hours else None
+
     @property
     def today_kwh(self) -> float:
         return self.plant_between(self.day_start, self.day_end)
 
     @property
-    def tomorrow_kwh(self) -> float:
-        return self.plant_between(self.tomorrow_start, self.tomorrow_end)
+    def tomorrow_kwh(self) -> float | None:
+        return self.plant_between_or_none(self.tomorrow_start, self.tomorrow_end)
 
     @property
-    def day_after_kwh(self) -> float:
-        return self.plant_between(self.day_after_start, self.day_after_end)
+    def day_after_kwh(self) -> float | None:
+        return self.plant_between_or_none(self.day_after_start, self.day_after_end)
 
     def remaining_kwh(self, now_ts: int) -> float:
         return self.plant_between(floor_hour(now_ts), self.day_end)

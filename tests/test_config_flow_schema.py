@@ -192,7 +192,14 @@ class TestReloadStrategy:
         )
         assert "async_update_and_abort" in called
 
-    def test_subentry_creation_still_schedules_its_own_reload(self):
-        """No listener fires when a subentry is added, so that path must."""
+    def test_subentry_creation_does_not_schedule_a_second_reload(self):
+        """``async_add_subentry`` already notifies the update listeners.
+
+        Verified against Home Assistant 2026.8: it routes through
+        ``_async_update_entry``, whose contract is that listeners fire when the
+        entry changed.  Adding an explicit reload on top rebuilt the plant
+        twice per added string -- and the explicit one ran *before* the
+        subentry existed, so the first rebuild saw the old configuration.
+        """
         source = FLOW.read_text()
-        assert "async_schedule_reload" in source
+        assert "async_schedule_reload" not in source

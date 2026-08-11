@@ -735,3 +735,41 @@ class TestBiasIgnoresHindsight:
         assert engine.ghi_bias.factor(noon_local, 1.0) == pytest.approx(1.0), (
             "the 0-6h bucket must not be trained on hindsight"
         )
+
+
+class TestUncoveredHours:
+    """A source that stops short must produce a gap, not a confident zero.
+
+    Home Assistant weather entities commonly publish 24 or 48 hours. With a
+    72-hour window the missing hours used to become 0 W/m2 and the day-after
+    sensor read 0.00 kWh for ever, next to a correct today.
+    """
+
+    def test_hours_the_source_never_delivered_are_omitted(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        clear_sky_forecast(engine, seeded_store, DAY_START, DAY_START, 24)
+        rows = engine.forecast(DAY_START, hours=72, start_ts=DAY_START)
+        hours = {row.ts_utc for row in rows}
+        assert hours, "the covered day must still be forecast"
+        assert max(hours) < DAY_START + 24 * HOUR, (
+            "hours beyond the source's horizon must not be emitted"
+        )
+
+    def test_a_full_window_is_unaffected(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        clear_sky_forecast(engine, seeded_store, DAY_START, DAY_START, 72)
+        rows = engine.forecast(DAY_START, hours=72, start_ts=DAY_START)
+        hours = {row.ts_utc for row in rows}
+        assert len(hours) == 72
+
+    def test_night_hours_inside_the_horizon_are_kept_as_zero(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """Dark is a real answer; absent is not."""
+        clear_sky_forecast(engine, seeded_store, DAY_START, DAY_START, 24)
+        rows = engine.forecast(DAY_START, hours=24, start_ts=DAY_START)
+        midnight = [r for r in rows if r.ts_utc == DAY_START]
+        assert midnight
+        assert all(r.potential_kwh == pytest.approx(0.0) for r in midnight)

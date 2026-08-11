@@ -227,6 +227,18 @@ class Collector:
         previous = self.stats.last_flush_ts
         first = last_closed if previous is None else previous + INTERVAL_SECONDS
         first = max(first, last_closed - BUFFER_RETENTION_S + INTERVAL_SECONDS)
+        if first > last_closed:
+            # The recorded position is ahead of the scheduled boundary, which
+            # happens when the clock is stepped backwards -- common on hardware
+            # without an RTC once NTP corrects the boot time.  Trusting the
+            # stale marker would make the flush a silent no-op with no error
+            # path, so the scheduled window wins.
+            _LOGGER.debug(
+                "pvstrings: flush marker %s is ahead of boundary %s, resetting",
+                previous,
+                last_closed,
+            )
+            first = last_closed
 
         boundary = first
         while boundary <= last_closed:
@@ -275,6 +287,19 @@ class Collector:
     # row construction
     # ------------------------------------------------------------------ #
 
+    def _power_scale(self, entity_id: str) -> float:
+        """Factor turning this entity's readings into watts.
+
+        The collector integrates raw buffer samples, so unit handling has to
+        happen here too -- otherwise an inverter reporting kW is stored three
+        orders of magnitude too small while the live power sensor, which does
+        convert, looks perfectly correct.
+        """
+        state = self.hass.states.get(entity_id)
+        unit = state.attributes.get("unit_of_measurement") if state else None
+        scaled = units.convert(1.0, unit, units.POWER)
+        return scaled if scaled else 1.0
+
     def _limit_for(self, group_id: str | None, start: int, end: int) -> float | None:
         """Commanded limit in watts, or ``None`` when the group has none.
 
@@ -296,7 +321,7 @@ class Collector:
                     raw = last_of(buffer.samples, start, end)
                 value = group.limit_watts(raw, absolute=True)
                 if value is not None:
-                    return value
+                    return value * self._power_scale(group.limit_abs_entity)
 
         if group.limit_entity:
             buffer = self._buffers.get(group.limit_entity)
@@ -317,6 +342,10 @@ class Collector:
             energy_wh, power_mean, coverage, count, _peak = integrate(
                 samples, start, end, self.plant.watchdog_seconds
             )
+            scale = self._power_scale(string.power_entity)
+            if scale != 1.0:
+                energy_wh = None if energy_wh is None else energy_wh * scale
+                power_mean = None if power_mean is None else power_mean * scale
             limit = self._limit_for(string.curtailment_group_id, start, end)
             rows.append(
                 (

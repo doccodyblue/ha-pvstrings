@@ -153,3 +153,37 @@ class TestClosedInterval:
     def test_result_is_always_on_the_grid(self):
         for offset in range(0, 900, 37):
             assert closed_interval(self.BOUNDARY + offset) % 300 == 0
+
+
+class TestFlushMarkerAhead:
+    """A clock stepped backwards must not silence the collector.
+
+    Hardware without an RTC boots with a wrong time and NTP corrects it later.
+    If the recorded flush position is then ahead of the scheduled boundary, a
+    catch-up loop that only walks forwards writes nothing at all -- with no
+    error, no exception and healthy-looking sample counters.
+    """
+
+    BOUNDARY = 1_700_000_100
+
+    def _range(self, last_flush_ts, callback_ts, retention=600):
+        last_closed = closed_interval(callback_ts)
+        first = last_closed if last_flush_ts is None else last_flush_ts + 300
+        first = max(first, last_closed - retention + 300)
+        if first > last_closed:
+            first = last_closed
+        return [b for b in range(first, last_closed + 1, 300)]
+
+    def test_normal_progress_writes_one_window(self):
+        assert self._range(self.BOUNDARY - 600, self.BOUNDARY + 1) == [self.BOUNDARY - 300]
+
+    def test_a_marker_from_the_future_still_writes(self):
+        windows = self._range(self.BOUNDARY + 1800, self.BOUNDARY + 1)
+        assert windows == [self.BOUNDARY - 300], "must not fall silent"
+
+    def test_a_gap_is_caught_up_within_the_buffer(self):
+        windows = self._range(self.BOUNDARY - 3600, self.BOUNDARY + 1)
+        assert windows == [self.BOUNDARY - 600, self.BOUNDARY - 300]
+
+    def test_first_run_writes_exactly_one_window(self):
+        assert self._range(None, self.BOUNDARY + 1) == [self.BOUNDARY - 300]

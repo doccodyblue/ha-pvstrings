@@ -272,6 +272,12 @@ class ForecastEngine:
             fc_dni = fc_dni * factors
             fc_dhi = fc_dhi * factors
 
+        # An hour the source never delivered is unknown, not dark.  Turning
+        # NaN into 0 W/m2 makes a short-horizon weather entity produce a
+        # confident 0.00 kWh for the day after tomorrow, sitting next to a
+        # correct today and indistinguishable from a genuinely dark forecast.
+        out["covered"] = np.isfinite(fc_ghi)
+
         for name, forecast, cs_column in (
             ("ghi", fc_ghi, "cs_ghi"),
             ("dni", fc_dni, "cs_dni"),
@@ -343,7 +349,10 @@ class ForecastEngine:
     ) -> list[HourForecast]:
         """Run physics for every string and fold to hourly energies."""
         hour_keys = conditions["hour"].to_numpy()
-        unique_hours = sorted({int(hour) for hour in hour_keys})
+        covered = conditions.groupby("hour")["covered"].any()
+        unique_hours = sorted(
+            int(hour) for hour in {int(h) for h in hour_keys} if covered.get(hour, True)
+        )
         classes = self._classify_hours(conditions)
 
         results: list[HourForecast] = []

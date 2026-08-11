@@ -93,3 +93,22 @@ class TestPower:
 
     def test_canonical_unit(self):
         assert units.canonical_unit(units.POWER) == "W"
+
+
+class TestCollectorScaling:
+    """The collector integrates raw buffer samples, so it needs the same unit
+    handling as everything else -- otherwise a kW inverter is stored three
+    orders of magnitude too small while the live power sensor, which does
+    convert, looks perfectly correct."""
+
+    def test_watt_entities_scale_by_one(self):
+        assert units.convert(1.0, "W", units.POWER) == pytest.approx(1.0)
+
+    def test_kilowatt_entities_scale_by_a_thousand(self):
+        assert units.convert(1.0, "kW", units.POWER) == pytest.approx(1000.0)
+
+    def test_unknown_unit_leaves_the_reading_alone(self):
+        assert units.convert(1.0, "Zorkmid", units.POWER) == pytest.approx(1.0)
+
+    def test_missing_unit_leaves_the_reading_alone(self):
+        assert units.convert(1.0, None, units.POWER) == pytest.approx(1.0)

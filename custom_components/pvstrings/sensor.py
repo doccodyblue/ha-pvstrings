@@ -132,7 +132,9 @@ PLANT_SENSORS: tuple[PlantSensorDescription, ...] = (
         state_class=SensorStateClass.TOTAL,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         suggested_display_precision=2,
-        value_fn=lambda data, _c: round(data.tomorrow_kwh, 3),
+        value_fn=lambda data, _c: (
+            None if data.tomorrow_kwh is None else round(data.tomorrow_kwh, 3)
+        ),
         attrs_fn=lambda data, _c: {
             "forecast": _forecast_attribute(
                 [
@@ -150,7 +152,9 @@ PLANT_SENSORS: tuple[PlantSensorDescription, ...] = (
         state_class=SensorStateClass.TOTAL,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         suggested_display_precision=2,
-        value_fn=lambda data, _c: round(data.day_after_kwh, 3),
+        value_fn=lambda data, _c: (
+            None if data.day_after_kwh is None else round(data.day_after_kwh, 3)
+        ),
         attrs_fn=lambda data, _c: {
             "forecast": _forecast_attribute(
                 [
@@ -613,8 +617,16 @@ class PlantPowerSensor(PvStringsEntity):
                 value, state.attributes.get("unit_of_measurement"), units.POWER
             )
             seen = True
-        self._value = round(total, 1) if seen else None
+        # A partial sum is wrong data, not a small reading.  Publishing it as
+        # a valid measurement lets any Riemann-sum helper or Energy dashboard
+        # integrate the dip into a permanently lower total, and the history
+        # looks exactly like the plant genuinely dropping out.
+        self._value = round(total, 1) if seen and not missing else None
         self._missing = missing
+
+    @property
+    def available(self) -> bool:
+        return super().available and self._value is not None
 
     @property
     def native_value(self) -> float | None:
