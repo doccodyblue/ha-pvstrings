@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.2.0
+
+### Added
+
+- **Plant-level power and potential sensors.** The per-string view is what the
+  integration is *for*, but the sum is what you act on when deciding whether to
+  run an appliance now. `Power now` follows the string sensors directly rather
+  than the fifteen-minute coordinator cycle, because a stale power reading is
+  useless for that decision. `Potential this hour` is the matching forecast.
+- Power readings are normalised like every other quantity, so a string sensor
+  reporting kW is no longer summed as if it were watts.
+
+`Power now` sums the configured strings rather than reading a house meter --
+that keeps it comparable with the forecast, which covers exactly those strings
+and nothing else.
+
 ## 1.1.0
 
 **Upgrade recommended.** 1.0.0 contains five defects found in an independent

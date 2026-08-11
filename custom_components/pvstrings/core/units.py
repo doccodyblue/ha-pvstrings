@@ -21,6 +21,7 @@ IRRADIANCE: Final = "irradiance"
 ILLUMINANCE: Final = "illuminance"
 PRECIPITATION: Final = "precipitation"
 RATIO: Final = "ratio"
+POWER: Final = "power"
 
 #: Multiplicative factors onto the canonical unit, keyed by lowercased symbol.
 _FACTORS: Final[dict[str, dict[str, float]]] = {
@@ -54,6 +55,7 @@ _FACTORS: Final[dict[str, dict[str, float]]] = {
         "in": 25.4,
         "in/h": 25.4,
     },
+    POWER: {"w": 1.0, "kw": 1000.0, "mw": 1_000_000.0, "va": 1.0, "kva": 1000.0},
     RATIO: {"%": 1.0},
 }
 
@@ -94,5 +96,6 @@ def canonical_unit(quantity: str) -> str:
         IRRADIANCE: "W/m²",
         ILLUMINANCE: "lx",
         PRECIPITATION: "mm",
+        POWER: "W",
         RATIO: "%",
     }[quantity]

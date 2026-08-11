@@ -80,3 +80,16 @@ class TestRobustness:
     def test_canonical_units_are_named(self):
         assert units.canonical_unit(units.SPEED) == "m/s"
         assert units.canonical_unit(units.TEMPERATURE) == "°C"
+
+
+class TestPower:
+    def test_watts_pass_through(self):
+        assert units.convert(1625.0, "W", units.POWER) == pytest.approx(1625.0)
+
+    def test_kilowatts_are_scaled(self):
+        """Some inverter integrations report kW, and 1.6 read as 1.6 W would
+        make a string look dead."""
+        assert units.convert(1.625, "kW", units.POWER) == pytest.approx(1625.0)
+
+    def test_canonical_unit(self):
+        assert units.canonical_unit(units.POWER) == "W"

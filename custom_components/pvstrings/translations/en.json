@@ -322,7 +322,9 @@
       },
       "forecast_day_after": {
         "name": "Forecast day after tomorrow"
-      }
+      },
+      "potential_now": "Potential this hour",
+      "power_now": "Power now"
     }
   },
   "services": {

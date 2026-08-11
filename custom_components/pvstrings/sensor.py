@@ -24,7 +24,9 @@ from homeassistant.components.sensor import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory, UnitOfEnergy, UnitOfPower
 from homeassistant.core import HomeAssistant
+from homeassistant.core import callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 
@@ -32,6 +34,7 @@ from . import PvStringsConfigEntry, plant_device_info, string_device_info
 from .const import SUBENTRY_STRING
 from .coordinator import PvStringsCoordinator, PvStringsData
 from .core.forecast import floor_hour
+from .core import units
 
 #: Fallback when Home Assistant has no currency configured.
 DEFAULT_CURRENCY = "EUR"
@@ -166,6 +169,21 @@ PLANT_SENSORS: tuple[PlantSensorDescription, ...] = (
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         suggested_display_precision=3,
         value_fn=lambda data, _c: round(data.next_hour_kwh(_now_ts()), 3),
+    ),
+    PlantSensorDescription(
+        key="potential_now",
+        translation_key="potential_now",
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfPower.WATT,
+        suggested_display_precision=0,
+        # The hourly potential in kWh is numerically the mean power in kW over
+        # that hour, so the plant sum plots directly against measured watts.
+        value_fn=lambda data, _c: round(
+            data.plant_between(floor_hour(_now_ts()), floor_hour(_now_ts()) + 3600)
+            * 1000,
+            1,
+        ),
     ),
     PlantSensorDescription(
         key="peak_hour_today",
@@ -432,7 +450,8 @@ async def async_setup_entry(
     coordinator = entry.runtime_data
 
     async_add_entities(
-        PlantSensor(coordinator, entry, description) for description in PLANT_SENSORS
+        [PlantSensor(coordinator, entry, description) for description in PLANT_SENSORS]
+        + [PlantPowerSensor(coordinator, entry)]
     )
 
     for subentry_id, subentry in entry.subentries.items():
@@ -529,3 +548,84 @@ class StringSensor(PvStringsEntity):
         ):
             return None
         return self.entity_description.attrs_fn(data, self._string_id)
+
+
+class PlantPowerSensor(PvStringsEntity):
+    """Measured power summed over every configured string.
+
+    Deliberately not a coordinator value: the coordinator refreshes every
+    fifteen minutes, and a power reading that stale is useless for deciding
+    whether to start the dishwasher.  This entity follows the string sensors
+    directly instead.
+
+    Summing the strings rather than reading a plant meter is what makes it
+    comparable with the forecast, which is also a sum over exactly these
+    strings -- a house meter would include things the model never modelled.
+    """
+
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _attr_suggested_display_precision = 0
+    _attr_translation_key = "power_now"
+
+    def __init__(self, coordinator: PvStringsCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_power_now"
+        self._attr_device_info = plant_device_info(entry)
+        self._entities = [s.power_entity for s in coordinator.plant.strings]
+        self._value: float | None = None
+        self._missing: list[str] = []
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        if self._entities:
+            self.async_on_remove(
+                async_track_state_change_event(
+                    self.hass, self._entities, self._handle_change
+                )
+            )
+        self._recompute()
+
+    @callback
+    def _handle_change(self, _event: Any) -> None:
+        self._recompute()
+        self.async_write_ha_state()
+
+    @callback
+    def _recompute(self) -> None:
+        total = 0.0
+        seen = False
+        missing: list[str] = []
+        for entity_id in self._entities:
+            state = self.hass.states.get(entity_id)
+            raw = None if state is None else state.state
+            if raw in (None, "unknown", "unavailable", ""):
+                missing.append(entity_id)
+                continue
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                missing.append(entity_id)
+                continue
+            # A string reporting kW must not be added as if it were watts.
+            total += units.convert(
+                value, state.attributes.get("unit_of_measurement"), units.POWER
+            )
+            seen = True
+        self._value = round(total, 1) if seen else None
+        self._missing = missing
+
+    @property
+    def native_value(self) -> float | None:
+        return self._value
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return {
+            "strings_total": len(self._entities),
+            "strings_reporting": len(self._entities) - len(self._missing),
+            # A partial sum still has a value, but you should know it is partial
+            # before comparing it with a forecast that covers every string.
+            "not_reporting": self._missing,
+        }
