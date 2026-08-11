@@ -234,7 +234,7 @@ def build_plant_config(hass: HomeAssistant, entry: ConfigEntry) -> PlantConfig:
             illuminance_entity=config.get(CONF_ILLUMINANCE_ENTITY) or None,
         ),
         learning_enabled=bool(config.get(CONF_LEARNING_ENABLED, True)),
-        retention_days=int(config.get(CONF_RETENTION_DAYS, 1095)),
+        retention_days=int(config.get(CONF_RETENTION_DAYS, 90)),
     )
 
 
@@ -377,12 +377,12 @@ def _async_register_services(hass: HomeAssistant) -> None:
 
     async def _purge(call: ServiceCall) -> None:
         coordinator = _coordinator_for(hass, call.data[ATTR_CONFIG_ENTRY_ID])
-        cutoff = int(
-            (
-                dt_util.utcnow() - timedelta(days=coordinator.plant.retention_days)
-            ).timestamp()
+        await hass.async_add_executor_job(
+            coordinator.store.compact,
+            int(dt_util.utcnow().timestamp()),
+            coordinator.plant.retention_days,
         )
-        await hass.async_add_executor_job(coordinator.store.purge, cutoff)
+        await hass.async_add_executor_job(coordinator.store.vacuum)
 
     async def _add_geometry(call: ServiceCall) -> None:
         coordinator = _coordinator_for(hass, call.data[ATTR_CONFIG_ENTRY_ID])

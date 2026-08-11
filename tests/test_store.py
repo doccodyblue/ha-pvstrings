@@ -191,18 +191,104 @@ class TestModelState:
 
 
 class TestHousekeeping:
-    def test_purge_keeps_hourly_and_model_state(self, store: Store):
+    def test_compaction_keeps_hourly_and_model_state(self, store: Store):
         store.upsert_5min([(0, "s1", 50.0, 600.0, 1.0, 10, None, None, "measured")])
         store.upsert_hourly(
             [(0, "s1", 1.0, 1.0, 0.0, None, None, None, "measured", "exact")]
         )
         store.save_effects("plant", {"clear|midday": (0.1, 5.0)}, 0)
 
-        store.purge(1_000_000)
+        store.compact(now_ts=200 * 86400, raw_days=90)
 
         assert store.fivemin_range("s1", 0, 3600) == []
         assert len(store.hourly_range(0, 3600)) == 1
         assert store.load_effects("plant") != {}
+
+    def test_raw_rows_survive_while_their_hour_is_unfolded(self, store: Store):
+        """Deleting a five-minute row whose hour was never materialised would
+        remove energy from the lifetime total with nothing to replace it."""
+        store.upsert_5min([(0, "s1", 50.0, 600.0, 1.0, 10, None, None, "measured")])
+        store.compact(now_ts=200 * 86400, raw_days=90)
+        assert len(store.fivemin_range("s1", 0, 3600)) == 1
+
+    def test_recent_raw_rows_are_untouched(self, store: Store):
+        now = 200 * 86400
+        store.upsert_5min([(now - 3600, "s1", 50.0, 600.0, 1.0, 10, None, None, "measured")])
+        store.upsert_hourly(
+            [(now - 3600, "s1", 1.0, 1.0, 0.0, None, None, None, "measured", "exact")]
+        )
+        store.compact(now_ts=now, raw_days=90)
+        assert len(store.fivemin_range("s1", now - 7200, now)) == 1
+
+    def test_only_the_closest_forecast_issue_survives(self, store: Store):
+        hour = 100 * 86400
+        store.upsert_weather_forecast([
+            (hour - 86400, hour, "open_meteo", 24, 400.0, *[None] * 9),
+            (hour - 7200, hour, "open_meteo", 2, 500.0, *[None] * 9),
+            (hour - 3600, hour, "open_meteo", 1, 550.0, *[None] * 9),
+        ])
+        store.compact(now_ts=200 * 86400, issue_days=14)
+        rows = store.forecast_for_verification(hour, hour + 3600, "open_meteo")
+        assert len(rows) == 1
+        assert rows[0]["horizon_h"] == 1, "the run closest to the hour is the best estimate"
+
+    def test_recent_issues_are_all_kept_for_bias_learning(self, store: Store):
+        now = 200 * 86400
+        hour = now - 3600
+        store.upsert_weather_forecast([
+            (hour - 86400, hour, "open_meteo", 24, 400.0, *[None] * 9),
+            (hour - 3600, hour, "open_meteo", 1, 550.0, *[None] * 9),
+        ])
+        store.compact(now_ts=now, issue_days=14)
+        assert len(store.forecast_for_verification(hour, hour + 3600, "open_meteo")) == 2
+
+
+class TestLongRangeTotals:
+    """Lifetime figures are read over the whole period since commissioning, so
+    they must not depend on raw rows that compaction is allowed to remove."""
+
+    def test_production_total_survives_compaction(self, store: Store):
+        now = 200 * 86400
+        hour = now - 200 * 3600
+        store.upsert_5min([
+            (hour + i * 300, "s1", 100.0, 1200.0, 1.0, 10, None, None, "measured")
+            for i in range(12)
+        ])
+        store.upsert_hourly(
+            [(hour, "s1", 1.2, 1.0, 0.0, None, None, None, "measured", "exact")]
+        )
+        before = store.energy_kwh_between(hour, hour + 3600, "s1")
+        store.compact(now_ts=now, raw_days=0)
+        after = store.energy_kwh_between(hour, hour + 3600, "s1")
+        assert before == pytest.approx(1.2)
+        assert after == pytest.approx(before)
+
+    def test_grid_totals_survive_compaction(self, store: Store):
+        now = 200 * 86400
+        hour = now - 200 * 3600
+        store.upsert_plant_state(
+            [(hour + i * 300, 50.0, 0.0, 1200.0 if i < 6 else -600.0, 800.0)
+             for i in range(12)]
+        )
+        store.materialise_plant_hourly(hour, hour + 3600)
+        before = store.grid_energy_kwh(hour, hour + 3600)
+        store.compact(now_ts=now, raw_days=0)
+        after = store.grid_energy_kwh(hour, hour + 3600)
+        assert before[0] == pytest.approx(0.6)   # 6 x 1200 W x 5 min = 600 Wh
+        assert before[1] == pytest.approx(0.3)   # 6 x  600 W x 5 min = 300 Wh
+        assert after == pytest.approx(before)
+
+    def test_import_and_export_are_not_netted(self, store: Store):
+        """Half an hour drawing and half exporting nets to zero and has two
+        very different tariff outcomes."""
+        hour = 0
+        store.upsert_plant_state(
+            [(i * 300, None, None, 600.0 if i < 6 else -600.0, None) for i in range(12)]
+        )
+        store.materialise_plant_hourly(hour, hour + 3600)
+        imported, exported = store.grid_energy_kwh(hour, hour + 3600)
+        assert imported == pytest.approx(0.3)
+        assert exported == pytest.approx(0.3)
 
     def test_statistics_report_every_table(self, store: Store):
         stats = store.statistics()

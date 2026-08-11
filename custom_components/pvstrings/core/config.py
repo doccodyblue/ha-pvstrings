@@ -300,7 +300,9 @@ class PlantConfig:
     plant_state: PlantState = field(default_factory=PlantState)
     weather_sources: WeatherSources = field(default_factory=WeatherSources)
     learning_enabled: bool = True
-    retention_days: int = 1095
+    #: How long raw five-minute rows are kept.  Aggregates, geometry and
+    #: model state are never discarded -- they are small and irreplaceable.
+    retention_days: int = 90
 
     def __post_init__(self) -> None:
         if not -90.0 <= self.latitude <= 90.0:

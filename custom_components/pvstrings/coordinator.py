@@ -304,15 +304,14 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         if self._last_purge == today:
             return
         self._last_purge = today
-        cutoff = int(
-            (now - timedelta(days=self.plant.retention_days)).timestamp()
-        )
         try:
-            deleted = await self.hass.async_add_executor_job(self.store.purge, cutoff)
+            deleted = await self.hass.async_add_executor_job(
+                self.store.compact, int(now.timestamp()), self.plant.retention_days
+            )
             if any(deleted.values()):
-                _LOGGER.debug("pvstrings: purged %s", deleted)
+                _LOGGER.debug("pvstrings: compacted %s", deleted)
         except Exception:  # noqa: BLE001
-            _LOGGER.exception("pvstrings: purge failed")
+            _LOGGER.exception("pvstrings: compaction failed")
 
     # ------------------------------------------------------------------ #
     # data assembly (executor)

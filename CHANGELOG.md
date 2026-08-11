@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.3.0
+
+### Added
+
+- **Tiered retention with compaction instead of one blanket horizon.** The
+  aggregates are small and are the memory of the system; the raw rows are large
+  and stop being useful once folded up. And the forecast tables are dominated
+  not by target hours but by *issues* -- the same hour re-forecast every half
+  hour -- of which only the closest one matters once its verification window
+  has passed.
+
+  Defaults: raw five-minute rows 90 days, forecast issues 14 days (then one per
+  target hour survives), exclusions 90 days. Hourly aggregates, geometry
+  history, shading observations and model state are never discarded.
+
+  Roughly a third of the rows after two months, and it stops growing without
+  bound.
+
+- New `plant_hourly` aggregate so plant state can be condensed as well.
+
+### Fixed
+
+- **Lifetime totals no longer depend on rows that retention may remove.**
+  `savings_total` reads production and grid flow over the whole period since
+  commissioning, but both queries read the raw five-minute tables -- lowering
+  the retention would have shrunk the lifetime savings silently. Whole hours
+  now come from the aggregates and only the ragged ends from raw rows, and raw
+  rows are only ever dropped where the corresponding aggregate row exists.
+
+  The default retention drops from 1095 to 90 days, which was safe to do only
+  because of that change.
+
 ## 1.2.3
 
 ### Fixed

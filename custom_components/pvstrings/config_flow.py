@@ -331,8 +331,8 @@ def advanced_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
                 default=values.get(CONF_LEARNING_ENABLED, True),
             ): BooleanSelector(),
             vol.Required(
-                CONF_RETENTION_DAYS, default=values.get(CONF_RETENTION_DAYS, 1095)
-            ): _number(90, 7300, 1, "d"),
+                CONF_RETENTION_DAYS, default=values.get(CONF_RETENTION_DAYS, 90)
+            ): _number(14, 3650, 1, "d"),
         }
     )
 

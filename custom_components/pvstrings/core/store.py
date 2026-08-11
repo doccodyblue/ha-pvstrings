@@ -20,11 +20,13 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator, Sequence
 
 from .config import GeometrySegment
+
+HOUR = 3600
 from .quality import VALUE_MEASURED
 
 _LOGGER = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS string_geometry (
@@ -88,6 +90,14 @@ CREATE TABLE IF NOT EXISTS plant_state_5min (
     battery_power_w REAL,
     grid_power_w    REAL,
     house_load_w    REAL
+);
+
+CREATE TABLE IF NOT EXISTS plant_hourly (
+    ts_utc          INTEGER PRIMARY KEY,
+    imported_kwh    REAL,
+    exported_kwh    REAL,
+    house_kwh       REAL,
+    battery_soc_pct REAL
 );
 
 CREATE TABLE IF NOT EXISTS string_hourly (
@@ -390,16 +400,45 @@ class Store:
             (string_id, start_ts, end_ts),
         )
 
-    def energy_kwh_between(self, start_ts: int, end_ts: int, string_id: str | None = None) -> float:
-        sql = (
-            "SELECT COALESCE(SUM(energy_wh), 0) AS wh FROM string_5min "
-            "WHERE ts_utc >= ? AND ts_utc < ?"
-        )
-        params: list[Any] = [start_ts, end_ts]
-        if string_id:
-            sql += " AND string_id = ?"
-            params.append(string_id)
-        return float(self._query(sql, params)[0]["wh"]) / 1000.0
+    def energy_kwh_between(
+        self, start_ts: int, end_ts: int, string_id: str | None = None
+    ) -> float:
+        """Produced energy in a window.
+
+        Whole hours come from ``string_hourly`` and only the ragged ends from
+        the five-minute rows.  That is what lets raw data be discarded without
+        the lifetime totals quietly shrinking -- they are read over the whole
+        period since commissioning.
+        """
+        first_hour = -(-start_ts // HOUR) * HOUR      # ceil onto the hour grid
+        last_hour_end = end_ts // HOUR * HOUR
+        total = 0.0
+
+        if last_hour_end > first_hour:
+            sql = (
+                "SELECT COALESCE(SUM(energy_kwh), 0) AS kwh FROM string_hourly "
+                "WHERE ts_utc >= ? AND ts_utc < ?"
+            )
+            params: list[Any] = [first_hour, last_hour_end]
+            if string_id:
+                sql += " AND string_id = ?"
+                params.append(string_id)
+            total += float(self._query(sql, params)[0]["kwh"])
+
+        for lo, hi in ((start_ts, min(first_hour, end_ts)),
+                       (max(last_hour_end, start_ts), end_ts)):
+            if hi <= lo:
+                continue
+            sql = (
+                "SELECT COALESCE(SUM(energy_wh), 0) AS wh FROM string_5min "
+                "WHERE ts_utc >= ? AND ts_utc < ?"
+            )
+            params = [lo, hi]
+            if string_id:
+                sql += " AND string_id = ?"
+                params.append(string_id)
+            total += float(self._query(sql, params)[0]["wh"]) / 1000.0
+        return total
 
     def update_curtailment_flags(
         self, rows: Iterable[tuple[int | None, int, str]]
@@ -635,17 +674,82 @@ class Store:
                 payload,
             )
 
+    def materialise_plant_hourly(self, start_ts: int, end_ts: int) -> int:
+        """Fold plant state into hourly energies so the raw rows can go.
+
+        Import and export are accumulated separately rather than netted: a
+        house that draws 500 W for half an hour and exports 500 W for the other
+        half has a net of zero and two very different tariff outcomes.
+        """
+        payload: list[tuple[Any, ...]] = []
+        hours_ = 300.0 / 3600.0
+        for hour in range(start_ts // HOUR * HOUR, end_ts, HOUR):
+            rows = self._query(
+                "SELECT grid_power_w, house_load_w, battery_soc_pct "
+                "FROM plant_state_5min WHERE ts_utc >= ? AND ts_utc < ?",
+                (hour, hour + HOUR),
+            )
+            if not rows:
+                continue
+            grid = [r["grid_power_w"] for r in rows if r["grid_power_w"] is not None]
+            house = [r["house_load_w"] for r in rows if r["house_load_w"] is not None]
+            soc = [r["battery_soc_pct"] for r in rows if r["battery_soc_pct"] is not None]
+            payload.append(
+                (
+                    hour,
+                    sum(v for v in grid if v > 0) * hours_ / 1000.0 if grid else None,
+                    -sum(v for v in grid if v < 0) * hours_ / 1000.0 if grid else None,
+                    sum(house) * hours_ / 1000.0 if house else None,
+                    sum(soc) / len(soc) if soc else None,
+                )
+            )
+        if payload:
+            with self._tx() as conn:
+                conn.executemany(
+                    "INSERT INTO plant_hourly "
+                    "(ts_utc, imported_kwh, exported_kwh, house_kwh, battery_soc_pct) "
+                    "VALUES (?, ?, ?, ?, ?) "
+                    "ON CONFLICT (ts_utc) DO UPDATE SET "
+                    "  imported_kwh = excluded.imported_kwh, "
+                    "  exported_kwh = excluded.exported_kwh, "
+                    "  house_kwh = excluded.house_kwh, "
+                    "  battery_soc_pct = excluded.battery_soc_pct",
+                    payload,
+                )
+        return len(payload)
+
     def grid_energy_kwh(self, start_ts: int, end_ts: int) -> tuple[float, float]:
-        """Imported and exported kWh in the window, from 5-minute means."""
-        rows = self._query(
-            "SELECT grid_power_w FROM plant_state_5min "
-            "WHERE ts_utc >= ? AND ts_utc < ? AND grid_power_w IS NOT NULL",
-            (start_ts, end_ts),
-        )
-        hours = 300.0 / 3600.0
-        imported = sum(r["grid_power_w"] for r in rows if r["grid_power_w"] > 0)
-        exported = -sum(r["grid_power_w"] for r in rows if r["grid_power_w"] < 0)
-        return imported * hours / 1000.0, exported * hours / 1000.0
+        """Imported and exported kWh, hourly where available.
+
+        Same split as :meth:`energy_kwh_between`: whole hours from the
+        aggregate, ragged ends from the raw rows.
+        """
+        first_hour = -(-start_ts // HOUR) * HOUR
+        last_hour_end = end_ts // HOUR * HOUR
+        imported = exported = 0.0
+
+        if last_hour_end > first_hour:
+            row = self._query(
+                "SELECT COALESCE(SUM(imported_kwh), 0) AS i, "
+                "COALESCE(SUM(exported_kwh), 0) AS e FROM plant_hourly "
+                "WHERE ts_utc >= ? AND ts_utc < ?",
+                (first_hour, last_hour_end),
+            )[0]
+            imported += float(row["i"]); exported += float(row["e"])
+
+        hours_ = 300.0 / 3600.0
+        for lo, hi in ((start_ts, min(first_hour, end_ts)),
+                       (max(last_hour_end, start_ts), end_ts)):
+            if hi <= lo:
+                continue
+            rows = self._query(
+                "SELECT grid_power_w FROM plant_state_5min "
+                "WHERE ts_utc >= ? AND ts_utc < ? AND grid_power_w IS NOT NULL",
+                (lo, hi),
+            )
+            imported += sum(r["grid_power_w"] for r in rows if r["grid_power_w"] > 0) * hours_ / 1000.0
+            exported += -sum(r["grid_power_w"] for r in rows if r["grid_power_w"] < 0) * hours_ / 1000.0
+        return imported, exported
 
     # -- forecast log ------------------------------------------------------ #
 
@@ -823,33 +927,92 @@ class Store:
                 (name, ts_utc),
             )
 
-    def purge(self, before_ts: int) -> dict[str, int]:
-        """Drop raw history older than the retention horizon.
+    def compact(
+        self,
+        now_ts: int,
+        raw_days: int = 90,
+        issue_days: int = 14,
+        exclusion_days: int = 90,
+    ) -> dict[str, int]:
+        """Tiered retention: condense first, then discard.
 
-        Model state, geometry and hourly aggregates are kept forever -- they are
-        tiny and they are the memory of the system.
+        One blanket horizon over every table is the wrong shape here. The
+        aggregates are small and are the memory of the system; the raw rows are
+        large and stop being useful once they have been folded up. And the
+        forecast tables are dominated not by target hours but by *issues* --
+        the same hour re-forecast every half hour -- of which only the newest
+        matters once its verification window has passed.
+
+        Raw rows are only dropped where the corresponding aggregate row exists,
+        so compaction can never quietly shrink a lifetime total.
         """
+        raw_cut = now_ts - raw_days * 86400
+        issue_cut = now_ts - issue_days * 86400
         deleted: dict[str, int] = {}
+
         with self._tx() as conn:
-            for table in (
-                "string_5min",
-                "weather_actual_5min",
-                "plant_state_5min",
-                "shading_obs",
-            ):
-                cursor = conn.execute(
-                    f"DELETE FROM {table} WHERE ts_utc < ?", (before_ts,)
-                )
-                deleted[table] = cursor.rowcount
-            cursor = conn.execute(
-                "DELETE FROM weather_forecast WHERE ts_utc < ?", (before_ts,)
+            # Five-minute measurements: only where the hour was folded up.
+            cur = conn.execute(
+                "DELETE FROM string_5min WHERE ts_utc < ? AND EXISTS ("
+                "  SELECT 1 FROM string_hourly h WHERE h.string_id = string_5min.string_id"
+                "    AND h.ts_utc = string_5min.ts_utc / 3600 * 3600)",
+                (raw_cut,),
             )
-            deleted["weather_forecast"] = cursor.rowcount
-            cursor = conn.execute(
-                "DELETE FROM forecast_log WHERE ts_utc < ?", (before_ts,)
+            deleted["string_5min"] = cur.rowcount
+
+            cur = conn.execute(
+                "DELETE FROM plant_state_5min WHERE ts_utc < ? AND EXISTS ("
+                "  SELECT 1 FROM plant_hourly p"
+                "   WHERE p.ts_utc = plant_state_5min.ts_utc / 3600 * 3600)",
+                (raw_cut,),
             )
-            deleted["forecast_log"] = cursor.rowcount
+            deleted["plant_state_5min"] = cur.rowcount
+
+            cur = conn.execute(
+                "DELETE FROM weather_actual_5min WHERE ts_utc < ?", (raw_cut,)
+            )
+            deleted["weather_actual_5min"] = cur.rowcount
+
+            # Forecast issues: past the verification window keep only the run
+            # that came closest to the target hour -- the best estimate of what
+            # the irradiance actually was.
+            cur = conn.execute(
+                "DELETE FROM weather_forecast WHERE ts_utc < ? AND issued_at_utc <> ("
+                "  SELECT f.issued_at_utc FROM weather_forecast f"
+                "   WHERE f.ts_utc = weather_forecast.ts_utc"
+                "     AND f.source = weather_forecast.source"
+                "     AND f.horizon_h >= 0"
+                "   ORDER BY f.horizon_h ASC LIMIT 1)",
+                (issue_cut,),
+            )
+            deleted["weather_forecast_issues"] = cur.rowcount
+
+            # Forecast log: the same, keeping the last issue before the hour.
+            cur = conn.execute(
+                "DELETE FROM forecast_log WHERE ts_utc < ? AND issued_at_utc <> ("
+                "  SELECT f.issued_at_utc FROM forecast_log f"
+                "   WHERE f.ts_utc = forecast_log.ts_utc"
+                "     AND f.string_id = forecast_log.string_id"
+                "   ORDER BY f.issued_at_utc DESC LIMIT 1)",
+                (issue_cut,),
+            )
+            deleted["forecast_log_issues"] = cur.rowcount
+
+            cur = conn.execute(
+                "DELETE FROM exclusions WHERE ts_utc < ?",
+                (now_ts - exclusion_days * 86400,),
+            )
+            deleted["exclusions"] = cur.rowcount
+
         return deleted
+
+    def vacuum(self) -> None:
+        """Return freed pages to the filesystem.  Blocking; call rarely."""
+        if self._conn is None:
+            self.connect()
+        assert self._conn is not None
+        with self._lock:
+            self._conn.execute("VACUUM")
 
     def statistics(self) -> dict[str, Any]:
         out: dict[str, Any] = {"path": str(self.path), "schema_version": SCHEMA_VERSION}

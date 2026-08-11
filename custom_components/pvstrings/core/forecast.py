@@ -731,6 +731,8 @@ class ForecastEngine:
 
         self.evaluate_curtailment(start, end)
         stats.hours_materialised = self.materialise_hourly(start, end)
+        # Must exist before compaction is allowed to drop the raw rows.
+        self.store.materialise_plant_hourly(start, end)
         self._learn_ghi_bias(start, end, stats)
 
         if self.plant.learning_enabled:
