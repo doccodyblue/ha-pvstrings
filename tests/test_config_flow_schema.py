@@ -160,3 +160,39 @@ class TestNamePrefill:
         assert (
             "async_step_reconfigure" in seeded
         ), "string reconfigure does not prefill the name"
+
+
+class TestReloadStrategy:
+    """Two ways of reloading exist and they are mutually exclusive.
+
+    ``ConfigSubentryFlow.async_update_reload_and_abort`` raises
+    ``ValueError: Cannot update and reload entry with update listeners`` when
+    the entry has any update listener registered.  This integration registers
+    one so that the options flow takes effect, so subentry edits must use the
+    plain ``async_update_and_abort`` and let the listener reload.
+
+    Getting this wrong makes every string and group edit fail with a 500.
+    """
+
+    INIT = FLOW.parent / "__init__.py"
+
+    def test_the_integration_registers_an_update_listener(self):
+        assert "add_update_listener" in self.INIT.read_text()
+
+    def test_no_subentry_flow_uses_the_reloading_variant(self):
+        # AST rather than a text search, so the comment explaining *why* does
+        # not trip the check.
+        called = {
+            node.func.attr
+            for node in ast.walk(ast.parse(FLOW.read_text()))
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        }
+        assert "async_update_reload_and_abort" not in called, (
+            "incompatible with the update listener registered in __init__.py"
+        )
+        assert "async_update_and_abort" in called
+
+    def test_subentry_creation_still_schedules_its_own_reload(self):
+        """No listener fires when a subentry is added, so that path must."""
+        source = FLOW.read_text()
+        assert "async_schedule_reload" in source

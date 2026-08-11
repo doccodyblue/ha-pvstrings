@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.2.3
+
+### Fixed
+
+- **Editing a string or a curtailment group failed with a 500.** Since 1.1.0
+  the subentry flows called `async_update_reload_and_abort`, which Home
+  Assistant refuses on an entry that has update listeners -- and this
+  integration registers one so the options flow takes effect. Subentry edits
+  now use `async_update_and_abort` and let that listener reload. Creating a
+  subentry still schedules its own reload, because no listener fires for that.
+
 ## 1.2.2
 
 **Update immediately if you are on 1.1.0, 1.2.0 or 1.2.1 — those versions

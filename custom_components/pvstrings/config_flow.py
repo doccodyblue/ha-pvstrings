@@ -117,6 +117,12 @@ from .core.weather import OPEN_METEO_MODELS, SOURCE_HA_WEATHER, SOURCE_OPEN_METE
 
 _LOGGER = logging.getLogger(__name__)
 
+# Home Assistant refuses ``async_update_reload_and_abort`` on an entry that has
+# update listeners -- and this integration registers one so the options flow
+# takes effect.  Subentry edits therefore use ``async_update_and_abort`` and let
+# that listener do the reloading.  Creating a subentry is different: no listener
+# fires for it, which is why ``_created`` schedules the reload itself.
+
 
 def _select(options: tuple[str, ...] | list[str], key: str) -> SelectSelector:
     return SelectSelector(
@@ -650,7 +656,7 @@ class GroupSubentryFlow(_ReloadingSubentryFlow):
             if not errors:
                 title = data.pop(CONF_NAME)
                 if reconfigure:
-                    return self.async_update_reload_and_abort(
+                    return self.async_update_and_abort(
                         self._get_entry(),
                         self._get_reconfigure_subentry(),
                         title=title,
@@ -727,7 +733,7 @@ class StringSubentryFlow(_ReloadingSubentryFlow):
                 if self._geometry_changed(current, data):
                     return await self.async_step_geometry()
                 title = data.pop(CONF_NAME)
-                return self.async_update_reload_and_abort(
+                return self.async_update_and_abort(
                     entry, subentry, title=title, data=data
                 )
 
@@ -804,7 +810,7 @@ class StringSubentryFlow(_ReloadingSubentryFlow):
 
             data = dict(self._pending)
             title = data.pop(CONF_NAME)
-            return self.async_update_reload_and_abort(entry, subentry, title=title, data=data)
+            return self.async_update_and_abort(entry, subentry, title=title, data=data)
 
         schema = vol.Schema(
             {
