@@ -323,8 +323,12 @@
       "forecast_day_after": {
         "name": "Prognose übermorgen"
       },
-      "potential_now": "Potenzial diese Stunde",
-      "power_now": "Leistung jetzt"
+      "potential_now": {
+        "name": "Potenzial diese Stunde"
+      },
+      "power_now": {
+        "name": "Leistung jetzt"
+      }
     }
   },
   "services": {

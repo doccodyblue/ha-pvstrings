@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.2.1
+
+### Fixed
+
+- The two sensors added in 1.2.0 were declared in the translation files as bare
+  strings instead of `{"name": ...}`, so Home Assistant never found them and
+  fell back to the device-class name. Both ended up called "Power", collided,
+  and one was given a `_2` suffix. Anyone who installed 1.2.0 has
+  `..._power` and `..._power_2`; see below.
+
+**If you installed 1.2.0:** delete those two entities under Settings →
+Devices & Services → Entities, then reload the integration. They come back with
+correct names and ids. The entity registry keeps whatever id an entity was
+first given, so this cannot fix itself.
+
 ## 1.2.0
 
 ### Added
