@@ -73,6 +73,8 @@ class PvStringsData:
     day_end: int
     tomorrow_start: int
     tomorrow_end: int
+    day_after_start: int = 0
+    day_after_end: int = 0
     strings: dict[str, StringForecast] = field(default_factory=dict)
     plant_hourly: list[tuple[int, float]] = field(default_factory=list)
     produced_today: dict[str, float] = field(default_factory=dict)
@@ -101,6 +103,10 @@ class PvStringsData:
     @property
     def tomorrow_kwh(self) -> float:
         return self.plant_between(self.tomorrow_start, self.tomorrow_end)
+
+    @property
+    def day_after_kwh(self) -> float:
+        return self.plant_between(self.day_after_start, self.day_after_end)
 
     def remaining_kwh(self, now_ts: int) -> float:
         return self.plant_between(floor_hour(now_ts), self.day_end)
@@ -321,6 +327,7 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         now_ts = int(now.timestamp())
         day_start, day_end = self._local_day_bounds(now)
         tomorrow_start, tomorrow_end = day_end, day_end + 86400
+        day_after_start, day_after_end = tomorrow_end, tomorrow_end + 86400
 
         rows = self.engine.forecast(now_ts, hours=FORECAST_HOURS, start_ts=day_start)
         self.engine.log_forecast(now_ts, rows)
@@ -346,6 +353,8 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
             day_end=day_end,
             tomorrow_start=tomorrow_start,
             tomorrow_end=tomorrow_end,
+            day_after_start=day_after_start,
+            day_after_end=day_after_end,
             strings=strings,
             plant_hourly=sorted(
                 (ts, round(value, 4)) for ts, value in plant_hourly.items()

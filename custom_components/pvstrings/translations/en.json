@@ -319,6 +319,9 @@
       },
       "ghi_forecast": {
         "name": "Forecast irradiance"
+      },
+      "forecast_day_after": {
+        "name": "Forecast day after tomorrow"
       }
     }
   },

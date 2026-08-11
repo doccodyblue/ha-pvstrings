@@ -319,6 +319,9 @@
       },
       "ghi_forecast": {
         "name": "Einstrahlung Prognose"
+      },
+      "forecast_day_after": {
+        "name": "Prognose übermorgen"
       }
     }
   },

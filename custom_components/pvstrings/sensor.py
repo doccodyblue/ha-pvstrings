@@ -141,6 +141,24 @@ PLANT_SENSORS: tuple[PlantSensorDescription, ...] = (
         },
     ),
     PlantSensorDescription(
+        key="forecast_day_after",
+        translation_key="forecast_day_after",
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        suggested_display_precision=2,
+        value_fn=lambda data, _c: round(data.day_after_kwh, 3),
+        attrs_fn=lambda data, _c: {
+            "forecast": _forecast_attribute(
+                [
+                    (ts, value)
+                    for ts, value in data.plant_hourly
+                    if data.day_after_start <= ts < data.day_after_end
+                ]
+            )
+        },
+    ),
+    PlantSensorDescription(
         key="forecast_next_hour",
         translation_key="forecast_next_hour",
         device_class=SensorDeviceClass.ENERGY,

@@ -97,8 +97,9 @@ FORECAST_INTERVAL: Final = timedelta(minutes=15)
 #: asking more often just burns their capacity for nothing.
 WEATHER_INTERVAL: Final = timedelta(minutes=30)
 
-#: Forecast horizon in hours.
-FORECAST_HOURS: Final = 48
+#: Forecast horizon in hours.  Three local days, so a day-after-tomorrow
+#: figure exists for side-by-side comparison with other forecast services.
+FORECAST_HOURS: Final = 72
 
 #: Rolling scoring windows.
 SCORE_WINDOWS: Final = (7, 30)
