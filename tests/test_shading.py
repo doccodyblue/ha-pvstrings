@@ -278,10 +278,20 @@ class TestModel:
         assert list(ShadingModel().factors("s1", [1.0, 2.0], [3.0, 4.0])) == [1.0, 1.0]
 
     def test_summary_lists_the_worst_sectors_first(self):
+        """Reported as a loss, worst first, matching what the name promises."""
         model = ShadingModel.fit({"s1": shade(full_sky(1.0), 110.0, 15.0, 0.2)})
-        worst = model.summary()["s1"]["most_shaded"][0]
-        assert worst["factor"] < 0.5
+        sectors = model.summary()["s1"]["most_shaded"]
+        worst = sectors[0]
+        assert worst["shading_pct"] > 50.0
         assert worst["sector"].startswith("110-120")
+        assert [s["shading_pct"] for s in sectors] == sorted(
+            (s["shading_pct"] for s in sectors), reverse=True
+        )
+
+    def test_an_unshaded_sector_reports_no_loss(self):
+        model = ShadingModel.fit({"s1": full_sky(1.0)})
+        for sector in model.summary().get("s1", {}).get("most_shaded", []):
+            assert sector["shading_pct"] == pytest.approx(0.0, abs=2.0)
 
 
 class TestSeasons:

@@ -310,24 +310,28 @@ class ShadingMap:
 
     def summary(self, limit: int = 12) -> dict[str, object]:
         """The most-shaded corners of the sky, for diagnostics."""
+        # Sorted by loss, worst first -- the same order the name promises.
         ranked = sorted(
             (
                 (
                     f"{key[0] * AZIMUTH_BIN_DEG:.0f}-{(key[0] + 1) * AZIMUTH_BIN_DEG:.0f}"
                     f"|{key[1] * ELEVATION_BIN_DEG:.0f}-"
                     f"{(key[1] + 1) * ELEVATION_BIN_DEG:.0f}",
-                    round(_clamp(math.exp(cell.shrunk - self.reference)), 3),
+                    round(
+                        (1.0 - _clamp(math.exp(cell.shrunk - self.reference))) * 100,
+                        1,
+                    ),
                     round(cell.n, 1),
                 )
                 for key, cell in self.cells.items()
             ),
-            key=lambda row: row[1],
+            key=lambda row: -row[1],
         )
         return {
             "cells": len(self.cells),
             "most_shaded": [
-                {"sector": sector, "factor": factor, "n": n}
-                for sector, factor, n in ranked[:limit]
+                {"sector": sector, "shading_pct": loss, "n": n}
+                for sector, loss, n in ranked[:limit]
             ],
         }
 

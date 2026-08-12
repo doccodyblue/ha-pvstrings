@@ -394,10 +394,15 @@ STRING_SENSORS: tuple[StringSensorDescription, ...] = (
         # Not diagnostic: on a plant with a tree or a gable this is the single
         # number that explains the day, and it belongs next to the forecast
         # rather than hidden in the diagnostics fold.
+        #
+        # Reported as the loss, not as the surviving fraction.  A sensor called
+        # "shading" that reads 100 % when nothing is in the way is read exactly
+        # backwards by everyone who sees it, including the people who asked for
+        # it -- so 0 % is a clear view and 100 % is a panel in full shadow.
         value_fn=lambda data, sid: (
             None
             if (data.shading.get("strings", {}).get(sid, {}).get("factor")) is None
-            else round(data.shading["strings"][sid]["factor"] * 100, 1)
+            else round((1.0 - data.shading["strings"][sid]["factor"]) * 100, 1)
         ),
         attrs_fn=lambda data, sid: {
             **{
@@ -410,9 +415,10 @@ STRING_SENSORS: tuple[StringSensorDescription, ...] = (
             "sun_azimuth": data.shading.get("sun_azimuth"),
             "sun_elevation": data.shading.get("sun_elevation"),
             "note": (
-                "100 % is a clear view of the sun's current position. Learned "
-                "from measurements, not from a description of the garden -- "
-                "sky the sun has not visited yet is never corrected."
+                "Loss at the sun's current position: 0 % is a clear view, "
+                "100 % is full shadow. Learned from measurements, not from a "
+                "description of the garden -- sky the sun has not visited yet "
+                "is never corrected, so it reads 0 %."
             ),
         },
     ),

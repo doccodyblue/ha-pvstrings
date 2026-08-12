@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.5.4
+
+### Changed
+
+- **`Shading now` reports the loss, not the surviving fraction.** It read
+  100 % when nothing was in the way, which is exactly backwards from what the
+  name says -- and it was misread that way immediately, by the person who
+  asked for the sensor. 0 % is now a clear view and 100 % a panel in full
+  shadow. A plant that has not learned any sky yet reads 0 % rather than
+  looking permanently and totally shaded.
+- The shaded sectors in the attributes report `shading_pct` on the same
+  convention, worst first.
+
 ## 1.5.3
 
 ### Fixed
