@@ -29,6 +29,7 @@ from .const import (
 from .core import economics as econ
 from .core.config import PlantConfig
 from .core.forecast import HOUR, ForecastEngine, LearnStats, floor_hour
+from .core.health import Health, learn_summary
 from .core.physics import PhysicsEngine, to_index
 from .core.quality import NIGHT_ELEVATION_DEG
 from .core.store import Store
@@ -177,6 +178,7 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         self._last_purge: date | None = None
         self._monthly_weights: list[float] | None = None
         self.last_learn_stats = LearnStats()
+        self.health = Health()
 
     # ------------------------------------------------------------------ #
     # setup
@@ -300,6 +302,15 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
                     self.engine.learn, int(now.timestamp())
                 )
                 self._last_learn_hour = current_hour
+                stats = self.last_learn_stats.as_dict()
+                # Once an hour, in plain words.  Without it a quiet log means
+                # only that nothing raised -- which is not the same as the
+                # integration having done anything.
+                _LOGGER.info("pvstrings: %s: %s", self.plant.name, learn_summary(stats))
+                self._report_health(
+                    self.health.observe_learn(stats, self.plant.learning_enabled),
+                    stats,
+                )
             except Exception:  # noqa: BLE001 - learning is a side process
                 _LOGGER.exception("pvstrings: learning cycle failed")
 
@@ -309,7 +320,39 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         data.weather_ok = weather_ok
         data.weather_error = weather_error
         data.learn_stats = self.last_learn_stats.as_dict()
+        self._report_health(
+            self.health.observe_coverage(
+                self.collector.stats.coverage_last,
+                float(data.shading.get("sun_elevation") or -90.0),
+            ),
+            data.learn_stats,
+        )
         return data
+
+    def _report_health(self, problem: str | None, stats: dict[str, Any]) -> None:
+        """Say something the first time a problem sticks, then stay quiet.
+
+        Both conditions are ones the integration used to pass over in silence:
+        an installation can capture nothing at all, or capture perfectly and
+        learn nothing from any of it, and in each case every sensor keeps
+        publishing and nothing raises.
+        """
+        if problem == "no_capture":
+            _LOGGER.warning(
+                "pvstrings: %s is capturing nothing while the sun is up. "
+                "The configured power entities are reporting no usable values "
+                "-- check that they exist and are not unavailable. Nothing "
+                "will be learned until this clears.",
+                self.plant.name,
+            )
+        elif problem == "not_learning":
+            _LOGGER.warning(
+                "pvstrings: %s has folded daylight hours for several cycles "
+                "without learning from any of them (%s). The forecast still "
+                "works, but it is pure physics and will not improve.",
+                self.plant.name,
+                learn_summary(stats),
+            )
 
     async def _async_maybe_purge(self, now: datetime) -> None:
         today = dt_util.as_local(now).date()

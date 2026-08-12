@@ -331,6 +331,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: PvStringsConfigEntry) ->
     await coordinator.async_config_entry_first_refresh()
 
     entry.runtime_data = coordinator
+    # One line at startup saying what was actually set up.  A user who has to
+    # ask "is it running?" should be able to answer it from the log without
+    # downloading a diagnostics bundle.
+    _LOGGER.info(
+        "pvstrings: %s ready - %s strings, %s curtailment groups, irradiance "
+        "from %s, measured irradiance sensor: %s, learned correction: %s",
+        plant.name,
+        len(plant.strings),
+        len(plant.groups),
+        plant.forecast_source,
+        "yes"
+        if (
+            plant.weather_sources.ghi_entity
+            or plant.weather_sources.illuminance_entity
+        )
+        else "no",
+        "on" if plant.learning_enabled else "off",
+    )
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
     _async_register_services(hass)

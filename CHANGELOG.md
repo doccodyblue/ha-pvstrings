@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.6.0
+
+### Added
+
+- **The log now says whether the integration is working, not just whether it
+  crashed.** Until now nothing was written on the happy path, so a clean log
+  meant only "nothing raised" -- and two installations sat for days capturing
+  or learning nothing with no outward sign at all.
+
+  - One line at startup: strings, groups, irradiance source, whether a
+    measured sensor is configured, whether learned correction is on.
+  - One line per learn cycle, in plain words: how many hourly rows were
+    folded, how many observations were learned, how many were skipped and for
+    which reasons, and how much shading, bias and censoring was seen.
+  - A warning when the plant captures nothing while the sun is well up, held
+    back until it has persisted across several updates so a restart does not
+    trigger it.
+  - A warning when daylight cycles keep producing no learned observations.
+    Deliberately narrow: night hours fold rows and learn nothing entirely
+    correctly, and the cycle runs hourly around the clock, so judging on
+    folded rows alone would have raised the alarm before breakfast every day.
+    A plant with learned correction switched off is never warned about.
+
+  Both warnings fire once when a problem sets in, and re-arm only after it
+  clears.
+
 ## 1.5.4
 
 ### Changed
