@@ -428,6 +428,9 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
             below_horizon = elevation < NIGHT_ELEVATION_DEG
             out["strings"][string.string_id] = {
                 "name": string.name,
+                # Carried per string rather than in one plant-wide table so a
+                # card can show a name instead of a ULID.
+                "most_shaded": (found.summary(limit=6)["most_shaded"] if found else []),
                 "factor": (
                     None
                     if below_horizon
