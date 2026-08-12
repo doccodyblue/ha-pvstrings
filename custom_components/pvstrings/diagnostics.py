@@ -11,6 +11,7 @@ from typing import Any
 
 from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.core import HomeAssistant
+from homeassistant.util import dt as dt_util
 
 from . import PvStringsConfigEntry
 from .const import SUBENTRY_GROUP, SUBENTRY_STRING
@@ -45,6 +46,25 @@ async def async_get_config_entry_diagnostics(
                 string.string_id: coordinator.store.shading_count(string.string_id)
                 for string in plant.strings
             },
+            # The last day of folded hours, verbatim.  Every question about
+            # why the model is not learning ends here -- coverage, quality and
+            # value kind per hour per string -- and without them the diagnosis
+            # is guesswork against a counter that only says "skipped".
+            "recent_hours": [
+                {
+                    "hour": row.ts_utc,
+                    "string_id": row.string_id,
+                    "energy_kwh": row.energy_kwh,
+                    "coverage": row.coverage,
+                    "quality": row.quality,
+                    "value_kind": row.value_kind,
+                    "curtailed_fraction": row.curtailed_fraction,
+                }
+                for row in coordinator.store.hourly_range(
+                    int(dt_util.utcnow().timestamp()) - 86400,
+                    int(dt_util.utcnow().timestamp()),
+                )
+            ],
         }
 
     stored = await hass.async_add_executor_job(collect)
