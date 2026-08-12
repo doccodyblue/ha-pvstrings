@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.7.0
+
+### Added
+
+- **The forecast attribute now also carries `unshaded_kwh`** -- what the same
+  hour would have been predicted at with the sky map switched off. Plotted
+  against the published forecast it separates two things that used to be one
+  indistinguishable gap: the shadow the model has learned about, and the part
+  it has not.
+
+  Both ceilings apply to the bare curve too. The chain is exactly linear in
+  the shading factor, so the unshaded value is recovered by division rather
+  than a second physics pass -- but a capped tracker and the nameplate clip
+  are precisely where that linearity stops, and dividing an already capped
+  value back out would invent power the module could never make.
+
 ## 1.6.0
 
 ### Added

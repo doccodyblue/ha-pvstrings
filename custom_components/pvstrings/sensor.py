@@ -49,9 +49,23 @@ def _iso(ts_utc: int) -> str:
     return datetime.fromtimestamp(ts_utc, tz=timezone.utc).isoformat()
 
 
-def _forecast_attribute(hourly: list[tuple[int, float]]) -> list[dict[str, Any]]:
+def _forecast_attribute(
+    hourly: list[tuple[int, float]],
+    unshaded: list[tuple[int, float]] | None = None,
+) -> list[dict[str, Any]]:
+    """Hourly forecast, and what it would have been without the sky map.
+
+    Both curves in one list so a chart can draw them against each other: the
+    gap between them is the shadow the model has learned about, and the gap
+    that remains to the measurement is the part it has not.
+    """
+    bare = dict(unshaded or [])
     return [
-        {"datetime": _iso(ts), "potential_kwh": round(value, 4)}
+        {
+            "datetime": _iso(ts),
+            "potential_kwh": round(value, 4),
+            "unshaded_kwh": round(bare.get(ts, value), 4),
+        }
         for ts, value in hourly
     ]
 
@@ -118,6 +132,8 @@ PLANT_SENSORS: tuple[PlantSensorDescription, ...] = (
                     for ts, value in data.plant_hourly
                     if data.day_start <= ts < data.day_end
                 ]
+            ,
+            data.plant_unshaded,
             )
         },
     ),
@@ -147,6 +163,8 @@ PLANT_SENSORS: tuple[PlantSensorDescription, ...] = (
                     for ts, value in data.plant_hourly
                     if data.tomorrow_start <= ts < data.tomorrow_end
                 ]
+            ,
+            data.plant_unshaded,
             )
         },
     ),
@@ -167,6 +185,8 @@ PLANT_SENSORS: tuple[PlantSensorDescription, ...] = (
                     for ts, value in data.plant_hourly
                     if data.day_after_start <= ts < data.day_after_end
                 ]
+            ,
+            data.plant_unshaded,
             )
         },
     ),
@@ -433,7 +453,9 @@ STRING_SENSORS: tuple[StringSensorDescription, ...] = (
             data.strings[sid].sum_between(data.day_start, data.day_end), 3
         ),
         attrs_fn=lambda data, sid: {
-            "forecast": _forecast_attribute(data.strings[sid].hourly)
+            "forecast": _forecast_attribute(
+                data.strings[sid].hourly, data.strings[sid].unshaded
+            )
         },
     ),
     StringSensorDescription(

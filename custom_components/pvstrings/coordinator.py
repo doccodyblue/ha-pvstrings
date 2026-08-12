@@ -53,6 +53,9 @@ class StringForecast:
     string_id: str
     name: str
     hourly: list[tuple[int, float]] = field(default_factory=list)
+    #: The same hours with the sky map switched off.  Plotted against
+    #: ``hourly`` it shows how much of the gap to reality the map explains.
+    unshaded: list[tuple[int, float]] = field(default_factory=list)
 
     def sum_between(self, start_ts: int, end_ts: int) -> float:
         return sum(
@@ -79,6 +82,7 @@ class PvStringsData:
     day_after_end: int = 0
     strings: dict[str, StringForecast] = field(default_factory=dict)
     plant_hourly: list[tuple[int, float]] = field(default_factory=list)
+    plant_unshaded: list[tuple[int, float]] = field(default_factory=list)
     produced_today: dict[str, float] = field(default_factory=dict)
     produced_yesterday_kwh: float = 0.0
     forecast_yesterday_kwh: float = 0.0
@@ -391,15 +395,21 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
             for string in self.plant.strings
         }
         plant_hourly: dict[int, float] = {}
+        plant_unshaded: dict[int, float] = {}
         for row in rows:
             bucket = strings.get(row.string_id)
             if bucket is None:
                 continue
             bucket.hourly.append((row.ts_utc, round(row.potential_kwh, 4)))
+            bucket.unshaded.append((row.ts_utc, round(row.unshaded_kwh, 4)))
             plant_hourly[row.ts_utc] = plant_hourly.get(row.ts_utc, 0.0) + row.potential_kwh
+            plant_unshaded[row.ts_utc] = (
+                plant_unshaded.get(row.ts_utc, 0.0) + row.unshaded_kwh
+            )
 
         for bucket in strings.values():
             bucket.hourly.sort()
+            bucket.unshaded.sort()
 
         data = PvStringsData(
             generated_at=now_ts,
@@ -412,6 +422,9 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
             strings=strings,
             plant_hourly=sorted(
                 (ts, round(value, 4)) for ts, value in plant_hourly.items()
+            ),
+            plant_unshaded=sorted(
+                (ts, round(value, 4)) for ts, value in plant_unshaded.items()
             ),
         )
 

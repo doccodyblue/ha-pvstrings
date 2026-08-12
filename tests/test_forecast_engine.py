@@ -795,3 +795,114 @@ class TestSkipReasonsAreRecorded:
     def test_the_breakdown_reaches_the_diagnostics(self, engine: ForecastEngine):
         stats = engine.learn(DAY_START + 5 * HOUR)
         assert "skipped_because" in stats.as_dict()
+
+
+class TestUnshadedIsCarriedAlongside:
+    """So a chart can show what the sky map is actually contributing.
+
+    Without it the only visible gap is forecast-versus-reality, which says
+    nothing about whether the map has learned anything useful yet.
+    """
+
+    def _sky(self, engine: ForecastEngine, factor: float):
+        import math
+
+        from core.shading import Cell, ShadingMap, ShadingModel
+
+        engine.shading = ShadingModel(
+            maps={
+                "s1": ShadingMap(
+                    cells={
+                        (azimuth, elevation): Cell(value=math.log(factor), n=10_000.0)
+                        for azimuth in range(36)
+                        for elevation in range(19)
+                    },
+                    reference=0.0,
+                )
+            }
+        )
+
+    def _rows(self, engine: ForecastEngine, store: Store):
+        start = DAY_START + 11 * HOUR
+        clear_sky_forecast(engine, store, start - HOUR, start, hours=2)
+        return [
+            row
+            for row in engine.forecast(start, hours=1, start_ts=start)
+            if row.string_id == "s1"
+        ]
+
+    def test_without_a_map_the_two_agree(self, engine: ForecastEngine, seeded_store):
+        for row in self._rows(engine, seeded_store):
+            assert row.unshaded_kwh == pytest.approx(row.potential_kwh)
+
+    def test_the_gap_is_the_shadow(self, engine: ForecastEngine, seeded_store):
+        self._sky(engine, 0.5)
+        rows = self._rows(engine, seeded_store)
+        assert rows
+        for row in rows:
+            assert row.potential_kwh == pytest.approx(row.unshaded_kwh * 0.5, rel=0.02)
+
+    def test_unshaded_is_never_below_the_forecast(
+        self, engine: ForecastEngine, seeded_store
+    ):
+        """Shading only ever subtracts, so the bare curve is the upper one."""
+        self._sky(engine, 0.3)
+        for row in self._rows(engine, seeded_store):
+            assert row.unshaded_kwh >= row.potential_kwh - 1e-9
+
+    def test_an_unmapped_string_is_unaffected(
+        self, engine: ForecastEngine, seeded_store
+    ):
+        self._sky(engine, 0.5)
+        start = DAY_START + 11 * HOUR
+        clear_sky_forecast(engine, seeded_store, start - HOUR, start, hours=2)
+        others = [
+            row
+            for row in engine.forecast(start, hours=1, start_ts=start)
+            if row.string_id == "s2"
+        ]
+        assert others
+        for row in others:
+            assert row.unshaded_kwh == pytest.approx(row.potential_kwh)
+
+    def test_a_capped_tracker_does_not_overstate_the_shadow(
+        self, seeded_store, plant: PlantConfig
+    ):
+        """The ceiling binds with or without the shadow.
+
+        Dividing an already capped value by the shade factor would report a
+        430 W channel under half shade as though it could have made 860 W --
+        when without the shadow it would simply have sat on its ceiling.
+        """
+        from dataclasses import replace
+
+        capped = replace(
+            plant,
+            strings=tuple(
+                replace(s, max_power_w=200.0) if s.string_id == "s1" else s
+                for s in plant.strings
+            ),
+        )
+        engine = ForecastEngine(capped, seeded_store)
+        engine.load_models()
+        self._sky(engine, 0.5)
+        rows = self._rows(engine, seeded_store)
+        assert rows
+        ceiling_kwh = 200.0 / 1000.0
+        for row in rows:
+            assert row.unshaded_kwh <= ceiling_kwh + 1e-6
+            assert row.potential_kwh <= ceiling_kwh + 1e-6
+
+    def test_the_bare_curve_never_exceeds_nameplate(self, engine: ForecastEngine, seeded_store):
+        """The physics clips at nameplate, and that clip is where linearity ends.
+
+        On a bright, cold interval the shaded value is already sitting on the
+        ceiling, so dividing the shade back out would invent power the module
+        could never make.
+        """
+        self._sky(engine, 0.2)
+        rows = self._rows(engine, seeded_store)
+        assert rows
+        nameplate_kwh = 1.80  # s1, one hour at full output
+        for row in rows:
+            assert row.unshaded_kwh <= nameplate_kwh + 1e-6

@@ -98,6 +98,10 @@ class HourForecast:
     string_id: str
     potential_kwh: float
     physics_kwh: float
+    #: What the physics would have said with the sky map switched off.  Kept
+    #: so a dashboard can show how much of the gap to reality the map already
+    #: explains -- the difference between the two curves is the shadow.
+    unshaded_kwh: float
     weather: str
     part: str
     method: str
@@ -435,6 +439,7 @@ class ForecastEngine:
                 continue
 
             per_hour: dict[int, float] = {}
+            per_hour_unshaded: dict[int, float] = {}
             for segment, hours_in_segment in grouped:
                 mask = np.isin(hour_keys, hours_in_segment)
                 if not mask.any():
@@ -466,6 +471,28 @@ class ForecastEngine:
                     shading_factor=shading_factor,
                 )
                 power = result.dc_power_w.to_numpy()
+                # The chain is exactly linear in the shading factor -- it
+                # scales the effective irradiance, and the cell temperature is
+                # taken from the unscaled plane irradiance -- so dividing it
+                # back out recovers the unshaded power without a second pass.
+                # This has to happen *before* the ceiling: dividing an already
+                # capped value would report a 430 W tracker under half shade as
+                # though it could have made 860 W, when without the shadow it
+                # would simply have sat on its ceiling.
+                if isinstance(shading_factor, pd.Series):
+                    divisor = shading_factor.to_numpy()
+                    bare = np.divide(
+                        power, divisor, out=power.copy(), where=divisor > 0.0
+                    )
+                    # The physics itself clips at nameplate, and that clip is
+                    # the one place the chain stops being linear in the shading
+                    # factor: on a bright, cold interval the shaded value is
+                    # already sitting on the ceiling, so dividing it back out
+                    # invents power the module could never make.  Every ceiling
+                    # the shaded curve met, the bare curve meets too.
+                    bare = np.minimum(bare, segment.kwp * 1000.0)
+                else:
+                    bare = power
                 if string.max_power_w:
                     # The published forecast must respect the tracker ceiling:
                     # promising 500 W through a channel that tops out at 430 W
@@ -473,9 +500,16 @@ class ForecastEngine:
                     # every accuracy figure.  The *uncensored* physics used for
                     # the binding test stays uncapped -- see _interval_power.
                     power = np.minimum(power, string.max_power_w)
+                    bare = np.minimum(bare, string.max_power_w)
                 energy = power * INTERVAL_SECONDS / HOUR / 1000.0
-                for hour, value in zip(sub["hour"].to_numpy(), energy):
+                unshaded = bare * INTERVAL_SECONDS / HOUR / 1000.0
+                for hour, value, bare in zip(
+                    sub["hour"].to_numpy(), energy, unshaded
+                ):
                     per_hour[int(hour)] = per_hour.get(int(hour), 0.0) + float(value)
+                    per_hour_unshaded[int(hour)] = per_hour_unshaded.get(
+                        int(hour), 0.0
+                    ) + float(bare)
 
             for hour in unique_hours:
                 physics_kwh = per_hour.get(hour, 0.0)
@@ -491,6 +525,8 @@ class ForecastEngine:
                         string_id=string.string_id,
                         potential_kwh=physics_kwh * correction,
                         physics_kwh=physics_kwh,
+                        unshaded_kwh=per_hour_unshaded.get(hour, physics_kwh)
+                        * correction,
                         weather=weather,
                         part=part,
                         method=method,
