@@ -222,3 +222,77 @@ def test_roundtrip_through_rows():
 def test_plant_key_shape():
     assert plant_key("overcast", "midday") == "overcast|midday"
     assert math.isclose(math.exp(0.0), 1.0)
+
+
+class TestDeclineReasons:
+    """"Not used" covers five different situations.
+
+    A caller that only sees a boolean can report a shrug, and on a plant where
+    four strings in five are dropped every hour the difference between them is
+    the entire diagnosis.
+    """
+
+    def _obs(self, **kwargs):
+        base = dict(
+            string_id="s1",
+            weather="clear",
+            part="midday",
+            measured_kwh=0.8,
+            physics_kwh=1.0,
+            weight=1.0,
+        )
+        base.update(kwargs)
+        return Observation(**base)
+
+    def test_a_good_observation_has_no_reason(self):
+        assert LogRatioModel().decline_reason(self._obs()) is None
+
+    def test_zero_weight(self):
+        assert LogRatioModel().decline_reason(self._obs(weight=0.0)) == "no_weight"
+
+    def test_zero_physics(self):
+        assert (
+            LogRatioModel().decline_reason(self._obs(physics_kwh=0.0)) == "no_physics"
+        )
+
+    def test_zero_production(self):
+        assert (
+            LogRatioModel().decline_reason(self._obs(measured_kwh=0.0))
+            == "no_production"
+        )
+
+    def test_an_absurd_ratio(self):
+        assert (
+            LogRatioModel().decline_reason(self._obs(measured_kwh=50.0))
+            == "ratio_out_of_range"
+        )
+
+    def test_a_censored_hour_the_physics_already_covers(self):
+        assert (
+            LogRatioModel().decline_reason(
+                self._obs(measured_kwh=0.5, physics_kwh=1.0, value_kind="lower_bound")
+            )
+            == "censored_and_consistent"
+        )
+
+    def test_a_censored_hour_that_beats_the_physics_is_learned(self):
+        assert (
+            LogRatioModel().decline_reason(
+                self._obs(measured_kwh=1.5, physics_kwh=1.0, value_kind="lower_bound")
+            )
+            is None
+        )
+
+    def test_the_reason_and_the_verdict_never_disagree(self):
+        cases = [
+            self._obs(),
+            self._obs(weight=0.0),
+            self._obs(physics_kwh=0.0),
+            self._obs(measured_kwh=0.0),
+            self._obs(measured_kwh=50.0),
+            self._obs(measured_kwh=0.5, value_kind="lower_bound"),
+            self._obs(measured_kwh=1.5, value_kind="lower_bound"),
+        ]
+        for obs in cases:
+            model = LogRatioModel()
+            assert (model.decline_reason(obs) is None) == model.observe(obs)

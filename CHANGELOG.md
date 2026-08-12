@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.5.2
+
+### Added
+
+- **The learning model says why it declined an observation.** "Not used"
+  covered five different situations -- no weight, no physics, no production,
+  an absurd ratio, and a censored hour the physics already explains. On a
+  plant where four strings in five are dropped every hour, the difference
+  between them is the whole diagnosis.
+
 ## 1.5.1
 
 ### Added

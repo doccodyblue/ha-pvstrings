@@ -1054,21 +1054,23 @@ class ForecastEngine:
                 continue
 
             weather, part = classes.get(hour, ("partly_cloudy", "midday"))
-            used = self.model.observe(
-                Observation(
-                    string_id=string_id,
-                    weather=weather,
-                    part=part,
-                    measured_kwh=row.energy_kwh,
-                    physics_kwh=physics_kwh,
-                    weight=quality.weight,
-                    value_kind=row.value_kind,
-                )
+            observation = Observation(
+                string_id=string_id,
+                weather=weather,
+                part=part,
+                measured_kwh=row.energy_kwh,
+                physics_kwh=physics_kwh,
+                weight=quality.weight,
+                value_kind=row.value_kind,
             )
-            if used:
+            declined = self.model.decline_reason(observation)
+            if declined is not None:
+                stats.skip(declined)
+                continue
+            if self.model.observe(observation):
                 stats.observations_used += 1
-            else:
-                stats.skip("ratio_out_of_range")
+            else:  # pragma: no cover - the two agree by construction
+                stats.skip("declined")
 
     @staticmethod
     def _fold_hourly(

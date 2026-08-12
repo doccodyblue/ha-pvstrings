@@ -231,6 +231,32 @@ class LogRatioModel:
 
     # -- learning ---------------------------------------------------------- #
 
+    def decline_reason(self, obs: Observation) -> str | None:
+        """Why this observation cannot be learned from, or ``None`` if it can.
+
+        Split out from :meth:`observe` because "not used" covers five quite
+        different situations, and a caller that only sees a boolean can report
+        no more than a shrug.  On a plant where four strings in five are being
+        dropped every hour, that difference is the whole diagnosis.
+        """
+        if obs.weight <= 0.0:
+            return "no_weight"
+        if obs.physics_kwh <= 0.0:
+            return "no_physics"
+        if obs.measured_kwh <= 0.0:
+            return "no_production"
+        ratio = obs.measured_kwh / obs.physics_kwh
+        if not MIN_RATIO <= ratio <= MAX_RATIO:
+            return "ratio_out_of_range"
+        if (
+            obs.value_kind == VALUE_LOWER_BOUND
+            and obs.physics_kwh >= obs.measured_kwh
+        ):
+            # Physics already predicts at least what we saw through the limit
+            # -- consistent, nothing to learn.
+            return "censored_and_consistent"
+        return None
+
     def observe(self, obs: Observation) -> bool:
         """Fold one observation into the model.
 
@@ -240,18 +266,12 @@ class LogRatioModel:
         update there would build a systematic downward bias into every sunny
         midday.
         """
-        if obs.weight <= 0.0 or obs.physics_kwh <= 0.0 or obs.measured_kwh <= 0.0:
+        if self.decline_reason(obs) is not None:
             return False
         ratio = obs.measured_kwh / obs.physics_kwh
-        if not MIN_RATIO <= ratio <= MAX_RATIO:
-            return False
 
         weight = obs.weight
         if obs.value_kind == VALUE_LOWER_BOUND:
-            if obs.physics_kwh >= obs.measured_kwh:
-                # Physics already predicts at least what we saw through the
-                # limit -- consistent, nothing to learn.
-                return False
             weight *= 0.5
         elif obs.value_kind == VALUE_RECONSTRUCTED:
             weight *= 0.35
