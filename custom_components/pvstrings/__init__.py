@@ -17,7 +17,7 @@ from typing import Any
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.exceptions import ConfigEntryNotReady, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
@@ -77,6 +77,7 @@ from .const import (
     DOMAIN,
     NO_GROUP,
     SERVICE_ADD_GEOMETRY,
+    SERVICE_BACKFILL,
     SERVICE_PURGE,
     SERVICE_RECALCULATE,
     SERVICE_RESET_LEARNING,
@@ -122,6 +123,17 @@ ADD_GEOMETRY_SCHEMA = vol.Schema(
 )
 
 ENTRY_SERVICE_SCHEMA = vol.Schema({vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string})
+BACKFILL_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
+        # Bounded by how long shading observations survive the nightly
+        # purge: offering four years would report a fine-looking result and
+        # then lose half of it overnight.
+        vol.Optional("days", default=540): vol.All(
+            vol.Coerce(int), vol.Range(min=7, max=730)
+        ),
+    }
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -384,6 +396,12 @@ def _async_register_services(hass: HomeAssistant) -> None:
         )
         await hass.async_add_executor_job(coordinator.store.vacuum)
 
+    async def _backfill(call: ServiceCall) -> dict[str, Any]:
+        from .backfill import async_backfill_shading
+
+        coordinator = _coordinator_for(hass, call.data[ATTR_CONFIG_ENTRY_ID])
+        return await async_backfill_shading(hass, coordinator, call.data["days"])
+
     async def _add_geometry(call: ServiceCall) -> None:
         coordinator = _coordinator_for(hass, call.data[ATTR_CONFIG_ENTRY_ID])
         string_id = call.data[ATTR_STRING_ID]
@@ -422,4 +440,11 @@ def _async_register_services(hass: HomeAssistant) -> None:
     )
     hass.services.async_register(
         DOMAIN, SERVICE_ADD_GEOMETRY, _add_geometry, schema=ADD_GEOMETRY_SCHEMA
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_BACKFILL,
+        _backfill,
+        schema=BACKFILL_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
     )

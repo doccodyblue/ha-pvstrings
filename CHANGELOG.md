@@ -1,5 +1,133 @@
 # Changelog
 
+## 1.4.2
+
+A second review pass over the 1.4.1 fixes found two regressions that the
+fixes themselves had introduced. Both are corrected here, each with a test
+verified to fail against the broken code.
+
+### Fixed
+
+- **The thinning deleted the entire backfill.** Two fixes that were each
+  right destroyed the feature between them: backfilled rows are stamped one
+  second off the five-minute grid so they cannot overwrite real measurements,
+  and old rows are thinned to a quarter to keep the refit affordable. Because
+  an hour holds twelve intervals, every backfilled row lands on the same
+  residue of `(ts / 300) % 4` -- never zero -- so the thinning removed all of
+  them rather than three quarters. A 540-day backfill lost everything past
+  four months on its first night, taking the winter cells it was run for with
+  it. Thinning now applies only to the dense five-minute grid; hourly
+  backfilled rows have nothing to thin.
+- **"Apply learned correction" did not cover the shading map.** The log-ratio
+  layer honoured `learning_enabled`; the shading map checked only the internal
+  argument, which the normal forecast always passes as true. A plant with the
+  switch turned off kept being multiplied down by a map it had been told to
+  ignore -- and, with learning off, no longer collected the observations that
+  would have justified it.
+
+## 1.4.1
+
+An independent multi-agent review of 1.4.0 found ten defects, two of which
+made the headline features of that release inert. All ten are fixed here, and
+the two that shipped dead now have end-to-end regression tests that were
+verified to fail against the broken code.
+
+### Fixed
+
+- **The shading factor never reached the physics.** `_interval_power`
+  computed a solar position for the lookup and then called `physics.run`
+  without passing the factor, so the two supposedly separate passes in the
+  learn cycle were byte-identical unshaded physics. The log-ratio model
+  absorbed each shadow into its per-string effect while the forecast path
+  subtracted it a second time, and the map was double-counted on every shaded
+  string.
+- **The irradiance plausibility guard never ran.** Inside `learn()` the check
+  read the hourly fold that the same cycle writes one line later, found it
+  empty, and memoised that answer for the whole window. It now reads the
+  five-minute rows the collector writes independently, so no ordering can
+  starve it.
+- **The backfill skipped the unit conversion the collector applies.** An
+  inverter publishing kilowatts reconstructed ratios a thousand times too
+  small, which nothing downstream recognised as a unit mismatch rather than a
+  very deep shadow. Backfilled ratios below two percent are now rejected and
+  logged as well.
+- **Backfilled observations overwrote real ones.** They were stamped at the
+  hour midpoint, which is a valid five-minute interval start, so the upsert
+  replaced one genuine measurement in twelve on the first run.
+- **Thin cells defined "unshaded".** The reference level was taken over shrunk
+  values, so the emptiest corners of the sky set the standard and an
+  unshaded string with optimistic physics came out shaded everywhere.
+- **`reset_learning` left the sky map in place**, so a reset removed the
+  per-string effects that were offsetting it and left the forecast worse than
+  before. It now clears the observations too -- also the only way back from a
+  bad backfill.
+- **The backfill offered four years of history against a two-year retention**,
+  so half of a long run vanished at the next nightly purge.
+- **A sensor gap could convict a healthy hour.** The ceiling was a mean over
+  the intervals the sensor reported, compared against energy over the whole
+  hour. Hours with less than 80 % irradiance coverage are now left unjudged.
+- **Twilight convicted itself.** Sensors that round to 0 W/m2 at dawn and dusk
+  produced a zero ceiling against real production. Production below a
+  nameplate-scaled floor is no longer judged.
+- **The sky map was refitted every daylight hour** from the entire
+  observation table, which reaches six figures in steady state. Refits are now
+  daily, the fitter no longer builds a second full copy of every observation,
+  and observations past a season are thinned to a quarter of their density.
+
+## 1.4.0
+
+### Added
+
+- **Per-string shading correction.** The sky map that the collector has been
+  filling since 1.0 is now actually applied: a grid over sun azimuth and
+  elevation, learned per string, multiplied onto the effective irradiance.
+  A chimney shadow sits at a fixed place in the sky, so the map is indexed by
+  sun position rather than by clock time and stays correct across the seasons.
+  Cells nobody has observed yet correct nothing at all.
+- **Deciduous shading.** The sun reaches each point in the sky twice a year,
+  once while the days lengthen and once while they shorten. For a wall those
+  visits are identical; for a tree they are not. Each cell splits in two
+  whenever -- and only whenever -- its own observations say the halves
+  disagree, so a site shaded by buildings keeps its full weight of evidence
+  and a site shaded by a tree gets the distinction it needs, with nobody
+  having to describe their garden to a config flow.
+- **Forgetting.** Observations decay with a two-year half-life, measured
+  against the newest data rather than the wall clock. Trees grow, sheds go up
+  and hedges get cut; the map has to be able to change its mind.
+- **`pvstrings.backfill_shading` service.** Reconstructs shading observations
+  from Home Assistant's long-term statistics and a historical irradiance
+  archive, so the correction can start from months of real data instead of
+  waiting a full turn of the seasons. On a five-string plant with sixteen
+  months of recorder history this produced 14 910 observations covering 60 to
+  117 sky cells per string.
+
+### Fixed
+
+- **The irradiance ceiling assumed nobody lives where it snows.** Ground
+  reflection was bounded at an albedo of 0.3; fresh snow reaches 0.9, and a
+  steep plane over snow collects a fifth of the horizontal irradiance again
+  from the ground alone -- enough to have thrown away good winter hours as
+  impossible. Now bounded at the physical worst case.
+- **The backfill's minimum-power threshold was absolute.** 25 W means
+  something quite different to a 300 Wp balcony panel and to a 30 kWp roof;
+  it now scales with nameplate.
+- **A mis-reading irradiance sensor could no longer be detected.** A measured
+  GHI is used as truth in three places at once -- it drives the physics that
+  actuals are compared against, it is the yardstick for the forecast bias, and
+  it is the denominator of every shading observation -- so a sensor that reads
+  low for part of the day corrupted all three while each stayed
+  self-consistent. Hours where the array produced more than the measured
+  irradiance physically allows are now dropped.
+- **Irradiance bias observations are weighted by irradiance.** A 20 W/m2 dawn
+  hour previously counted as heavily as a 600 W/m2 midday one, letting the
+  least consequential part of the day dominate a correction applied to all
+  of it.
+
+### Measured
+
+Out-of-sample on a five-string plant, trained on history to 2026-06-01 and
+scored on the hours after it: WMAPE 41.3 % -> 31.8 %, bias +21.6 % -> +0.4 %.
+
 ## 1.3.2
 
 ### Fixed

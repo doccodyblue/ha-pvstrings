@@ -307,6 +307,26 @@ class LogRatioModel:
 # --------------------------------------------------------------------------- #
 
 
+#: Irradiance at which a bias observation carries its full weight.  Above it
+#: the weight saturates; there is no such thing as a more-than-complete hour.
+BIAS_FULL_WEIGHT_WM2 = 600.0
+
+
+def bias_weight(measured_ghi: float) -> float:
+    """How much one hour should count towards the irradiance bias.
+
+    The bias table exists to correct *energy*, and an hour's contribution to
+    the day's energy error scales with its irradiance.  Counting a 20 W/m2
+    dawn hour as heavily as a 600 W/m2 midday hour lets the least consequential
+    and least reliable part of the day dominate a correction that is then
+    applied to the whole of it -- which is precisely how a table ends up with
+    more confidence in its 19:00 bucket than in its 13:00 one.
+    """
+    if measured_ghi <= 0.0:
+        return 0.0
+    return min(measured_ghi, BIAS_FULL_WEIGHT_WM2) / BIAS_FULL_WEIGHT_WM2
+
+
 @dataclass
 class GhiBiasModel:
     """Per (local hour, forecast horizon) correction of the irradiance source.

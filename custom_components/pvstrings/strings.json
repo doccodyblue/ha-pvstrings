@@ -399,6 +399,20 @@
           "description": "Free text, e.g. \"winter setting\"."
         }
       }
+    },
+    "backfill_shading": {
+      "name": "Backfill shading from history",
+      "description": "Reconstruct shading observations from Home Assistant's long-term statistics and a historical irradiance archive. Lets the per-string shading correction start from months of real data instead of waiting a full year of seasons. Safe to run more than once.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Plant",
+          "description": "Which plant to backfill."
+        },
+        "days": {
+          "name": "Days of history",
+          "description": "How far back to look. Hours without statistics are skipped."
+        }
+      }
     }
   }
 }

@@ -39,12 +39,20 @@ from .learning import (
     SCOPE_STRING,
     SCOPE_STRING_DAYPART,
     GhiBiasModel,
+    bias_weight,
     LogRatioModel,
     Observation,
     daypart,
     weather_class,
 )
 from .physics import PhysicsEngine, to_index
+from .plausibility import (
+    Plane,
+    exceeds_ceiling,
+    judgement_floor,
+    plant_ceiling_w,
+)
+from .shading import ShadingModel
 from .quality import (
     QUALITY_NIGHT,
     VALUE_LOWER_BOUND,
@@ -70,6 +78,13 @@ NOWCAST_MAX_HORIZON_H = 2
 #: Shading observations are only collected above this elevation; below it the
 #: ratio is dominated by the model's own low-sun uncertainty.
 SHADING_MIN_ELEVATION_DEG = 8.0
+
+#: An hour needs this much of its irradiance grid present before the ceiling
+#: may judge it.  The ceiling is a mean over the intervals the sensor reported,
+#: while the energy it is compared against covers the whole hour -- so a sensor
+#: that drops out over the bright half of an hour produces a ceiling built from
+#: the dim half and convicts itself.
+GHI_HOUR_MIN_COVERAGE = 0.8
 
 METHOD_PHYSICS = "physics"
 METHOD_CORRECTED = "physics+learned"
@@ -105,6 +120,7 @@ class LearnStats:
     observations_skipped: int = 0
     bias_observations: int = 0
     shading_observations: int = 0
+    ghi_hours_rejected: int = 0
     censored_hours: int = 0
     reconstructed_intervals: int = 0
 
@@ -115,6 +131,7 @@ class LearnStats:
             "observations_skipped": self.observations_skipped,
             "bias_observations": self.bias_observations,
             "shading_observations": self.shading_observations,
+            "ghi_hours_rejected": self.ghi_hours_rejected,
             "censored_hours": self.censored_hours,
             "reconstructed_intervals": self.reconstructed_intervals,
         }
@@ -145,8 +162,15 @@ class ForecastEngine:
         )
         self.model = LogRatioModel()
         self.ghi_bias = GhiBiasModel()
+        self.shading = ShadingModel()
         self._tz = ZoneInfo(plant.time_zone)
         self._monthly_weights: list[float] | None = None
+        #: Memoised result of the irradiance plausibility check.  One learn
+        #: cycle asks for the measured GHI three times over the same window;
+        #: the check is not free and must not be counted three times either.
+        self._implausible_key: tuple[int, int] | None = None
+        self._implausible_hours: frozenset[int] = frozenset()
+        self._shading_fitted_day: int | None = None
 
     # ------------------------------------------------------------------ #
     # model state
@@ -161,6 +185,30 @@ class ForecastEngine:
         self.ghi_bias = GhiBiasModel.from_rows(
             self.store.load_ghi_bias(self.plant.forecast_source)
         )
+        self.fit_shading(force=True)
+
+    def fit_shading(self, now_ts: float | None = None, force: bool = False) -> None:
+        """Rebuild the sky maps from the raw observations.
+
+        Refitted rather than stored: the observations are the durable thing,
+        and a map derived from them can be re-cut at a different resolution
+        later without a migration.  A few tens of thousands of rows group in
+        milliseconds, which is nothing next to the pvlib pass it feeds.
+
+        Refitted at most once a day unless forced.  In steady state the table
+        holds one row per five-minute interval per string for the whole
+        retention window -- hundreds of thousands of rows on a multi-string
+        plant -- and pulling all of them out of SQLite every daylight hour
+        would turn a cheap idea into a visible load on a small host.  A sky map
+        does not change materially between one hour and the next.
+        """
+        day = None if now_ts is None else int(now_ts // 86400)
+        if not force and day is not None and day == self._shading_fitted_day:
+            return
+        self.shading = ShadingModel.fit(
+            self.store.shading_rows_by_string(), now_ts=now_ts
+        )
+        self._shading_fitted_day = day
 
     def save_models(self, now_ts: int) -> None:
         for scope in (SCOPE_PLANT, SCOPE_STRING, SCOPE_STRING_DAYPART):
@@ -354,6 +402,17 @@ class ForecastEngine:
             int(hour) for hour in {int(h) for h in hour_keys} if covered.get(hour, True)
         )
         classes = self._classify_hours(conditions)
+        # Shading is a learned correction like any other, so it answers to both
+        # gates: ``apply_learning`` for callers that want the bare physics --
+        # the accuracy baseline, and every test that pins the chain itself --
+        # and the user's own "apply learned correction" switch.  Honouring only
+        # the first left a plant with learning turned off still being
+        # multiplied down by a map it had been told to ignore.
+        shading_position = (
+            self.physics.solar_position(index)
+            if apply_learning and self.plant.learning_enabled
+            else None
+        )
 
         results: list[HourForecast] = []
         for string in self.plant.strings:
@@ -372,6 +431,18 @@ class ForecastEngine:
                     continue
                 sub_index = index[mask]
                 sub = conditions.loc[mask]
+                shading_factor: pd.Series | float = 1.0
+                if shading_position is not None:
+                    sub_position = shading_position.loc[mask]
+                    shading_factor = pd.Series(
+                        self.shading.factors(
+                            string.string_id,
+                            sub_position["azimuth"].to_numpy(),
+                            sub_position["apparent_elevation"].to_numpy(),
+                            [value.timestamp() for value in sub_index],
+                        ),
+                        index=sub_index,
+                    )
                 result = self.physics.run(
                     sub_index,
                     segment,
@@ -382,6 +453,7 @@ class ForecastEngine:
                     wind_speed=pd.Series(sub["wind_ms"].to_numpy(), index=sub_index),
                     system_efficiency=self.plant.efficiency_of(string.string_id),
                     mount_type=string.mount_type,
+                    shading_factor=shading_factor,
                 )
                 power = result.dc_power_w.to_numpy()
                 if string.max_power_w:
@@ -563,9 +635,23 @@ class ForecastEngine:
         return out
 
     def _interval_power(
-        self, index: pd.DatetimeIndex, conditions: pd.DataFrame
+        self,
+        index: pd.DatetimeIndex,
+        conditions: pd.DataFrame,
+        apply_shading: bool = True,
     ) -> dict[str, dict[int, float]]:
-        """Physical DC power per string per interval, keyed by interval start."""
+        """Physical DC power per string per interval, keyed by interval start.
+
+        ``apply_shading`` must be false wherever the result is the denominator
+        of a shading observation.  Measuring the map against physics that
+        already contains the map would drive every ratio to one and freeze the
+        thing at whatever it happened to learn first.
+        """
+        shading_position = (
+            self.physics.solar_position(index)
+            if apply_shading and self.plant.learning_enabled
+            else None
+        )
         epochs = [int(value.timestamp()) - INTERVAL_SECONDS // 2 for value in index]
         hour_keys = conditions["hour"].to_numpy()
         unique_hours = sorted({int(hour) for hour in hour_keys})
@@ -582,6 +668,18 @@ class ForecastEngine:
                     continue
                 sub_index = index[mask]
                 sub = conditions.loc[mask]
+                shading_factor: pd.Series | float = 1.0
+                if shading_position is not None:
+                    sub_position = shading_position.loc[mask]
+                    shading_factor = pd.Series(
+                        self.shading.factors(
+                            string.string_id,
+                            sub_position["azimuth"].to_numpy(),
+                            sub_position["apparent_elevation"].to_numpy(),
+                            [value.timestamp() for value in sub_index],
+                        ),
+                        index=sub_index,
+                    )
                 result = self.physics.run(
                     sub_index,
                     segment,
@@ -592,6 +690,7 @@ class ForecastEngine:
                     wind_speed=pd.Series(sub["wind_ms"].to_numpy(), index=sub_index),
                     system_efficiency=self.plant.efficiency_of(string.string_id),
                     mount_type=string.mount_type,
+                    shading_factor=shading_factor,
                 )
                 sub_epochs = [
                     int(value.timestamp()) - INTERVAL_SECONDS // 2
@@ -635,7 +734,8 @@ class ForecastEngine:
                 conditions["dhi"] = np.nan
         return conditions
 
-    def _measured_ghi(self, start_ts: int, end_ts: int) -> pd.Series | None:
+    def _raw_measured_ghi(self, start_ts: int, end_ts: int) -> pd.Series | None:
+        """Whatever the sensor reported, before it has been believed."""
         sources = self.plant.weather_sources
         if not (sources.ghi_entity or sources.illuminance_entity):
             return None
@@ -649,6 +749,142 @@ class ForecastEngine:
         if not values:
             return None
         return pd.Series(values).sort_index()
+
+    def _measured_ghi(self, start_ts: int, end_ts: int) -> pd.Series | None:
+        series = self._raw_measured_ghi(start_ts, end_ts)
+        if series is None:
+            return None
+
+        rejected = self.implausible_ghi_hours(start_ts, end_ts, series)
+        if not rejected:
+            return series
+        hours = (series.index.to_numpy() // HOUR) * HOUR
+        keep = ~np.isin(hours, list(rejected))
+        kept = series[keep]
+        return kept if not kept.empty else None
+
+    # ------------------------------------------------------------------ #
+    # irradiance plausibility
+    # ------------------------------------------------------------------ #
+
+    def implausible_ghi_hours(
+        self,
+        start_ts: int,
+        end_ts: int,
+        series: pd.Series | None = None,
+    ) -> frozenset[int]:
+        """Hours whose measured irradiance the array itself contradicts.
+
+        Dropping the hour rather than correcting it is the conservative move:
+        we can prove the sensor is wrong, but not by how much, and the forecast
+        source is a serviceable second-best.  Silence is the common case -- a
+        healthy sensor never trips this.
+        """
+        key = (int(start_ts), int(end_ts))
+        if self._implausible_key == key:
+            return self._implausible_hours
+
+        result = self._find_implausible_ghi_hours(start_ts, end_ts, series)
+        self._implausible_key = key
+        self._implausible_hours = result
+        return result
+
+    def _find_implausible_ghi_hours(
+        self,
+        start_ts: int,
+        end_ts: int,
+        series: pd.Series | None,
+    ) -> frozenset[int]:
+        if series is None:
+            series = self._raw_measured_ghi(start_ts, end_ts)
+        if series is None or series.empty:
+            return frozenset()
+
+        actual = self._plant_hourly_actual(start_ts, end_ts)
+        if not actual:
+            return frozenset()
+
+        epochs = series.index.to_numpy()
+        position = self.physics.solar_position(
+            to_index(epochs + INTERVAL_SECONDS // 2)
+        )
+        elevation = position["apparent_elevation"].to_numpy()
+        azimuth = position["azimuth"].to_numpy()
+        ghi = series.to_numpy(dtype=float)
+        hours = (epochs // HOUR) * HOUR
+
+        expected_samples = HOUR // INTERVAL_SECONDS
+        rejected: set[int] = set()
+        for hour, per_string in actual.items():
+            mask = hours == hour
+            present = int(mask.sum())
+            if present < expected_samples * GHI_HOUR_MIN_COVERAGE:
+                # Too little of the hour was measured for its mean to stand
+                # against a whole hour of energy.  Leaving the hour alone is
+                # the safe outcome: an unjudged hour is still usable truth,
+                # a wrongly rejected one is not.
+                continue
+            planes = self._planes_at(hour)
+            if not planes:
+                continue
+            # Only strings that contributed a plane may contribute energy.  A
+            # string with no geometry on record would otherwise be counted
+            # against a ceiling that never made room for it, and accuse a
+            # perfectly good sensor.
+            measured_kwh = sum(
+                kwh for string_id, kwh in per_string.items() if string_id in planes
+            )
+            ceiling = plant_ceiling_w(
+                list(planes.values()), ghi[mask], elevation[mask], azimuth[mask]
+            )
+            # Both sides now describe the same, near-complete hour: the
+            # coverage gate above guarantees the samples span it.
+            if exceeds_ceiling(
+                measured_kwh * 1000.0,
+                float(np.mean(ceiling)),
+                floor_w=judgement_floor(self._total_kwp()),
+            ):
+                rejected.add(int(hour))
+        return frozenset(rejected)
+
+    def _planes_at(self, hour: int) -> dict[str, Plane]:
+        planes: dict[str, Plane] = {}
+        for string in self.plant.strings:
+            segment = self.geometry_at(string.string_id, hour)
+            if segment is None:
+                continue
+            planes[string.string_id] = Plane(
+                tilt_deg=segment.tilt_deg,
+                azimuth_deg=segment.azimuth_deg,
+                kwp=segment.kwp,
+            )
+        return planes
+
+    def _plant_hourly_actual(
+        self, start_ts: int, end_ts: int
+    ) -> dict[int, dict[str, float]]:
+        """Measured energy per hour per string, in kWh.
+
+        Read from the five-minute rows rather than the hourly fold, and that is
+        not an optimisation.  The fold is produced by the very learn cycle that
+        wants this answer, one line after the check runs, so reading it here
+        made the whole guard look at an empty table and quietly conclude that
+        every sensor reading was fine.  The five-minute rows are written by the
+        collector, independently of any cycle, so they are always already there.
+
+        Only measured, well-covered intervals count.  A missing or censored
+        string makes the sum too small, which can only ever *prevent* a
+        rejection -- the safe direction for a test that overrules a sensor.
+        """
+        totals: dict[int, dict[str, float]] = {}
+        for row in self.store.measured_5min_range(start_ts, end_ts):
+            hour = int(row["ts_utc"]) // HOUR * HOUR
+            bucket = totals.setdefault(hour, {})
+            energy = (
+                float(row["power_mean_w"]) * INTERVAL_SECONDS / HOUR / 1000.0
+            )
+            bucket[row["string_id"]] = bucket.get(row["string_id"], 0.0) + energy
+        return totals
 
     # ------------------------------------------------------------------ #
     # hourly materialisation
@@ -747,6 +983,9 @@ class ForecastEngine:
         if self.plant.learning_enabled:
             self._learn_effects(start, end, stats)
 
+        if stats.shading_observations:
+            self.fit_shading(now_ts)
+        stats.ghi_hours_rejected = len(self.implausible_ghi_hours(start, end))
         self.store.set_cursor(CURSOR_LEARN, end)
         self.store.set_cursor(CURSOR_HOURLY, end)
         self.save_models(now_ts)
@@ -761,9 +1000,12 @@ class ForecastEngine:
             return
 
         classes = self._classify_hours(conditions)
-        # One pvlib pass for the whole window, shared by the hourly fold and the
-        # shading collection.  Running the chain twice over the same intervals
-        # was pure waste in the hot path of every hourly update.
+        # Two passes over the same window, and they must stay two.  The shading
+        # map is measured against physics that knows nothing about shading;
+        # everything downstream is measured against physics that does.  Sharing
+        # one pass between them would either blind the map to its own subject
+        # or let the same shadow be subtracted twice.
+        raw_interval = self._interval_power(index, conditions, apply_shading=False)
         per_interval = self._interval_power(index, conditions)
         hourly_physics = self._fold_hourly(per_interval)
         actual = {
@@ -771,7 +1013,7 @@ class ForecastEngine:
             for row in self.store.hourly_range(start_ts, end_ts)
         }
 
-        self._collect_shading(index, per_interval, stats)
+        self._collect_shading(index, raw_interval, stats)
 
         for (hour, string_id), row in sorted(actual.items()):
             physics_kwh = hourly_physics.get(string_id, {}).get(hour)
@@ -945,6 +1187,7 @@ class ForecastEngine:
                     horizon_h=horizon,
                     measured_ghi=truth,
                     forecast_ghi=float(issue["ghi_wm2"]),
+                    weight=bias_weight(truth),
                 ):
                     stats.bias_observations += 1
 

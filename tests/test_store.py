@@ -340,3 +340,91 @@ class TestCensoringIsReversible:
         store.set_value_kind(300, "s1", "reconstructed")
         store.update_curtailment_flags([(0, 300, "s1")])
         assert store.fivemin_range("s1", 0, 900)[0]["value_kind"] == "reconstructed"
+
+
+class TestResettingLearning:
+    """The sky map is a learned correction and must go with the rest.
+
+    Clearing the effects while leaving the map behind is worse than clearing
+    neither: the forecast keeps being multiplied down, without the per-string
+    level the model had learned to offset it.  It is also the only way back
+    from a backfill built on a mis-scaled sensor.
+    """
+
+    def _observe(self, store: Store) -> None:
+        store.add_shading_obs(
+            [(1_700_000_000 + index * 300, "s1", 180.0, 30.0, 0.5, 1.0) for index in range(20)]
+        )
+
+    def test_observations_are_discarded(self, store: Store):
+        self._observe(store)
+        assert store.shading_count() == 20
+        assert store.clear_shading_obs() == 20
+        assert store.shading_count() == 0
+
+    def test_clearing_an_empty_table_is_harmless(self, store: Store):
+        assert store.clear_shading_obs() == 0
+
+    def test_a_refit_after_clearing_corrects_nothing(self, store: Store):
+        self._observe(store)
+        store.clear_shading_obs()
+        assert store.shading_rows_by_string() == {}
+
+
+class TestThinningSparesTheBackfill:
+    """Two fixes that were each right and together destroyed the feature.
+
+    Backfilled rows are stamped one second off the five-minute grid so they
+    cannot overwrite real measurements.  Old rows are thinned to a quarter to
+    keep the refit affordable.  Put together, every backfilled row lands on the
+    same residue of ``(ts/300) % 4`` -- never zero -- so the thinning deleted
+    all of them instead of three quarters, and a 540-day backfill lost
+    everything past four months on its first night.
+    """
+
+    NOW = 1_800_000_000
+    OLD = NOW - 300 * 86400  # well past the thinning horizon
+
+    def _hour(self, index: int) -> int:
+        return (self.OLD + index * 3600) // 3600 * 3600
+
+    def _seed(self, store: Store) -> tuple[int, int]:
+        live = [
+            (self._hour(0) + step, "s1", 180.0, 30.0, 0.9, 1.0)
+            for step in range(0, 3600, 300)
+        ]
+        backfilled = [
+            (self._hour(index) + 1801, "s1", 180.0, 30.0, 0.9, 0.35)
+            for index in range(12)
+        ]
+        store.add_shading_obs(live + backfilled)
+        return len(live), len(backfilled)
+
+    def test_backfilled_rows_all_survive(self, store: Store):
+        _live, backfilled = self._seed(store)
+        store.compact(self.NOW)
+        remaining = [
+            row
+            for row in store.shading_rows_by_string()["s1"]
+            if int(row[0]) % 300 != 0
+        ]
+        assert len(remaining) == backfilled
+
+    def test_the_dense_live_grid_is_still_thinned(self, store: Store):
+        live, _backfilled = self._seed(store)
+        store.compact(self.NOW)
+        remaining = [
+            row
+            for row in store.shading_rows_by_string()["s1"]
+            if int(row[0]) % 300 == 0
+        ]
+        assert 0 < len(remaining) < live
+
+    def test_recent_observations_are_untouched(self, store: Store):
+        recent = [
+            (self.NOW - 3600 + step, "s1", 180.0, 30.0, 0.9, 1.0)
+            for step in range(0, 3600, 300)
+        ]
+        store.add_shading_obs(recent)
+        store.compact(self.NOW)
+        assert store.shading_count() == len(recent)

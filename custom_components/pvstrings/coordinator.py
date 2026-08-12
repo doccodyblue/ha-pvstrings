@@ -620,6 +620,16 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         await self.async_request_refresh()
 
     async def async_reset_learning(self) -> None:
+        """Discard every learned correction, including the sky map.
+
+        The shading map is a learned correction like any other, and it is the
+        one the per-string effects are calibrated against.  Clearing the
+        effects while leaving the map in place is worse than clearing neither:
+        the forecast keeps being multiplied down without the offsetting level
+        the model had learned.  It is also the only way back from a backfill
+        built on a mis-scaled sensor.
+        """
         await self.hass.async_add_executor_job(self.store.clear_effects, None)
+        await self.hass.async_add_executor_job(self.store.clear_shading_obs)
         await self.hass.async_add_executor_job(self.engine.load_models)
         await self.async_request_refresh()

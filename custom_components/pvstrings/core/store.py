@@ -24,6 +24,11 @@ from .config import INTERVAL_SECONDS, GeometrySegment
 HOUR = 3600
 from .quality import VALUE_MEASURED
 
+#: Shading observations older than this are thinned to a quarter of their
+#: density.  Recent sky deserves full resolution; last spring does not, and
+#: the whole table is re-read on every refit.
+SHADING_THIN_DAYS = 120
+
 _LOGGER = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 2
@@ -410,6 +415,23 @@ class Store:
             "SELECT * FROM string_5min "
             "WHERE string_id = ? AND ts_utc >= ? AND ts_utc < ? ORDER BY ts_utc",
             (string_id, start_ts, end_ts),
+        )
+
+    def measured_5min_range(self, start_ts: int, end_ts: int) -> list[sqlite3.Row]:
+        """Clean, uncensored, well-covered intervals across every string.
+
+        The filters live in SQL so that a plausibility check over a long window
+        does not have to pull rows it will throw away.  Night needs no filter
+        of its own: in the dark the power is zero, and zero production can
+        never exceed a ceiling.
+        """
+        return self._query(
+            "SELECT ts_utc, string_id, power_mean_w FROM string_5min "
+            "WHERE ts_utc >= ? AND ts_utc < ? "
+            "AND power_mean_w IS NOT NULL AND value_kind = ? "
+            "AND coverage >= 0.8 AND COALESCE(limit_binding, 0) = 0 "
+            "ORDER BY ts_utc",
+            (start_ts, end_ts, VALUE_MEASURED),
         )
 
     def _hour_split(self, start_ts: int, end_ts: int) -> tuple[int, int]:
@@ -861,6 +883,45 @@ class Store:
                 payload,
             )
 
+    def shading_rows_by_string(
+        self,
+    ) -> dict[str, list[tuple[float, float, float, float, float]]]:
+        """Every usable observation, grouped by string, for a map refit.
+
+        Returned as plain tuples rather than rows: the fitter is pure and must
+        stay testable without a database behind it.
+        """
+        rows = self._query(
+            "SELECT ts_utc, string_id, azimuth_deg, elevation_deg, ratio, weight "
+            "FROM shading_obs ORDER BY string_id",
+            (),
+        )
+        grouped: dict[str, list[tuple[float, float, float, float, float]]] = {}
+        for row in rows:
+            grouped.setdefault(row["string_id"], []).append(
+                (
+                    float(row["ts_utc"]),
+                    float(row["azimuth_deg"]),
+                    float(row["elevation_deg"]),
+                    float(row["ratio"]),
+                    float(row["weight"]),
+                )
+            )
+        return grouped
+
+    def clear_shading_obs(self) -> int:
+        """Forget every shading observation.
+
+        Part of resetting the model, not a maintenance chore: the map is a
+        learned correction, and leaving it in place while the per-string
+        effects that offset it are wiped leaves the forecast worse than either
+        state on its own.  It is also the only way back from a backfill that
+        turned out to be built on a mis-scaled sensor.
+        """
+        with self._tx() as conn:
+            cur = conn.execute("DELETE FROM shading_obs")
+            return cur.rowcount
+
     def shading_count(self, string_id: str | None = None) -> int:
         sql = "SELECT COUNT(*) AS n FROM shading_obs"
         params: list[Any] = []
@@ -1059,7 +1120,22 @@ class Store:
                 "DELETE FROM shading_obs WHERE ts_utc < ?",
                 (now_ts - shading_days * 86400,),
             )
-            deleted["shading_obs"] = cur.rowcount
+            # Beyond a season, thin what survives.  A sky cell is described
+            # just as well by every fourth interval of an old afternoon as by
+            # all twelve, and keeping all of them grows the table -- which is
+            # re-read in full on every refit -- without improving the map.
+            #
+            # Only the five-minute grid.  Backfilled rows are already one per
+            # hour, a twelfth of the live density, so there is nothing in them
+            # to thin -- and they sit deliberately one second off the grid, so
+            # every one of them lands on the same residue and a blanket rule
+            # would delete the lot rather than three quarters of it.
+            cur2 = conn.execute(
+                "DELETE FROM shading_obs WHERE ts_utc < ? "
+                "AND ts_utc % 300 = 0 AND (ts_utc / 300) % 4 != 0",
+                (now_ts - SHADING_THIN_DAYS * 86400,),
+            )
+            deleted["shading_obs"] = cur.rowcount + cur2.rowcount
 
             # Backstop: nothing may outlive every rule above.  The condensing
             # rules keep one row per target hour indefinitely, which is the

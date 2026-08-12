@@ -112,6 +112,7 @@ SERVICE_RECALCULATE: Final = "recalculate"
 SERVICE_ADD_GEOMETRY: Final = "add_geometry"
 SERVICE_RESET_LEARNING: Final = "reset_learning"
 SERVICE_PURGE: Final = "purge"
+SERVICE_BACKFILL: Final = "backfill_shading"
 
 ATTR_STRING_ID: Final = "string_id"
 ATTR_CONFIG_ENTRY_ID: Final = "config_entry_id"

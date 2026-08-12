@@ -21,6 +21,12 @@ _LOGGER = logging.getLogger(__name__)
 
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 
+#: Reanalysis going back decades, used to reconstruct the irradiance a plant
+#: actually stood in on days nobody was recording it.  Lower resolution than
+#: the forecast models and roughly five days behind, so it is only ever asked
+#: about the past.
+OPEN_METEO_ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
+
 SOURCE_OPEN_METEO = "open_meteo"
 SOURCE_HA_WEATHER = "ha_weather"
 
@@ -114,6 +120,29 @@ def open_meteo_params(
     if model and model != "best_match":
         params["models"] = model
     return params
+
+
+def open_meteo_archive_params(
+    latitude: float,
+    longitude: float,
+    start_date: str,
+    end_date: str,
+) -> dict[str, Any]:
+    """Historical irradiance for one date range, same variables as the forecast.
+
+    Dates are plain ISO days in UTC; the archive has no notion of a forecast
+    horizon, so every row it returns is by definition an analysis.
+    """
+    return {
+        "latitude": round(latitude, 4),
+        "longitude": round(longitude, 4),
+        "hourly": ",".join(_HOURLY_VARIABLES),
+        "timeformat": "unixtime",
+        "timezone": "GMT",
+        "wind_speed_unit": "ms",
+        "start_date": start_date,
+        "end_date": end_date,
+    }
 
 
 def _get(values: Sequence[Any] | None, index: int) -> float | None:

@@ -71,3 +71,19 @@ add_geometry:
     note:
       selector:
         text:
+
+backfill_shading:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: pvstrings
+    days:
+      default: 540
+      selector:
+        number:
+          min: 7
+          max: 730
+          step: 1
+          unit_of_measurement: d

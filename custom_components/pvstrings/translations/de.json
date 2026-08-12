@@ -399,6 +399,20 @@
           "description": "Freitext, z. B. „Halter Winterstellung“."
         }
       }
+    },
+    "backfill_shading": {
+      "name": "Verschattung aus Verlauf nachtragen",
+      "description": "Rekonstruiert Verschattungsbeobachtungen aus den Langzeitstatistiken von Home Assistant und einem historischen Einstrahlungsarchiv. Damit startet die Verschattungskorrektur mit Monaten echter Daten, statt einen ganzen Jahresgang abzuwarten. Mehrfaches Ausführen ist unschädlich.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Anlage",
+          "description": "Welche Anlage nachgetragen wird."
+        },
+        "days": {
+          "name": "Tage Verlauf",
+          "description": "Wie weit zurück gesucht wird. Stunden ohne Statistik werden übersprungen."
+        }
+      }
     }
   }
 }
