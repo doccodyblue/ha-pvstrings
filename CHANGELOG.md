@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.5.0
+
+### Added
+
+- **`Shading now` sensor, per string.** How much of the sun's *current*
+  position the string can actually see, as a percentage: 100 % is a clear
+  view. A static table of sky cells says very little on a dashboard, because
+  the whole point of the map is that it varies with the sun -- one live number
+  per string is what tells you the tree is in the way, and it plots across the
+  day to draw the shadow's edge. Attributes carry the observation count, how
+  many sky cells that string has covered, and how many of them needed a
+  seasonal split.
+- **The sky map in diagnostics.** `model_observations` now reports the fitted
+  map alongside the log-ratio and irradiance-bias tables, so all three learned
+  layers can be read in one place.
+
 ## 1.4.2
 
 A second review pass over the 1.4.1 fixes found two regressions that the

@@ -328,6 +328,9 @@
       },
       "power_now": {
         "name": "Power now"
+      },
+      "string_shading_now": {
+        "name": "Shading now"
       }
     }
   },

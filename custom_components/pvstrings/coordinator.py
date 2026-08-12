@@ -29,7 +29,8 @@ from .const import (
 from .core import economics as econ
 from .core.config import PlantConfig
 from .core.forecast import HOUR, ForecastEngine, LearnStats, floor_hour
-from .core.physics import PhysicsEngine
+from .core.physics import PhysicsEngine, to_index
+from .core.quality import NIGHT_ELEVATION_DEG
 from .core.store import Store
 from .core.weather import (
     OPEN_METEO_URL,
@@ -86,6 +87,7 @@ class PvStringsData:
     amortisation: Any = None
     model_summary: dict[str, Any] = field(default_factory=dict)
     string_detail: dict[str, Any] = field(default_factory=dict)
+    shading: dict[str, Any] = field(default_factory=dict)
     irradiance: dict[str, Any] = field(default_factory=dict)
     learn_stats: dict[str, int] = field(default_factory=dict)
     weather_ok: bool = True
@@ -393,12 +395,54 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         data.scenarios = data.savings.pop("scenarios", {})
         data.string_detail = self._string_detail(day_start, now_ts)
         data.irradiance = self._irradiance_now(now_ts)
+        data.shading = self._shading_now(now_ts)
         data.model_summary = {
             "log_ratio": self.engine.model.summary(),
             "ghi_bias": self.engine.ghi_bias.summary(),
+            "shading": self.engine.shading.summary(),
             "observations": self.engine.model.observations_seen,
         }
         return data
+
+    def _shading_now(self, now_ts: int) -> dict[str, Any]:
+        """What the sky map is doing to each string at this moment.
+
+        The map's whole point is that it varies with the sun's position, so a
+        static table of cells says very little on a dashboard.  One number per
+        string, right now, is what tells you whether the tree is in the way --
+        and it can be plotted against the day to draw the shadow's edge.
+        """
+        index = to_index([now_ts])
+        position = self.engine.physics.solar_position(index)
+        azimuth = float(position["azimuth"].iloc[0])
+        elevation = float(position["apparent_elevation"].iloc[0])
+        counts = self.store.shading_observations_by_string()
+
+        out: dict[str, Any] = {
+            "sun_azimuth": round(azimuth, 1),
+            "sun_elevation": round(elevation, 1),
+            "strings": {},
+        }
+        for string in self.plant.strings:
+            found = self.engine.shading.maps.get(string.string_id)
+            below_horizon = elevation < NIGHT_ELEVATION_DEG
+            out["strings"][string.string_id] = {
+                "name": string.name,
+                "factor": (
+                    None
+                    if below_horizon
+                    else round(
+                        self.engine.shading.factor(
+                            string.string_id, azimuth, elevation, now_ts
+                        ),
+                        3,
+                    )
+                ),
+                "observations": counts.get(string.string_id, 0),
+                "cells": found.observed_cells if found else 0,
+                "seasonal_cells": (len(found.seasonal) // 2) if found else 0,
+            }
+        return out
 
     def _string_detail(self, day_start: int, now_ts: int) -> dict[str, Any]:
         """Per-string geometry history and today's data quality.

@@ -922,6 +922,16 @@ class Store:
             cur = conn.execute("DELETE FROM shading_obs")
             return cur.rowcount
 
+    def shading_observations_by_string(self) -> dict[str, int]:
+        """Counts in one query -- a dashboard should not cost one per string."""
+        return {
+            row["string_id"]: int(row["n"])
+            for row in self._query(
+                "SELECT string_id, COUNT(*) AS n FROM shading_obs GROUP BY string_id",
+                (),
+            )
+        }
+
     def shading_count(self, string_id: str | None = None) -> int:
         sql = "SELECT COUNT(*) AS n FROM shading_obs"
         params: list[Any] = []

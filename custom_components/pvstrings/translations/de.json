@@ -328,6 +328,9 @@
       },
       "power_now": {
         "name": "Leistung jetzt"
+      },
+      "string_shading_now": {
+        "name": "Verschattung jetzt"
       }
     }
   },

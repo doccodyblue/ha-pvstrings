@@ -22,7 +22,12 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import EntityCategory, UnitOfEnergy, UnitOfPower
+from homeassistant.const import (
+    PERCENTAGE,
+    EntityCategory,
+    UnitOfEnergy,
+    UnitOfPower,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.core import callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
@@ -380,6 +385,37 @@ PLANT_SENSORS: tuple[PlantSensorDescription, ...] = (
 
 
 STRING_SENSORS: tuple[StringSensorDescription, ...] = (
+    StringSensorDescription(
+        key="shading_now",
+        translation_key="string_shading_now",
+        native_unit_of_measurement=PERCENTAGE,
+        suggested_display_precision=0,
+        icon="mdi:tree-outline",
+        # Not diagnostic: on a plant with a tree or a gable this is the single
+        # number that explains the day, and it belongs next to the forecast
+        # rather than hidden in the diagnostics fold.
+        value_fn=lambda data, sid: (
+            None
+            if (data.shading.get("strings", {}).get(sid, {}).get("factor")) is None
+            else round(data.shading["strings"][sid]["factor"] * 100, 1)
+        ),
+        attrs_fn=lambda data, sid: {
+            **{
+                key: value
+                for key, value in data.shading.get("strings", {})
+                .get(sid, {})
+                .items()
+                if key != "factor"
+            },
+            "sun_azimuth": data.shading.get("sun_azimuth"),
+            "sun_elevation": data.shading.get("sun_elevation"),
+            "note": (
+                "100 % is a clear view of the sun's current position. Learned "
+                "from measurements, not from a description of the garden -- "
+                "sky the sun has not visited yet is never corrected."
+            ),
+        },
+    ),
     StringSensorDescription(
         key="forecast_today",
         translation_key="string_forecast_today",
