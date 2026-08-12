@@ -773,3 +773,25 @@ class TestUncoveredHours:
         midnight = [r for r in rows if r.ts_utc == DAY_START]
         assert midnight
         assert all(r.potential_kwh == pytest.approx(0.0) for r in midnight)
+
+
+class TestSkipReasonsAreRecorded:
+    """A bare "skipped" count is not an observation, it is a shrug.
+
+    A plant sat at zero learned observations for two days with nothing in the
+    diagnostics to distinguish "it was night" from "the physics came back
+    empty in broad daylight" -- four quite different problems behind one
+    number.
+    """
+
+    def test_a_night_hour_says_night(self, engine: ForecastEngine, store: Store):
+        stats = engine.learn(DAY_START + 3 * HOUR)
+        assert "zero_physics_in_daylight" not in stats.skipped
+
+    def test_the_reasons_add_up_to_the_total(self, engine: ForecastEngine):
+        stats = engine.learn(DAY_START + 5 * HOUR)
+        assert sum(stats.skipped.values()) == stats.observations_skipped
+
+    def test_the_breakdown_reaches_the_diagnostics(self, engine: ForecastEngine):
+        stats = engine.learn(DAY_START + 5 * HOUR)
+        assert "skipped_because" in stats.as_dict()

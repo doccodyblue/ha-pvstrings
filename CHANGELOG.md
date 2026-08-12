@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.5.1
+
+### Added
+
+- **Skipped observations now say why.** The learn cycle reported a bare count
+  of skipped observations, which is not an observation but a shrug: night, a
+  missing physics row, zero physics in broad daylight, thin coverage and an
+  out-of-range ratio are four quite different problems behind one number, and
+  a plant can sit at zero learned observations for days with nothing to point
+  at. `skipped_because` breaks the count down by reason.
+
 ## 1.5.0
 
 ### Added

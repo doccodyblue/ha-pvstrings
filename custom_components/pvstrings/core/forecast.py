@@ -23,7 +23,7 @@ cannot both chase the same signal:
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping, Sequence
 from zoneinfo import ZoneInfo
@@ -123,8 +123,17 @@ class LearnStats:
     ghi_hours_rejected: int = 0
     censored_hours: int = 0
     reconstructed_intervals: int = 0
+    #: Why observations were skipped.  A bare count says an hour was not used
+    #: and leaves you guessing which of four quite different reasons applied --
+    #: which is exactly how a plant can sit at zero learned observations for
+    #: days with nothing to point at.
+    skipped: dict[str, int] = field(default_factory=dict)
 
-    def as_dict(self) -> dict[str, int]:
+    def skip(self, reason: str) -> None:
+        self.observations_skipped += 1
+        self.skipped[reason] = self.skipped.get(reason, 0) + 1
+
+    def as_dict(self) -> dict[str, Any]:
         return {
             "hours_materialised": self.hours_materialised,
             "observations_used": self.observations_used,
@@ -134,6 +143,7 @@ class LearnStats:
             "ghi_hours_rejected": self.ghi_hours_rejected,
             "censored_hours": self.censored_hours,
             "reconstructed_intervals": self.reconstructed_intervals,
+            "skipped_because": dict(sorted(self.skipped.items())),
         }
 
 
@@ -1017,17 +1027,27 @@ class ForecastEngine:
 
         for (hour, string_id), row in sorted(actual.items()):
             physics_kwh = hourly_physics.get(string_id, {}).get(hour)
-            if physics_kwh is None or physics_kwh <= 0.0:
-                stats.observations_skipped += 1
+            if physics_kwh is None:
+                stats.skip("no_physics_row")
+                continue
+            if physics_kwh <= 0.0:
+                # Legitimate at night, an anomaly in daylight -- and the two
+                # were indistinguishable in the counter until now.
+                stats.skip(
+                    "night"
+                    if row.quality == QUALITY_NIGHT
+                    else "zero_physics_in_daylight"
+                )
                 continue
             if row.quality == QUALITY_NIGHT or row.energy_kwh is None:
+                stats.skip("night" if row.quality == QUALITY_NIGHT else "no_energy")
                 continue
             if row.value_kind == VALUE_LOWER_BOUND:
                 stats.censored_hours += 1
 
             quality = assess(row.coverage, 90.0, row.value_kind)
             if not quality.usable_for_learning:
-                stats.observations_skipped += 1
+                stats.skip("low_coverage")
                 self.store.add_exclusion(
                     hour, "low_coverage", string_id, f"coverage={row.coverage:.2f}"
                 )
@@ -1048,7 +1068,7 @@ class ForecastEngine:
             if used:
                 stats.observations_used += 1
             else:
-                stats.observations_skipped += 1
+                stats.skip("ratio_out_of_range")
 
     @staticmethod
     def _fold_hourly(
