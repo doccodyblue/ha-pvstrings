@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.5.3
+
+### Fixed
+
+- **Learning was dead on every installation with an irradiance sensor.** When
+  a measured GHI replaces the forecast one, the forecast's direct and diffuse
+  components no longer belong to it and are blanked, leaving the decomposition
+  to derive them. It never ran. `components_plausible` is a closure test, and
+  a closure test on a missing value cannot fail, so it answered "nothing
+  wrong" -- which was read as "usable". The blanked components then reached
+  `fillna(0.0)` and became a hard zero: a plant standing in 640 W/m2 modelled
+  with no beam and no diffuse light, only ground reflection.
+
+  The physics came out around a hundredth of the truth, so every
+  measured-versus-physics ratio blew past the sanity bound and the log-ratio
+  model, the shading map and the curtailment detection all silently stopped
+  learning. On the reference plant this showed as one usable observation an
+  hour out of five, no shading observations at all for three of five strings,
+  and no curtailment ever detected. After the fix: five of five, and shading
+  observations from every string.
+
+  The bitter part is who it hit: only installations that had gone to the
+  trouble of fitting an irradiance sensor, because that is the path that
+  blanks the components in the first place.
+
+### Added
+
+- **Recent hourly rows in diagnostics.** Coverage, quality and value kind per
+  hour per string for the last day. Every question about why the model is not
+  learning ends there, and without them the answer has to be inferred from a
+  counter.
+
 ## 1.5.2
 
 ### Added

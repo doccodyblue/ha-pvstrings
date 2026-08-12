@@ -210,7 +210,23 @@ class PhysicsEngine:
             derived_dni, derived_dhi = self.decompose(ghi, solar_position, index)
             return derived_dni, derived_dhi, pd.Series(False, index=index)
 
-        plausible = self.components_plausible(ghi, dni, dhi, solar_position)
+        # Present and plausible are two different questions, and conflating
+        # them is expensive.  ``components_plausible`` is a closure test, and a
+        # closure test on a missing value cannot fail -- so it answers "true",
+        # meaning "I found nothing wrong", which is not the same as "this is
+        # usable".  Taken at face value the missing components then survive to
+        # ``fillna(0.0)`` and become a hard zero: a plant standing in 640 W/m2
+        # is modelled with no beam and no diffuse light, leaving only the
+        # ground reflection.  The physics comes out around a hundredth of the
+        # truth, every measured-versus-physics ratio explodes past the sanity
+        # bound, and the learning quietly stops -- on precisely the
+        # installations that took the trouble to fit an irradiance sensor,
+        # because that is the path that blanks the components in the first
+        # place.
+        present = dni.notna() & dhi.notna()
+        plausible = (
+            self.components_plausible(ghi, dni, dhi, solar_position) & present
+        )
         if plausible.all():
             return dni.fillna(0.0), dhi.fillna(0.0), plausible
 

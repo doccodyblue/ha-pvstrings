@@ -307,3 +307,103 @@ class TestTurbidityFallback:
             engine.clearsky(index)
             engine.clearsky(index)
         assert sum("turbidity" in r.message for r in caplog.records) == 1
+
+
+class TestMissingComponentsAreNotPlausibleComponents:
+    """Present and plausible are two different questions.
+
+    ``components_plausible`` is a closure test, and a closure test on a missing
+    value cannot fail -- so it answers "I found nothing wrong", which is not
+    the same as "this is usable".  Taken at face value the missing components
+    reached ``fillna(0.0)`` and became a hard zero: a plant standing in
+    640 W/m2 modelled with no beam and no diffuse light, only ground
+    reflection.  The physics came out around a hundredth of the truth, every
+    measured-versus-physics ratio blew past the sanity bound, and the learning
+    stopped -- on exactly the installations that had fitted an irradiance
+    sensor, because that is the path that blanks the components.
+    """
+
+    GHI = 643.0
+
+    def _engine(self) -> PhysicsEngine:
+        return PhysicsEngine(
+            latitude=53.7,
+            longitude=10.0,
+            elevation_m=20.0,
+            albedo=0.2,
+            transposition_model="perez-driesse",
+            time_zone="Europe/Berlin",
+        )
+
+    def _midday(self):
+        engine = self._engine()
+        index = to_index([1_755_000_000 + step * 300 for step in range(6)])
+        return engine, index, engine.solar_position(index)
+
+    def _series(self, index, value):
+        return pd.Series([value] * len(index), index=index)
+
+    def test_nan_components_are_decomposed_not_zeroed(self):
+        engine, index, position = self._midday()
+        ghi = self._series(index, self.GHI)
+        blank = self._series(index, float("nan"))
+        dni, dhi, _ = engine.ensure_components(ghi, blank, blank, position, index)
+        assert dni.iloc[0] > 100.0
+        assert dhi.iloc[0] > 10.0
+
+    def test_nan_matches_an_absent_series(self):
+        """Blanking the components must behave exactly like never having them."""
+        engine, index, position = self._midday()
+        ghi = self._series(index, self.GHI)
+        blank = self._series(index, float("nan"))
+        by_nan = engine.ensure_components(ghi, blank, blank, position, index)
+        by_none = engine.ensure_components(ghi, None, None, position, index)
+        assert by_nan[0].round(6).equals(by_none[0].round(6))
+        assert by_nan[1].round(6).equals(by_none[1].round(6))
+
+    def test_nan_components_are_never_reported_plausible(self):
+        engine, index, position = self._midday()
+        ghi = self._series(index, self.GHI)
+        blank = self._series(index, float("nan"))
+        _dni, _dhi, plausible = engine.ensure_components(
+            ghi, blank, blank, position, index
+        )
+        assert not plausible.any()
+
+    def test_one_missing_interval_does_not_discard_the_others(self):
+        engine, index, position = self._midday()
+        ghi = self._series(index, self.GHI)
+        dni = self._series(index, 515.0)
+        dhi = self._series(index, 245.0)
+        dni.iloc[2] = float("nan")
+        out_dni, _out_dhi, plausible = engine.ensure_components(
+            ghi, dni, dhi, position, index
+        )
+        assert out_dni.iloc[0] == pytest.approx(515.0)
+        assert out_dni.iloc[2] > 100.0  # derived, not zero
+        assert not plausible.iloc[2]
+        assert plausible.iloc[0]
+
+    def test_good_components_still_pass_through(self):
+        engine, index, position = self._midday()
+        ghi = self._series(index, self.GHI)
+        zenith = np.radians(position["apparent_zenith"])
+        dhi = self._series(index, 245.0)
+        dni = (ghi - dhi) / np.cos(zenith).clip(lower=0.01)
+        out_dni, out_dhi, plausible = engine.ensure_components(
+            ghi, dni, dhi, position, index
+        )
+        assert plausible.all()
+        assert out_dni.iloc[0] == pytest.approx(dni.iloc[0])
+        assert out_dhi.iloc[0] == pytest.approx(245.0)
+
+    def test_a_real_array_produces_real_power_from_a_measured_ghi(self):
+        """The end-to-end symptom: 1.4 kWh became 0.014 kWh."""
+        engine, index, _position = self._midday()
+        ghi = self._series(index, self.GHI)
+        blank = self._series(index, float("nan"))
+        segment = GeometrySegment(0, azimuth_deg=180, tilt_deg=30, kwp=1.8)
+        result = engine.run(index, segment, ghi=ghi, dni=blank, dhi=blank)
+        # A 1.8 kWp south-facing array under 643 W/m2 makes hundreds of watts,
+        # not the ~14 W that ground reflection alone would give.
+        assert result.dc_power_w.iloc[0] > 400.0
