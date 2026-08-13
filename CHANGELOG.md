@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.7.1
+
+### Fixed
+
+- **The sky map now refits when the evidence moves, not once a day.** The
+  daily cadence was introduced to keep a mature map affordable -- in steady
+  state the table holds one row per five-minute interval per string across
+  the retention window -- but it is badly wrong at the other end of a plant's
+  life. A two-day-old map gains half its size in a single morning, and holding
+  that back until tomorrow means a whole day of sun corrects nothing. Observed
+  on the reference plant: 502 observations in the database against a map still
+  built from the 382 it had at breakfast.
+
+  The trigger is proportional growth, per string, which handles both ends
+  without a special case: a young map follows a morning immediately because a
+  morning is a large fraction of what it knows, a mature one falls back to the
+  daily floor. Per string because the maps are per string -- a plant-wide
+  total would let one long-established string hold back a new or repaired one.
+
 ## 1.7.0
 
 ### Added

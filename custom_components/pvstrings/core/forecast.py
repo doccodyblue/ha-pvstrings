@@ -79,6 +79,16 @@ NOWCAST_MAX_HORIZON_H = 2
 #: ratio is dominated by the model's own low-sun uncertainty.
 SHADING_MIN_ELEVATION_DEG = 8.0
 
+#: How much the pile of shading observations must grow before the sky map is
+#: worth rebuilding.  Proportional on purpose: a two-day-old map gains half
+#: its size in a morning and should follow immediately, while a mature one is
+#: barely moved by the same morning and can wait for the daily refit.
+SHADING_REFIT_GROWTH = 1.10
+
+#: ...but never for a handful of rows, or a quiet winter afternoon would
+#: rebuild the map every hour on a plant that has almost nothing in it.
+SHADING_REFIT_MIN_NEW = 24
+
 #: An hour needs this much of its irradiance grid present before the ceiling
 #: may judge it.  The ceiling is a mean over the intervals the sensor reported,
 #: while the energy it is compared against covers the whole hour -- so a sensor
@@ -185,6 +195,7 @@ class ForecastEngine:
         self._implausible_key: tuple[int, int] | None = None
         self._implausible_hours: frozenset[int] = frozenset()
         self._shading_fitted_day: int | None = None
+        self._shading_fitted_counts: dict[str, int] = {}
 
     # ------------------------------------------------------------------ #
     # model state
@@ -209,20 +220,43 @@ class ForecastEngine:
         later without a migration.  A few tens of thousands of rows group in
         milliseconds, which is nothing next to the pvlib pass it feeds.
 
-        Refitted at most once a day unless forced.  In steady state the table
-        holds one row per five-minute interval per string for the whole
-        retention window -- hundreds of thousands of rows on a multi-string
-        plant -- and pulling all of them out of SQLite every daylight hour
-        would turn a cheap idea into a visible load on a small host.  A sky map
-        does not change materially between one hour and the next.
+        Refitted when the evidence has actually moved, not on a schedule.
+
+        The cost of a refit scales with the size of the table, and in steady
+        state that is one row per five-minute interval per string across the
+        retention window -- hundreds of thousands of rows.  Doing it every
+        daylight hour would be a visible load on a small host.  But a fixed
+        daily cadence is wrong at the other end of the plant's life: a map two
+        days old grows by half its size in a morning, and holding that back
+        until tomorrow means a whole day of sun corrects nothing.
+
+        Tying the trigger to *proportional* growth handles both without a
+        special case.  A young map refits several times a day because a
+        morning is a large fraction of what it knows; a mature one falls back
+        to the daily floor because the same morning barely moves the total.
         """
         day = None if now_ts is None else int(now_ts // 86400)
-        if not force and day is not None and day == self._shading_fitted_day:
+        counts = self.store.shading_observations_by_string()
+        fresh_day = day is None or day != self._shading_fitted_day
+        # Per string, because the maps are per string.  A plant-wide total
+        # would let one long-established string hold back a new or repaired
+        # one: sixty fresh rows against a sibling's three thousand is not ten
+        # percent of anything, and that string's map would sit idle for a day
+        # while the sun crossed the sky it needs to see.
+        grown = any(
+            count >= self._shading_fitted_counts.get(string_id, 0)
+            * SHADING_REFIT_GROWTH
+            and count - self._shading_fitted_counts.get(string_id, 0)
+            >= SHADING_REFIT_MIN_NEW
+            for string_id, count in counts.items()
+        )
+        if not (force or fresh_day or grown):
             return
         self.shading = ShadingModel.fit(
             self.store.shading_rows_by_string(), now_ts=now_ts
         )
         self._shading_fitted_day = day
+        self._shading_fitted_counts = dict(counts)
 
     def save_models(self, now_ts: int) -> None:
         for scope in (SCOPE_PLANT, SCOPE_STRING, SCOPE_STRING_DAYPART):

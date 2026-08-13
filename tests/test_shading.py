@@ -429,14 +429,77 @@ class TestTheReferenceComesFromEvidence:
         assert sky.factor(110.0, 26.0) < 0.45
 
 
-class TestRefitIsThrottled:
-    """Refitting every daylight hour is a visible load on a small host.
+class TestRefitFollowsTheEvidence:
+    """Refit cost scales with the table, so the trigger must scale with it too.
 
-    In steady state the table holds one row per five-minute interval per
-    string for the whole retention window; pulling all of them out of SQLite
-    once an hour buys nothing, because a sky map does not change materially
-    between one hour and the next.
+    Every daylight hour is far too often once the table holds a year of
+    five-minute rows. Once a day is far too seldom for a map two days old,
+    which gains half its size in a morning -- holding that back until tomorrow
+    means a whole day of sun corrects nothing, which is exactly what happened
+    on the reference plant.
     """
+
+    @staticmethod
+    def _observe(store, count, offset=0):
+        store.add_shading_obs(
+            [
+                (SUMMER + (offset + i) * 300, "s1", 180.0, 30.0, 0.9, 1.0)
+                for i in range(count)
+            ]
+        )
+
+    def test_a_young_map_follows_a_morning_of_data(self, seeded_store, plant):
+        from core.forecast import ForecastEngine
+
+        engine = ForecastEngine(plant, seeded_store)
+        self._observe(seeded_store, 100)
+        engine.fit_shading(SUMMER, force=True)
+        calls = {"n": 0}
+        original = seeded_store.shading_rows_by_string
+
+        def counting():
+            calls["n"] += 1
+            return original()
+
+        seeded_store.shading_rows_by_string = counting
+        # A morning adds well over ten percent to a hundred rows.
+        self._observe(seeded_store, 60, offset=1000)
+        engine.fit_shading(SUMMER + 3600)
+        assert calls["n"] == 1, "a young map must not wait until tomorrow"
+
+    def test_a_mature_map_ignores_the_same_morning(self, seeded_store, plant):
+        from core.forecast import ForecastEngine
+
+        engine = ForecastEngine(plant, seeded_store)
+        self._observe(seeded_store, 3000)
+        engine.fit_shading(SUMMER, force=True)
+        calls = {"n": 0}
+        original = seeded_store.shading_rows_by_string
+
+        def counting():
+            calls["n"] += 1
+            return original()
+
+        seeded_store.shading_rows_by_string = counting
+        self._observe(seeded_store, 60, offset=100000)
+        engine.fit_shading(SUMMER + 3600)
+        assert calls["n"] == 0, "sixty rows must not move a map of three thousand"
+
+    def test_a_handful_of_rows_does_not_thrash(self, seeded_store, plant):
+        """Ten percent of almost nothing is still almost nothing."""
+        from core.forecast import ForecastEngine
+
+        engine = ForecastEngine(plant, seeded_store)
+        self._observe(seeded_store, 10)
+        engine.fit_shading(SUMMER, force=True)
+        calls = {"n": 0}
+        original = seeded_store.shading_rows_by_string
+        seeded_store.shading_rows_by_string = lambda: (
+            calls.__setitem__("n", calls["n"] + 1) or original()
+        )
+        self._observe(seeded_store, 5, offset=500)
+        engine.fit_shading(SUMMER + 3600)
+        assert calls["n"] == 0
 
     def test_the_same_day_does_not_refit(self, seeded_store, plant):
         from core.forecast import ForecastEngine
@@ -639,3 +702,38 @@ class TestTheUserSwitchIsHonoured:
         rows = engine.forecast(start, hours=1, start_ts=start)
         bare = sum(row.potential_kwh for row in rows if row.string_id == "s1")
         assert off == pytest.approx(bare, rel=1e-6)
+
+    def test_one_busy_string_does_not_hold_back_a_new_one(
+        self, seeded_store, plant
+    ):
+        """The maps are per string, so the trigger has to be too.
+
+        A string added later, or one whose sensor was only just repaired, has
+        almost no history. Measured against a sibling's three thousand rows its
+        first morning is not ten percent of anything, and it would sit
+        uncorrected until the next day.
+        """
+        from core.forecast import ForecastEngine
+
+        engine = ForecastEngine(plant, seeded_store)
+        seeded_store.add_shading_obs(
+            [(SUMMER + i * 300, "s1", 180.0, 30.0, 0.9, 1.0) for i in range(3000)]
+        )
+        seeded_store.add_shading_obs(
+            [(SUMMER + i * 300, "s2", 180.0, 30.0, 0.9, 1.0) for i in range(40)]
+        )
+        engine.fit_shading(SUMMER, force=True)
+        calls = {"n": 0}
+        original = seeded_store.shading_rows_by_string
+        seeded_store.shading_rows_by_string = lambda: (
+            calls.__setitem__("n", calls["n"] + 1) or original()
+        )
+        # A morning for the young string; nothing at all for the busy one.
+        seeded_store.add_shading_obs(
+            [
+                (SUMMER + (100_000 + i) * 300, "s2", 180.0, 30.0, 0.9, 1.0)
+                for i in range(60)
+            ]
+        )
+        engine.fit_shading(SUMMER + 3600)
+        assert calls["n"] == 1
