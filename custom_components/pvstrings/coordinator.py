@@ -99,6 +99,9 @@ class PvStringsData:
     #: changes only on a refit, and the recorder can then reuse one stored
     #: attribute blob instead of writing the map out on every update.
     sky_map: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    #: What the sky is expected to do today and tomorrow, from the same
+    #: forecast rows that drive the yield prediction.
+    outlook: dict[str, dict[str, Any]] = field(default_factory=dict)
     irradiance: dict[str, Any] = field(default_factory=dict)
     learn_stats: dict[str, int] = field(default_factory=dict)
     weather_ok: bool = True
@@ -471,6 +474,14 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         data.scenarios = data.savings.pop("scenarios", {})
         data.string_detail = self._string_detail(day_start, now_ts)
         data.irradiance = self._irradiance_now(now_ts)
+        data.outlook = {
+            "today": self.store.weather_outlook(
+                day_start, day_end, self.plant.forecast_source
+            ),
+            "tomorrow": self.store.weather_outlook(
+                tomorrow_start, tomorrow_end, self.plant.forecast_source
+            ),
+        }
         data.shading = self._shading_now(now_ts)
         data.sky_map = {
             string.string_id: self.engine.shading.grid(string.string_id)

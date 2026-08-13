@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.9.0
+
+### Added
+
+- **`Rain probability tomorrow` sensor.** The highest hourly chance of rain
+  over the day, from the same forecast run that drives the yield prediction,
+  with cloud cover and rain volume for today and tomorrow as attributes.
+
+  It exists because a controller deciding how much battery to hold back
+  overnight should read the weather rather than infer it. The Node-RED flow
+  this integration feeds was classifying tomorrow from a kilowatt-hour figure
+  -- eight or more meant sunny -- which is exactly backwards on a clear cold
+  winter day: little yield, classified as rain, and the battery holds a
+  reserve it does not need.
+
+  `precipitation_probability` is now requested from Open-Meteo and stored per
+  hour, and mapped on the Home Assistant weather fallback path too. The
+  reanalysis archive shares the request and answers with nulls rather than an
+  error, which is correct -- a record of what happened carries no likelihood.
+
+### Changed
+
+- Schema 3: `weather_forecast` gains `rain_probability_pct`. Existing
+  databases are altered in place; rows written before the upgrade keep a null,
+  because the source was never asked for it.
+
 ## 1.8.0
 
 ### Added

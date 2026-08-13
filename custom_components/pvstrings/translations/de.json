@@ -334,6 +334,9 @@
       },
       "string_sky_map": {
         "name": "Himmelskarte"
+      },
+      "rain_probability_tomorrow": {
+        "name": "Regenwahrscheinlichkeit morgen"
       }
     }
   },

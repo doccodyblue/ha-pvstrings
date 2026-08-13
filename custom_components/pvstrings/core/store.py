@@ -31,7 +31,7 @@ SHADING_THIN_DAYS = 120
 
 _LOGGER = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS string_geometry (
@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS weather_forecast (
     wind_ms              REAL,
     humidity_pct         REAL,
     rain_mm              REAL,
+    rain_probability_pct REAL,
     pressure_hpa         REAL,
     components_plausible INTEGER,
     PRIMARY KEY (issued_at_utc, ts_utc, source)
@@ -265,6 +266,23 @@ class Store:
                 )
                 pending = current
                 self._conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+        if pending is not None and pending < 3:
+            # ``CREATE TABLE IF NOT EXISTS`` in _SCHEMA only shapes a *new*
+            # database; an existing one keeps its old columns and every insert
+            # would fail on the arity.  Adding it is cheap and the old rows
+            # legitimately stay NULL -- the source was never asked for it.
+            with self._lock:
+                columns = {
+                    row[1]
+                    for row in self._conn.execute(
+                        "PRAGMA table_info(weather_forecast)"
+                    )
+                }
+                if "rain_probability_pct" not in columns:
+                    self._conn.execute(
+                        "ALTER TABLE weather_forecast "
+                        "ADD COLUMN rain_probability_pct REAL"
+                    )
         if pending is not None and pending < 2:
             # plant_hourly became the source for whole-hour grid figures, and
             # those are read over the whole period since commissioning.  Without
@@ -659,8 +677,8 @@ class Store:
                 INSERT INTO weather_forecast
                     (issued_at_utc, ts_utc, source, horizon_h, ghi_wm2, dni_wm2,
                      dhi_wm2, temp_c, clouds_pct, wind_ms, humidity_pct, rain_mm,
-                     pressure_hpa, components_plausible)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     rain_probability_pct, pressure_hpa, components_plausible)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (issued_at_utc, ts_utc, source) DO UPDATE SET
                     ghi_wm2              = excluded.ghi_wm2,
                     dni_wm2              = excluded.dni_wm2,
@@ -670,6 +688,7 @@ class Store:
                     wind_ms              = excluded.wind_ms,
                     humidity_pct         = excluded.humidity_pct,
                     rain_mm              = excluded.rain_mm,
+                    rain_probability_pct = excluded.rain_probability_pct,
                     pressure_hpa         = excluded.pressure_hpa,
                     components_plausible = excluded.components_plausible
                 """,
@@ -696,6 +715,59 @@ class Store:
             """,
             (source, start_ts, end_ts, source),
         )
+
+    def weather_outlook(
+        self, start_ts: int, end_ts: int, source: str
+    ) -> dict[str, float | None]:
+        """What the sky is expected to do over a window.
+
+        Built on the same newest-issue-per-hour rule as :meth:`latest_forecast`
+        so the outlook and the yield forecast never describe different runs.
+
+        The rain figure is the **highest** hourly probability, not the mean:
+        one hour of certain rain makes a day you plan around, and averaging it
+        against twenty-three dry ones hides exactly that.  Cloud cover is a
+        mean, because it is a condition rather than an event.  Rain volume is
+        summed for the same reason the probability is not.
+
+        ``None`` where the source said nothing -- an outlook of zero and an
+        outlook nobody offered are different answers, and the caller has to be
+        able to tell them apart.
+        """
+        rows = self._query(
+            """
+            SELECT MAX(f.rain_probability_pct) AS rain_probability_pct,
+                   AVG(f.clouds_pct)           AS clouds_pct,
+                   SUM(f.rain_mm)              AS rain_mm,
+                   COUNT(*)                    AS hours
+            FROM weather_forecast f
+            JOIN (
+                SELECT ts_utc, MAX(issued_at_utc) AS issued
+                FROM weather_forecast
+                WHERE source = ? AND ts_utc >= ? AND ts_utc < ?
+                GROUP BY ts_utc
+            ) latest
+              ON latest.ts_utc = f.ts_utc AND latest.issued = f.issued_at_utc
+            WHERE f.source = ?
+            """,
+            (source, start_ts, end_ts, source),
+        )
+        row = rows[0] if rows else None
+        if row is None or not row["hours"]:
+            return {"rain_probability_pct": None, "clouds_pct": None, "rain_mm": None}
+        return {
+            "rain_probability_pct": (
+                None
+                if row["rain_probability_pct"] is None
+                else round(float(row["rain_probability_pct"]), 1)
+            ),
+            "clouds_pct": (
+                None if row["clouds_pct"] is None else round(float(row["clouds_pct"]), 1)
+            ),
+            "rain_mm": (
+                None if row["rain_mm"] is None else round(float(row["rain_mm"]), 2)
+            ),
+        }
 
     def forecast_for_verification(
         self, start_ts: int, end_ts: int, source: str, max_horizon_h: int = 48

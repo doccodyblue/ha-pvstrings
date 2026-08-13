@@ -348,6 +348,34 @@ PLANT_SENSORS: tuple[PlantSensorDescription, ...] = (
         ),
     ),
     PlantSensorDescription(
+        key="rain_probability_tomorrow",
+        translation_key="rain_probability_tomorrow",
+        native_unit_of_measurement=PERCENTAGE,
+        suggested_display_precision=0,
+        icon="mdi:weather-rainy",
+        # Deliberately not diagnostic: a battery controller deciding how much
+        # charge to hold back overnight reads this, so it belongs with the
+        # forecast rather than behind the diagnostics fold.  The one figure
+        # that steers a decision is the state; the rest are attributes.
+        value_fn=lambda data, _c: (
+            data.outlook.get("tomorrow", {}).get("rain_probability_pct")
+        ),
+        attrs_fn=lambda data, _c: {
+            "clouds_pct": data.outlook.get("tomorrow", {}).get("clouds_pct"),
+            "rain_mm": data.outlook.get("tomorrow", {}).get("rain_mm"),
+            "today_rain_probability_pct": (
+                data.outlook.get("today", {}).get("rain_probability_pct")
+            ),
+            "today_clouds_pct": data.outlook.get("today", {}).get("clouds_pct"),
+            "today_rain_mm": data.outlook.get("today", {}).get("rain_mm"),
+            "note": (
+                "Highest hourly chance of rain over the day, from the same "
+                "forecast run that drives the yield prediction. Unknown rather "
+                "than zero when the source does not offer it."
+            ),
+        },
+    ),
+    PlantSensorDescription(
         key="model_observations",
         translation_key="model_observations",
         entity_category=EntityCategory.DIAGNOSTIC,

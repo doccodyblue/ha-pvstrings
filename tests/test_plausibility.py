@@ -465,7 +465,8 @@ class TestTheGuardActuallyRunsInALearnCycle:
                     0.0,
                     2.0,
                     60.0,
-                    0.0,
+                    0.0,      # rain_mm
+                    None,     # rain_probability_pct
                     1013.0,
                     1,
                 )

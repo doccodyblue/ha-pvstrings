@@ -334,6 +334,9 @@
       },
       "string_sky_map": {
         "name": "Sky map"
+      },
+      "rain_probability_tomorrow": {
+        "name": "Rain probability tomorrow"
       }
     }
   },

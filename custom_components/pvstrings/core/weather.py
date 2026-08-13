@@ -52,6 +52,15 @@ _HOURLY_VARIABLES = (
     "wind_speed_10m",
     "relative_humidity_2m",
     "precipitation",
+    # The reanalysis archive shares this list.  It has no such thing as a
+    # probability and answers with a column of nulls rather than an error --
+    # which is the honest result: a record of what happened carries no
+    # likelihood.  Verified against the live endpoint over the full backfill
+    # span (2904 hours, every irradiance value present), because the obvious
+    # worry is that the archive rejects the whole request and the backfill
+    # then silently returns nothing.  It does not.  One list, so the forecast
+    # and archive paths cannot drift into different columns.
+    "precipitation_probability",
     "surface_pressure",
 )
 
@@ -78,6 +87,11 @@ class ForecastRow:
     wind_ms: float | None = None
     humidity_pct: float | None = None
     rain_mm: float | None = None
+    #: Chance of rain in the hour, as the source states it.  Kept separate from
+    #: ``rain_mm``: half a millimetre at ninety percent and five millimetres at
+    #: ten are different days, and a control loop that has to decide how much
+    #: battery to hold back overnight needs the likelihood, not the volume.
+    rain_probability_pct: float | None = None
     pressure_hpa: float | None = None
     components_plausible: int | None = None
 
@@ -95,6 +109,7 @@ class ForecastRow:
             self.wind_ms,
             self.humidity_pct,
             self.rain_mm,
+            self.rain_probability_pct,
             self.pressure_hpa,
             self.components_plausible,
         )
@@ -183,6 +198,9 @@ def parse_open_meteo(
                 wind_ms=_get(hourly.get("wind_speed_10m"), index),
                 humidity_pct=_get(hourly.get("relative_humidity_2m"), index),
                 rain_mm=_get(hourly.get("precipitation"), index),
+                rain_probability_pct=_get(
+                    hourly.get("precipitation_probability"), index
+                ),
                 pressure_hpa=_get(hourly.get("surface_pressure"), index),
             )
         )
@@ -234,6 +252,7 @@ def rows_from_ha_weather(
                 wind_ms=entry.get("wind_speed"),
                 humidity_pct=entry.get("humidity"),
                 rain_mm=entry.get("precipitation"),
+                rain_probability_pct=entry.get("precipitation_probability"),
                 pressure_hpa=entry.get("pressure"),
                 components_plausible=0,
             )

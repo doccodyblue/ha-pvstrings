@@ -67,7 +67,8 @@ def clear_sky_forecast(
                 clouds,
                 2.0,
                 60.0,
-                0.0,
+                0.0,      # rain_mm
+                None,     # rain_probability_pct -- not what these tests exercise
                 1013.0,
                 1,
             )

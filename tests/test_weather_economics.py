@@ -119,14 +119,48 @@ class TestOpenMeteo:
         assert parse_open_meteo({}, ISSUED) == []
         assert parse_open_meteo({"hourly": {"time": []}}, ISSUED) == []
 
-    def test_row_tuple_matches_the_table_column_order(self):
+    def test_row_tuple_matches_the_table_column_order(self, store):
+        """Checked against the real table, not against a number.
+
+        The tuple is positional and the insert names its columns in the same
+        order, so a field added in one place and not the other slides every
+        later value one column across -- pressure into components_plausible --
+        without raising anything a test would notice. Reading the arity off
+        the schema means the guard cannot itself go stale.
+        """
+        columns = [
+            row[1]
+            for row in store._query("PRAGMA table_info(weather_forecast)", ())
+        ]
         rows = parse_open_meteo(
             self._payload([ISSUED + 3600], shortwave_radiation=[500.0]), ISSUED
         )
         row = rows[0].as_row()
-        assert len(row) == 14
-        assert row[0] == ISSUED
-        assert row[2] == "open_meteo"
+        assert len(row) == len(columns)
+        assert columns[0] == "issued_at_utc" and row[0] == ISSUED
+        assert columns[2] == "source" and row[2] == "open_meteo"
+
+    def test_rain_probability_is_parsed(self):
+        rows = parse_open_meteo(
+            self._payload(
+                [ISSUED + 3600],
+                shortwave_radiation=[500.0],
+                precipitation_probability=[80.0],
+            ),
+            ISSUED,
+        )
+        assert rows[0].rain_probability_pct == 80.0
+
+    def test_a_source_without_it_leaves_it_absent(self):
+        """None, not zero -- "not offered" and "certainly dry" are different."""
+        rows = parse_open_meteo(
+            self._payload([ISSUED + 3600], shortwave_radiation=[500.0]), ISSUED
+        )
+        assert rows[0].rain_probability_pct is None
+
+    def test_it_is_requested_from_the_source(self):
+        variables = open_meteo_params(53.5, 10.0)["hourly"].split(",")
+        assert "precipitation_probability" in variables
 
 
 class TestCloudFallback:
@@ -287,3 +321,32 @@ class TestZeroIsAValue:
         """Whatever consumes these must branch on None, never on falsiness."""
         for value, expected in ((0.0, True), (None, False), (500.0, True)):
             assert (value is not None) is expected
+
+
+class TestHaWeatherCarriesRainProbability:
+    """The fallback source has the field too, and an install without internet
+    is exactly the one that cannot fall back to anything else."""
+
+    def _entry(self, **extra):
+        base = {"ts_utc": ISSUED + 3600, "cloud_coverage": 40, "temperature": 18}
+        base.update(extra)
+        return [base]
+
+    def test_it_is_mapped(self):
+        rows = rows_from_ha_weather(
+            self._entry(precipitation_probability=75), lambda _ts: 700.0, ISSUED
+        )
+        assert rows[0].rain_probability_pct == 75
+
+    def test_an_entry_without_it_stays_absent(self):
+        rows = rows_from_ha_weather(self._entry(), lambda _ts: 700.0, ISSUED)
+        assert rows[0].rain_probability_pct is None
+
+    def test_it_reaches_the_outlook(self, store):
+        """End to end: a fallback install must get a usable sensor, not None."""
+        rows = rows_from_ha_weather(
+            self._entry(precipitation_probability=60), lambda _ts: 700.0, ISSUED
+        )
+        store.upsert_weather_forecast([row.as_row() for row in rows])
+        out = store.weather_outlook(ISSUED, ISSUED + 7200, "ha_weather")
+        assert out["rain_probability_pct"] == 60.0

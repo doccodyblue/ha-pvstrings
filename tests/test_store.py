@@ -131,8 +131,8 @@ class TestWeather:
         hour = 1_700_000_000
         store.upsert_weather_forecast(
             [
-                (hour - 86400, hour, "open_meteo", 24, 400.0, *[None] * 9),
-                (hour - 3600, hour, "open_meteo", 1, 550.0, *[None] * 9),
+                (hour - 86400, hour, "open_meteo", 24, 400.0, *[None] * 10),
+                (hour - 3600, hour, "open_meteo", 1, 550.0, *[None] * 10),
             ]
         )
         rows = store.latest_forecast(hour, hour + 3600, "open_meteo")
@@ -143,8 +143,8 @@ class TestWeather:
         hour = 1_700_000_000
         store.upsert_weather_forecast(
             [
-                (hour - 86400, hour, "open_meteo", 24, 400.0, *[None] * 9),
-                (hour - 3600, hour, "open_meteo", 1, 550.0, *[None] * 9),
+                (hour - 86400, hour, "open_meteo", 24, 400.0, *[None] * 10),
+                (hour - 3600, hour, "open_meteo", 1, 550.0, *[None] * 10),
             ]
         )
         rows = store.forecast_for_verification(hour, hour + 3600, "open_meteo")
@@ -223,9 +223,9 @@ class TestHousekeeping:
     def test_only_the_closest_forecast_issue_survives(self, store: Store):
         hour = 100 * 86400
         store.upsert_weather_forecast([
-            (hour - 86400, hour, "open_meteo", 24, 400.0, *[None] * 9),
-            (hour - 7200, hour, "open_meteo", 2, 500.0, *[None] * 9),
-            (hour - 3600, hour, "open_meteo", 1, 550.0, *[None] * 9),
+            (hour - 86400, hour, "open_meteo", 24, 400.0, *[None] * 10),
+            (hour - 7200, hour, "open_meteo", 2, 500.0, *[None] * 10),
+            (hour - 3600, hour, "open_meteo", 1, 550.0, *[None] * 10),
         ])
         store.compact(now_ts=200 * 86400, issue_days=14)
         rows = store.forecast_for_verification(hour, hour + 3600, "open_meteo")
@@ -236,8 +236,8 @@ class TestHousekeeping:
         now = 200 * 86400
         hour = now - 3600
         store.upsert_weather_forecast([
-            (hour - 86400, hour, "open_meteo", 24, 400.0, *[None] * 9),
-            (hour - 3600, hour, "open_meteo", 1, 550.0, *[None] * 9),
+            (hour - 86400, hour, "open_meteo", 24, 400.0, *[None] * 10),
+            (hour - 3600, hour, "open_meteo", 1, 550.0, *[None] * 10),
         ])
         store.compact(now_ts=now, issue_days=14)
         assert len(store.forecast_for_verification(hour, hour + 3600, "open_meteo")) == 2
@@ -428,3 +428,185 @@ class TestThinningSparesTheBackfill:
         store.add_shading_obs(recent)
         store.compact(self.NOW)
         assert store.shading_count() == len(recent)
+
+
+class TestWeatherOutlook:
+    """What the sky is expected to do, for a controller that plans overnight.
+
+    Derived from the stored forecast rather than a second source, so the
+    outlook and the yield prediction can never describe different runs.
+    """
+
+    HOUR = 1_700_000_000
+
+    def _seed(self, store: Store, hours):
+        """hours: list of (offset, rain_probability, clouds, rain_mm)."""
+        store.upsert_weather_forecast(
+            [
+                (
+                    self.HOUR - 3600,
+                    self.HOUR + offset * 3600,
+                    "open_meteo",
+                    offset,
+                    500.0, None, None, None, clouds, None, None, mm, prob, None, None,
+                )
+                for offset, prob, clouds, mm in hours
+            ]
+        )
+
+    def test_the_worst_hour_sets_the_rain_figure(self, store: Store):
+        """One hour of certain rain makes a day you plan around.
+
+        Averaging it against twenty-three dry ones hides exactly the thing the
+        controller needs to see.
+        """
+        self._seed(store, [(0, 5.0, 10.0, 0.0), (1, 90.0, 80.0, 4.0), (2, 5.0, 10.0, 0.0)])
+        out = store.weather_outlook(self.HOUR, self.HOUR + 3 * 3600, "open_meteo")
+        assert out["rain_probability_pct"] == 90.0
+
+    def test_cloud_cover_is_a_mean(self, store: Store):
+        self._seed(store, [(0, 0.0, 0.0, 0.0), (1, 0.0, 100.0, 0.0)])
+        out = store.weather_outlook(self.HOUR, self.HOUR + 2 * 3600, "open_meteo")
+        assert out["clouds_pct"] == 50.0
+
+    def test_rain_volume_is_summed(self, store: Store):
+        self._seed(store, [(0, 0.0, 0.0, 1.5), (1, 0.0, 0.0, 2.5)])
+        out = store.weather_outlook(self.HOUR, self.HOUR + 2 * 3600, "open_meteo")
+        assert out["rain_mm"] == 4.0
+
+    def test_an_empty_window_says_nothing_rather_than_zero(self, store: Store):
+        out = store.weather_outlook(self.HOUR, self.HOUR + 3600, "open_meteo")
+        assert out == {
+            "rain_probability_pct": None,
+            "clouds_pct": None,
+            "rain_mm": None,
+        }
+
+    def test_a_source_that_omits_rain_reports_none_not_zero(self, store: Store):
+        """"Nobody asked" and "certainly dry" must not look the same."""
+        store.upsert_weather_forecast(
+            [(self.HOUR - 3600, self.HOUR, "open_meteo", 1, 500.0, *[None] * 10)]
+        )
+        out = store.weather_outlook(self.HOUR, self.HOUR + 3600, "open_meteo")
+        assert out["rain_probability_pct"] is None
+
+    def test_only_the_newest_issue_counts(self, store: Store):
+        """The same rule as the yield forecast, or the two would disagree."""
+        store.upsert_weather_forecast(
+            [
+                (self.HOUR - 86400, self.HOUR, "open_meteo", 24,
+                 500.0, None, None, None, 10.0, None, None, 0.0, 5.0, None, None),
+                (self.HOUR - 3600, self.HOUR, "open_meteo", 1,
+                 500.0, None, None, None, 90.0, None, None, 3.0, 95.0, None, None),
+            ]
+        )
+        out = store.weather_outlook(self.HOUR, self.HOUR + 3600, "open_meteo")
+        assert out["rain_probability_pct"] == 95.0
+        assert out["clouds_pct"] == 90.0
+
+    def test_another_source_is_not_mixed_in(self, store: Store):
+        self._seed(store, [(0, 10.0, 10.0, 0.0)])
+        store.upsert_weather_forecast(
+            [(self.HOUR - 3600, self.HOUR, "ha_weather", 1,
+              500.0, None, None, None, 100.0, None, None, 9.0, 99.0, None, None)]
+        )
+        out = store.weather_outlook(self.HOUR, self.HOUR + 3600, "open_meteo")
+        assert out["rain_probability_pct"] == 10.0
+
+
+class TestMigrationToRainProbability:
+    """Adding a column to a table that already holds a year of rows.
+
+    ``CREATE TABLE IF NOT EXISTS`` shapes a *new* database and silently leaves
+    an existing one alone, so without an explicit ALTER the first insert after
+    the upgrade fails on the arity -- and the weather stops updating on
+    precisely the installations that have been running longest.
+    """
+
+    #: The v2 table, exactly as it was before the column existed.
+    V2_TABLE = """
+    CREATE TABLE weather_forecast (
+        issued_at_utc        INTEGER NOT NULL,
+        ts_utc               INTEGER NOT NULL,
+        source               TEXT    NOT NULL,
+        horizon_h            INTEGER NOT NULL,
+        ghi_wm2              REAL,
+        dni_wm2              REAL,
+        dhi_wm2              REAL,
+        temp_c               REAL,
+        clouds_pct           REAL,
+        wind_ms              REAL,
+        humidity_pct         REAL,
+        rain_mm              REAL,
+        pressure_hpa         REAL,
+        components_plausible INTEGER,
+        PRIMARY KEY (issued_at_utc, ts_utc, source)
+    );
+    """
+
+    def _v2_database(self, tmp_path):
+        import sqlite3
+
+        path = tmp_path / "v2.db"
+        conn = sqlite3.connect(path)
+        conn.executescript(self.V2_TABLE)
+        conn.execute(
+            "INSERT INTO weather_forecast VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (100, 200, "open_meteo", 1, 500.0, None, None, 18.0,
+             40.0, 2.0, 60.0, 0.0, 1013.0, 1),
+        )
+        conn.execute("PRAGMA user_version=2")
+        conn.commit()
+        conn.close()
+        return path
+
+    def test_the_column_is_added(self, tmp_path):
+        store = Store(self._v2_database(tmp_path))
+        store.connect()
+        try:
+            columns = {
+                row[1] for row in store._query("PRAGMA table_info(weather_forecast)", ())
+            }
+            assert "rain_probability_pct" in columns
+        finally:
+            store.close()
+
+    def test_existing_rows_survive_with_an_empty_value(self, tmp_path):
+        """NULL, not zero: the source was never asked for it back then."""
+        store = Store(self._v2_database(tmp_path))
+        store.connect()
+        try:
+            rows = store._query("SELECT * FROM weather_forecast", ())
+            assert len(rows) == 1
+            assert rows[0]["ghi_wm2"] == 500.0
+            assert rows[0]["clouds_pct"] == 40.0
+            assert rows[0]["pressure_hpa"] == 1013.0, "columns must not have shifted"
+            assert rows[0]["rain_probability_pct"] is None
+        finally:
+            store.close()
+
+    def test_writing_works_after_the_upgrade(self, tmp_path):
+        store = Store(self._v2_database(tmp_path))
+        store.connect()
+        try:
+            store.upsert_weather_forecast(
+                [(100, 300, "open_meteo", 2, 400.0, None, None, None,
+                  50.0, None, None, 1.0, 70.0, None, None)]
+            )
+            out = store.weather_outlook(300, 400, "open_meteo")
+            assert out["rain_probability_pct"] == 70.0
+        finally:
+            store.close()
+
+    def test_running_it_twice_is_harmless(self, tmp_path):
+        path = self._v2_database(tmp_path)
+        for _ in range(2):
+            store = Store(path)
+            store.connect()
+            store.close()
+        store = Store(path)
+        store.connect()
+        try:
+            assert len(store._query("SELECT * FROM weather_forecast", ())) == 1
+        finally:
+            store.close()
