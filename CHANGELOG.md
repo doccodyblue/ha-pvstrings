@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.12.0
+
+### Fixed
+
+- **The per-string × daypart layer switches on for the first time.** Its gate
+  was set to 25 effective observations, and a bucket cannot hold more than
+  about 22: `Effect.update` decays the count before adding new weight, so it
+  converges on `1 / ALPHA` and stops. The third layer of the correction model
+  therefore accumulated evidence for ever, was filtered back out of the
+  diagnostics by the same threshold, and never once reached a forecast — on
+  any installation, however long it ran.
+
+  The gate is now a share of what a bucket can actually hold, so the two
+  constants cannot drift apart again, and a test asserts the relationship
+  rather than the number.
+
+  This changes forecasts: a string that is weak in the morning only — one row
+  shaded by a gable at breakfast, say — now gets that correction instead of
+  having it smeared across the whole plant.
+
 ## 1.11.0
 
 ### Fixed

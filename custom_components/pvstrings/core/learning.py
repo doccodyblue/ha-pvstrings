@@ -42,8 +42,19 @@ ALPHA = 1.0 - 0.5 ** (1.0 / HALFLIFE)
 #: ten observations to reach half strength is a defensible prior.
 SHRINK_K = 10.0
 
+#: The most evidence a bucket can ever hold.  ``Effect.update`` decays the
+#: count by ``1 - ALPHA`` before adding the new weight, so ``n_eff`` converges
+#: on ``w / ALPHA`` and stops there -- with a maximum observation weight of 1.0
+#: that is about twenty-two, no matter how long a plant runs.
+MAX_N_EFF = 1.0 / ALPHA
+
 #: A per-string x daypart effect only switches on once its bucket is populated.
-STRING_DAYPART_MIN_N = 25.0
+#: Expressed as a share of what a bucket can ever hold, because a plain
+#: constant here was set to 25 -- above the ceiling above -- which disabled the
+#: whole layer permanently and invisibly: it accumulated evidence for ever,
+#: ``summary()`` filtered it back out with the same threshold, and
+#: ``log_correction`` skipped it on every single call.
+STRING_DAYPART_MIN_N = 0.7 * MAX_N_EFF
 
 #: Hard clamp on any single correction, in the log domain.  exp(0.7) ~ 2.0.
 MAX_LOG_EFFECT = 0.7

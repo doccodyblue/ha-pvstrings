@@ -7,7 +7,9 @@ import math
 import pytest
 
 from core.learning import (
+    MAX_N_EFF,
     SHRINK_K,
+    STRING_DAYPART_MIN_N,
     Effect,
     GhiBiasModel,
     LogRatioModel,
@@ -72,6 +74,23 @@ class TestEffect:
             effect.update(5.0, 1.0)
         assert effect.shrunk <= 0.7
 
+    def test_the_saturation_ceiling_is_what_the_constant_says(self):
+        """``n_eff`` converges on ``w / ALPHA`` -- about 22 at full weight."""
+        effect = Effect()
+        for _ in range(2000):
+            effect.update(0.2, 1.0)
+        assert effect.n_eff == pytest.approx(MAX_N_EFF, rel=0.01)
+
+    def test_no_threshold_may_sit_above_the_ceiling(self):
+        """A gate above the ceiling disables its layer permanently.
+
+        STRING_DAYPART_MIN_N was 25 against a ceiling of 22.14: the per-string
+        x daypart effect accumulated evidence for ever, was filtered back out
+        of the summary by the same threshold, and never once reached the
+        forecast.
+        """
+        assert STRING_DAYPART_MIN_N < MAX_N_EFF
+
 
 class TestLogRatioModel:
     def _obs(self, **kwargs) -> Observation:
@@ -95,6 +114,28 @@ class TestLogRatioModel:
             model.observe(self._obs())
         factor = model.factor("s1", "clear", "midday")
         assert 0.85 < factor < 1.0
+
+    def test_the_string_daypart_layer_actually_switches_on(self):
+        """One string weak in the morning only -- the third layer's whole job.
+
+        The plant bucket is keyed on (weather, daypart), so a morning deficit
+        shared by every string lands there. Only a deficit specific to *one*
+        string in *one* daypart reaches the interaction, and until the gate was
+        lowered below the saturation ceiling it never reached the forecast at
+        all.
+        """
+        model = LogRatioModel()
+        for _ in range(200):
+            model.observe(self._obs(string_id="s1", part="morning", measured_kwh=0.7))
+            model.observe(self._obs(string_id="s2", part="morning", measured_kwh=1.0))
+            model.observe(self._obs(string_id="s1", part="afternoon", measured_kwh=1.0))
+            model.observe(self._obs(string_id="s2", part="afternoon", measured_kwh=1.0))
+
+        buckets = model.summary()["string_daypart"]
+        assert "s1|morning" in buckets, "the interaction never became visible"
+        assert model.factor("s1", "clear", "morning") < model.factor(
+            "s1", "clear", "afternoon"
+        )
 
     def test_plant_effect_is_shared_between_strings(self):
         """A forecast error is plant-wide; one string's evidence must help the
