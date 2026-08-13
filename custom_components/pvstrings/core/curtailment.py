@@ -165,6 +165,39 @@ def curtailed_fraction(flags: Sequence[bool | None]) -> float:
     return sum(1 for flag in known if flag) / len(known)
 
 
+#: Charge-controller states in which the controller is holding a voltage rather
+#: than tracking maximum power.  Whatever it harvests then is its own decision,
+#: not what the sun offered.  Compared case-insensitively; anything not listed
+#: -- including ``bulk``, where the controller really is taking everything --
+#: yields no verdict at all rather than a guess.
+CHARGER_LIMITING_STATES = frozenset(
+    {"absorption", "float", "equalize", "external control", "ess", "storage"}
+)
+
+#: States in which the controller is demonstrably *not* holding back: either it
+#: is tracking maximum power, or it is not running at all.
+CHARGER_FREE_STATES = frozenset({"bulk", "off", "fault", "idle"})
+
+
+def charger_is_limiting(state: str | None) -> bool | None:
+    """Is the charge controller holding back by its own choice?
+
+    Three answers, and the third one matters: a state this does not recognise
+    returns ``None`` rather than ``False``. Makes other than Victron word these
+    differently, and reading an unfamiliar word as "not limiting" would quietly
+    licence every such interval to be learned as if it were a clean
+    measurement.
+    """
+    if not state:
+        return None
+    text = state.strip().lower()
+    if text in CHARGER_LIMITING_STATES:
+        return True
+    if text in CHARGER_FREE_STATES:
+        return False
+    return None
+
+
 #: How far physics has to exceed what a full-battery group actually delivered
 #: before the shortfall counts as throttling rather than measurement noise.
 FULL_BATTERY_SHORTFALL = 1.10

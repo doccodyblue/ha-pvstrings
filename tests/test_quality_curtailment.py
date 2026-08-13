@@ -72,6 +72,34 @@ class TestBinding:
         assert curt.value_kind_for(None) == "measured"
 
 
+class TestChargerState:
+    """Some controllers say outright that they have stopped chasing the sun."""
+
+    def test_voltage_holding_states_are_limiting(self):
+        for state in ("Absorption", "Float", "Equalize", "External Control"):
+            assert curt.charger_is_limiting(state) is True, state
+
+    def test_bulk_is_the_controller_taking_everything(self):
+        assert curt.charger_is_limiting("Bulk") is False
+
+    def test_case_and_padding_do_not_matter(self):
+        assert curt.charger_is_limiting("  float  ") is True
+        assert curt.charger_is_limiting("BULK") is False
+
+    def test_absent_or_unusable_states_give_no_verdict(self):
+        """Most inverters expose nothing here, and nothing may change for them."""
+        for state in (None, "", "unknown", "unavailable"):
+            assert curt.charger_is_limiting(state) is None, repr(state)
+
+    def test_an_unfamiliar_word_is_not_read_as_permission(self):
+        """Other makes word this differently; "not limiting" must be earned."""
+        assert curt.charger_is_limiting("Whatever-Mode") is None
+
+    def test_off_and_fault_are_not_limiting(self):
+        for state in ("Off", "Fault"):
+            assert curt.charger_is_limiting(state) is False, state
+
+
 class TestFullBattery:
     """A battery-coupled group throttles without commanding anything.
 

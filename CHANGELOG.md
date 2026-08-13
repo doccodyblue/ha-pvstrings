@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.13.0
+
+### Added
+
+- **Optional charge-controller state per string.** A solar charger that has
+  finished bulk charging holds the battery at a voltage instead of tracking
+  maximum power — so what it harvests is its own decision, not what the sun
+  offered. Nothing commands a limit while this happens, and on Victron the
+  state entity is the only place the controller says so. Point the new field
+  at it and those intervals are treated as lower bounds, exactly like a
+  commanded limit.
+
+  Sharper than inferring it from the battery's state of charge, because it
+  also catches the absorption phase, where the battery is not yet full but has
+  already stopped taking everything on offer.
+
+  Entirely optional and absent by default. Inverters that expose no such
+  entity — most of them — behave exactly as before, and a state word the
+  integration does not recognise yields no verdict rather than being read as
+  permission to learn from the interval.
+
 ## 1.12.0
 
 ### Fixed

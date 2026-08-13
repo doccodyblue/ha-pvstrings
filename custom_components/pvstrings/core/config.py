@@ -199,6 +199,15 @@ class StringConfig:
     #: to the limit entity, so without it the learning layer would conclude that
     #: these strings weaken in bright sun.
     max_power_w: float | None = None
+    #: Optional entity reporting the charge controller's own state.
+    #:
+    #: A solar charger that has finished bulk charging holds the battery at a
+    #: voltage instead of taking everything the sun offers -- so it is no
+    #: longer measuring the sun, it is measuring its own decision.  Nothing
+    #: commands a limit while this happens, and the state entity is the only
+    #: place the controller says so.  Victron exposes it; other makes may not,
+    #: which is why this stays optional and absent means "carry on as before".
+    charger_state_entity: str | None = None
     #: Cell temperature model parameter set, see physics.py.
     mount_type: str = "insulated_back"
 

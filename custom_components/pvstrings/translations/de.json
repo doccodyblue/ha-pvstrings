@@ -123,7 +123,8 @@
             "mount_type": "Montage",
             "energy_entity": "Energiesensor (nur Gegenprüfung)",
             "string_efficiency": "Abweichender Strang-Wirkungsgrad (0 = Anlagenwert)",
-            "max_power_w": "Maximalleistung des Trackers in W (0 = keine)"
+            "max_power_w": "Maximalleistung des Trackers in W (0 = keine)",
+            "charger_state_entity": "Reglerzustand (optional, z. B. Victron)"
           }
         },
         "reconfigure": {
@@ -140,7 +141,8 @@
             "mount_type": "Montage",
             "energy_entity": "Energiesensor (nur Gegenprüfung)",
             "string_efficiency": "Abweichender Strang-Wirkungsgrad (0 = Anlagenwert)",
-            "max_power_w": "Maximalleistung des Trackers in W (0 = keine)"
+            "max_power_w": "Maximalleistung des Trackers in W (0 = keine)",
+            "charger_state_entity": "Reglerzustand (optional, z. B. Victron)"
           }
         },
         "geometry": {

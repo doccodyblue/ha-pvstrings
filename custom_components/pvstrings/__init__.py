@@ -54,6 +54,7 @@ from .const import (
     CONF_LIMIT_ABS_ENTITY,
     CONF_LIMIT_ENTITY,
     CONF_LONGITUDE,
+    CONF_CHARGER_STATE,
     CONF_MAX_POWER,
     CONF_MOUNT_TYPE,
     CONF_NOTE,
@@ -201,6 +202,7 @@ def build_plant_config(hass: HomeAssistant, entry: ConfigEntry) -> PlantConfig:
                 system_efficiency=data.get(CONF_STRING_EFFICIENCY),
                 mount_type=data.get(CONF_MOUNT_TYPE, "insulated_back"),
                 max_power_w=data.get(CONF_MAX_POWER) or None,
+                charger_state_entity=data.get(CONF_CHARGER_STATE) or None,
             )
         )
 

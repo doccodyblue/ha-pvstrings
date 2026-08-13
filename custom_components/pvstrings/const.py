@@ -65,6 +65,7 @@ CONF_MOUNT_TYPE: Final = "mount_type"
 CONF_GROUP_ID: Final = "curtailment_group_id"
 CONF_STRING_EFFICIENCY: Final = "string_efficiency"
 CONF_MAX_POWER: Final = "max_power_w"
+CONF_CHARGER_STATE: Final = "charger_state_entity"
 
 # -- geometry change flow --------------------------------------------------- #
 

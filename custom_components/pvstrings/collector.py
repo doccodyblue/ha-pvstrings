@@ -42,6 +42,7 @@ from .core.aggregate import (
 )
 from .core.config import PlantConfig
 from .core.quality import VALUE_MEASURED
+from .core import curtailment as curt
 from .core import units
 from .core.store import Store
 
@@ -300,6 +301,29 @@ class Collector:
         scaled = units.convert(1.0, unit, units.POWER)
         return 1.0 if scaled is None else scaled
 
+    def _charger_limit(
+        self, string: Any, limit: float | None, power_mean: float | None
+    ) -> float | None:
+        """Tighten the commanded limit when the controller is holding a voltage.
+
+        A charger in absorption or float is no longer tracking maximum power,
+        so what it took *is* the effective ceiling for that interval -- there
+        is no separate number to read anywhere. Recording it as the commanded
+        limit lets the ordinary binding test do the rest: it fires only where
+        physics says materially more was on offer.
+
+        Read from the current state rather than from a sample buffer, which
+        holds numbers only. Charger states persist for tens of minutes, so the
+        five-minute granularity costs nothing worth plumbing for.
+        """
+        entity_id = getattr(string, "charger_state_entity", None)
+        if not entity_id or power_mean is None or power_mean <= 0.0:
+            return limit
+        state = self.hass.states.get(entity_id)
+        if not curt.charger_is_limiting(state.state if state else None):
+            return limit
+        return power_mean if limit is None else min(limit, power_mean)
+
     def _limit_for(self, group_id: str | None, start: int, end: int) -> float | None:
         """Commanded limit in watts, or ``None`` when the group has none.
 
@@ -347,6 +371,7 @@ class Collector:
                 energy_wh = None if energy_wh is None else energy_wh * scale
                 power_mean = None if power_mean is None else power_mean * scale
             limit = self._limit_for(string.curtailment_group_id, start, end)
+            limit = self._charger_limit(string, limit, power_mean)
             rows.append(
                 (
                     start,

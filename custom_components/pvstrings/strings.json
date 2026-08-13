@@ -123,7 +123,8 @@
             "mount_type": "Mounting",
             "energy_entity": "Energy sensor (cross-check only)",
             "string_efficiency": "String efficiency override (0 = use plant value)",
-            "max_power_w": "Tracker ceiling in W (0 = none)"
+            "max_power_w": "Tracker ceiling in W (0 = none)",
+            "charger_state_entity": "Charger state (optional, e.g. Victron)"
           }
         },
         "reconfigure": {
@@ -140,7 +141,8 @@
             "mount_type": "Mounting",
             "energy_entity": "Energy sensor (cross-check only)",
             "string_efficiency": "String efficiency override (0 = use plant value)",
-            "max_power_w": "Tracker ceiling in W (0 = none)"
+            "max_power_w": "Tracker ceiling in W (0 = none)",
+            "charger_state_entity": "Charger state (optional, e.g. Victron)"
           }
         },
         "geometry": {

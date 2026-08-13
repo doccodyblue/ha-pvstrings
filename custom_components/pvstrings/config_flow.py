@@ -74,6 +74,7 @@ from .const import (
     CONF_LIMIT_ABS_ENTITY,
     CONF_LIMIT_ENTITY,
     CONF_LONGITUDE,
+    CONF_CHARGER_STATE,
     CONF_MAX_POWER,
     CONF_MOUNT_TYPE,
     CONF_NAME,
@@ -410,6 +411,9 @@ def string_schema(
             vol.Optional(
                 CONF_MAX_POWER, default=values.get(CONF_MAX_POWER, 0)
             ): _number(0, 20_000, 1, "W"),
+            _optional(
+                CONF_CHARGER_STATE, values.get(CONF_CHARGER_STATE)
+            ): EntitySelector(EntitySelectorConfig(domain=["sensor"])),
         }
     )
 
