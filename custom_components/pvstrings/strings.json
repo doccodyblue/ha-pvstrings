@@ -281,6 +281,15 @@
       "bias_7d": {
         "name": "Bias 7 days"
       },
+      "wmape_day_ahead_7d": {
+        "name": "Day-ahead accuracy 7 days"
+      },
+      "wmape_day_ahead_30d": {
+        "name": "Day-ahead accuracy 30 days"
+      },
+      "bias_day_ahead_30d": {
+        "name": "Day-ahead bias 30 days"
+      },
       "savings_today": {
         "name": "Savings today"
       },

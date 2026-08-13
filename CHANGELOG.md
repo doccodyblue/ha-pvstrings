@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.10.0
+
+### Added
+
+- **Day-ahead accuracy.** Every accuracy figure published until now compared an
+  hour against the forecast issued minutes before it — a nowcast, and no answer
+  at all to the question this integration exists for. `Day-ahead accuracy
+  7 days` scores each complete local day against the forecast as it stood at
+  18:00 local time the evening before: one coherent model run, and exactly the
+  number somebody would have read off the dashboard. `Day-ahead accuracy
+  30 days` and `Day-ahead bias 30 days` sit alongside it as diagnostics.
+  Expect these to read worse than the existing WMAPE sensors; that gap is the
+  honest cost of forecasting a day ahead rather than an hour.
+- **Daily bias** (`daily_bias_kwh` in the score attributes). The existing
+  `bias` is a mean over *hours*, which cannot be read as "typically half a
+  kilowatt-hour too optimistic per day" — the form the question is actually
+  asked in. Both are now reported, and the attributes say which is which.
+- Nothing is published until three complete days are in, so a single day's
+  weather cannot masquerade as an accuracy figure. Until then the sensors read
+  `unknown` while `days_scored` shows how far off publishing is.
+
+### Changed
+
+- **`Deviation yesterday` now compares against the evening-before forecast.**
+  It summed the *nowcasts* of the previous day, which reads as a comparison
+  against something that was announced when it was nothing of the sort. The
+  displayed deviation will typically grow, without anything having got worse.
+- **Forecast issues are kept for 35 days instead of 14.** Past that horizon
+  thinning left only the newest issue per hour — the nowcast — so a day-ahead
+  lookup found nothing and dropped the hour from the score without a word. The
+  horizon now outlives the widest window scored over.
+
 ## 1.9.0
 
 ### Added

@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
@@ -74,6 +74,19 @@ CURSOR_BIAS = "ghi_bias_learned"
 #: A forecast issued at most this far ahead of the target hour counts as the
 #: "nowcast" -- our best guess at what the irradiance actually was.
 NOWCAST_MAX_HORIZON_H = 2
+
+#: Local hour whose forecast counts as "what we said the day before".  Day-ahead
+#: quality is scored against the run that stood at this time on the previous
+#: day, not against a rolling lead: a rolling one draws each hour of a day from
+#: a different model run, and corresponds to no moment at which anybody ever
+#: looked at the forecast.  Eighteen hundred is after the day's production is
+#: settled and before the evening's decisions.
+DAY_AHEAD_ISSUE_HOUR_LOCAL = 18
+
+#: Day-ahead accuracy is withheld until this many complete days are in it.  One
+#: day of history yields a confident-looking percentage that describes the
+#: weather of a single day, which is worse than admitting we do not know yet.
+MIN_SCORED_DAYS = 3
 
 #: Shading observations are only collected above this elevation; below it the
 #: ratio is dominated by the model's own low-sun uncertainty.
@@ -130,6 +143,22 @@ class HourForecast:
             round(self.potential_kwh, 5),
             self.method,
         )
+
+
+@dataclass(slots=True)
+class _ScoreTally:
+    """Paired hours behind one score, accumulated across any number of queries.
+
+    A rolling-lead score fills this from a single query; a day-ahead score fills
+    it one local day at a time, because each day has its own issue cut-off.
+    Both then hand the identical structure to the same metrics function, so the
+    two figures stay comparable.
+    """
+
+    uncensored: list[tuple[float, float]] = field(default_factory=list)
+    every: list[tuple[float, float]] = field(default_factory=list)
+    daily_uncensored: dict[str, list[float]] = field(default_factory=dict)
+    daily_all: dict[str, list[float]] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -1324,14 +1353,83 @@ class ForecastEngine:
         describes everyday usefulness.  Reporting a single number without saying
         which one it is, is how "78.6 % accuracy" ends up meaning nothing.
         """
-        rows = self.store.forecast_vs_actual(start_ts, end_ts, lead_time_h)
-        nameplate = self._total_kwp()
+        tally = _ScoreTally()
+        self._tally(self.store.forecast_vs_actual(start_ts, end_ts, lead_time_h), tally)
+        return {**self._scored(tally), "lead_time_h": lead_time_h}
 
-        uncensored: list[tuple[float, float]] = []
-        every: list[tuple[float, float]] = []
-        daily_uncensored: dict[str, list[float]] = {}
-        daily_all: dict[str, list[float]] = {}
+    def score_day_ahead(self, days: int, now_ts: int) -> dict[str, Any]:
+        """The same metrics, but against what we said the evening before.
 
+        This is the figure the headline feature deserves: every published
+        accuracy number until now compared an hour against the forecast issued
+        minutes before it, which is a nowcast and flatters the model badly when
+        the question being asked is "how much will tomorrow bring".
+
+        Only *complete* local days count.  Half of today's production measured
+        against a whole day of forecast would drag every window down for a
+        reason that has nothing to do with forecast quality.
+        """
+        tally = _ScoreTally()
+        for day_start, day_end, cutoff in self._day_ahead_windows(days, now_ts):
+            self._tally(
+                self.store.forecast_vs_actual_before(day_start, day_end, cutoff), tally
+            )
+
+        result = self._scored(tally)
+        result["issue_hour_local"] = DAY_AHEAD_ISSUE_HOUR_LOCAL
+        if result["days_scored"] < MIN_SCORED_DAYS:
+            # Silent about the number, honest about the basis: the counts stay
+            # as they are so the attributes can show how far off publishing is.
+            blank = dict.fromkeys(
+                ("wmape", "nmae", "bias", "mae_kwh", "daily_bias_kwh")
+            )
+            for bucket in ("uncensored", "all_hours"):
+                result[bucket] = {**result[bucket], **blank}
+        return result
+
+    def day_ahead_cutoff(self, day_start_ts: int) -> int:
+        """The instant a local day's forecast is judged against.
+
+        The evening before, at :data:`DAY_AHEAD_ISSUE_HOUR_LOCAL` local time.
+        Anything issued later knows more than the reader did and would flatter
+        the score.
+        """
+        day = datetime.fromtimestamp(day_start_ts, tz=self._tz).date()
+        prev = day - timedelta(days=1)
+        return int(
+            datetime(
+                prev.year,
+                prev.month,
+                prev.day,
+                DAY_AHEAD_ISSUE_HOUR_LOCAL,
+                tzinfo=self._tz,
+            ).timestamp()
+        )
+
+    def _day_ahead_windows(
+        self, days: int, now_ts: int
+    ) -> Iterable[tuple[int, int, int]]:
+        """``(day_start, day_end, cutoff)`` per complete local day, oldest first.
+
+        Built from local calendar dates rather than by subtracting 86400, so the
+        two days a year that are not twenty-four hours long still line up with
+        the days a reader sees on the dashboard.
+        """
+        today = datetime.fromtimestamp(now_ts, tz=self._tz).date()
+        for offset in range(days, 0, -1):
+            day = today - timedelta(days=offset)
+            nxt = day + timedelta(days=1)
+            start = int(
+                datetime(day.year, day.month, day.day, tzinfo=self._tz).timestamp()
+            )
+            yield (
+                start,
+                int(datetime(nxt.year, nxt.month, nxt.day, tzinfo=self._tz).timestamp()),
+                self.day_ahead_cutoff(start),
+            )
+
+    def _tally(self, rows: Iterable[Any], tally: "_ScoreTally") -> None:
+        """Fold paired hours into a running tally, in place."""
         for row in rows:
             actual = row["energy_kwh"]
             predicted = row["potential_kwh"]
@@ -1342,22 +1440,26 @@ class ForecastEngine:
             day = datetime.fromtimestamp(int(row["ts_utc"]), tz=self._tz).strftime(
                 "%Y-%m-%d"
             )
-            every.append((predicted, actual))
-            daily_all.setdefault(day, [0.0, 0.0])
-            daily_all[day][0] += predicted
-            daily_all[day][1] += actual
+            tally.every.append((predicted, actual))
+            tally.daily_all.setdefault(day, [0.0, 0.0])
+            tally.daily_all[day][0] += predicted
+            tally.daily_all[day][1] += actual
             if row["value_kind"] == VALUE_MEASURED and not row["curtailed_fraction"]:
-                uncensored.append((predicted, actual))
-                daily_uncensored.setdefault(day, [0.0, 0.0])
-                daily_uncensored[day][0] += predicted
-                daily_uncensored[day][1] += actual
+                tally.uncensored.append((predicted, actual))
+                tally.daily_uncensored.setdefault(day, [0.0, 0.0])
+                tally.daily_uncensored[day][0] += predicted
+                tally.daily_uncensored[day][1] += actual
 
+    def _scored(self, tally: "_ScoreTally") -> dict[str, Any]:
+        nameplate = self._total_kwp()
         return {
-            "uncensored": _metrics(uncensored, daily_uncensored, nameplate),
-            "all_hours": _metrics(every, daily_all, nameplate),
-            "hours_scored": len(every),
-            "hours_uncensored": len(uncensored),
-            "lead_time_h": lead_time_h,
+            "uncensored": _metrics(
+                tally.uncensored, tally.daily_uncensored, nameplate
+            ),
+            "all_hours": _metrics(tally.every, tally.daily_all, nameplate),
+            "hours_scored": len(tally.every),
+            "hours_uncensored": len(tally.uncensored),
+            "days_scored": len(tally.daily_all),
         }
 
     def _total_kwp(self) -> float:
@@ -1405,14 +1507,30 @@ def _metrics(
     daily: Mapping[str, Sequence[float]],
     nameplate_kwp: float,
 ) -> dict[str, float | None]:
+    """Two granularities in one dict, which the callers have to keep straight.
+
+    ``wmape`` and ``daily_bias_kwh`` are about **days**; ``bias``, ``mae_kwh``
+    and ``nmae`` are means over **hours**.  Mixing them up turns "0.4 kWh too
+    high" from a daily statement into an hourly one and back, so anything that
+    publishes these has to say which is which.
+    """
     if not pairs:
-        return {"wmape": None, "nmae": None, "bias": None, "mae_kwh": None, "n": 0}
+        return {
+            "wmape": None,
+            "nmae": None,
+            "bias": None,
+            "mae_kwh": None,
+            "daily_bias_kwh": None,
+            "n": 0,
+            "days": len(daily),
+        }
 
     abs_error = sum(abs(p - a) for p, a in pairs)
     signed_error = sum(p - a for p, a in pairs)
 
     daily_actual = sum(values[1] for values in daily.values())
     daily_abs = sum(abs(values[0] - values[1]) for values in daily.values())
+    daily_signed = sum(values[0] - values[1] for values in daily.values())
     wmape = daily_abs / daily_actual if daily_actual > 0 else None
 
     nmae = abs_error / len(pairs) / nameplate_kwp if nameplate_kwp > 0 else None
@@ -1422,6 +1540,9 @@ def _metrics(
         "nmae": round(nmae, 5) if nmae is not None else None,
         "bias": round(signed_error / len(pairs), 5),
         "mae_kwh": round(abs_error / len(pairs), 5),
+        # Per day, and signed: "typically half a kilowatt-hour too optimistic"
+        # is a sentence somebody can act on, which the hourly mean above is not.
+        "daily_bias_kwh": round(daily_signed / len(daily), 5) if daily else None,
         "n": len(pairs),
         "days": len(daily),
     }

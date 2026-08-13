@@ -71,8 +71,10 @@ Per plant:
 | Forecast today / remaining / tomorrow | hourly detail in the `forecast` attribute |
 | Forecast next hour, peak hour today | |
 | Produced today | measured, from the integration's own 5-minute data |
-| Deviation yesterday | forecast vs. actual |
-| WMAPE 7 d / 30 d, Bias 7 d | diagnostic; see *Metrics* |
+| Deviation yesterday | what the evening-before forecast said, vs. actual |
+| Day-ahead accuracy 7 d | how good "tomorrow" actually is; see *Metrics* |
+| Day-ahead accuracy 30 d, day-ahead bias 30 d | diagnostic |
+| WMAPE 7 d / 30 d, Bias 7 d | diagnostic; nowcast quality, see *Metrics* |
 | Savings today / month / total | measured energy, not forecast |
 | Amortisation | progress, months remaining, target date |
 | Model observations, collector coverage | diagnostic |
@@ -257,6 +259,11 @@ papered over.
 - **WMAPE** over daily sums: `Σ|forecast − actual| / Σ actual`
 - **nMAE** hourly, normalised to installed kWp
 - **Bias** — mean signed error, so over- and under-forecasting stay visible
+- **Daily bias** — the same, but per day, which is the unit the question is
+  asked in: "typically half a kilowatt-hour too optimistic"
+
+Mind the two granularities: WMAPE and daily bias describe **days**; nMAE and
+bias are means over single **hours**.
 
 Each is reported **twice**:
 
@@ -267,6 +274,15 @@ Each is reported **twice**:
 Scoring never uses hindsight: a forecast issued during the hour it predicts is
 not a forecast. The default compares against the last run issued before the hour
 started.
+
+That default is a **nowcast**, though, and flatters the model when the question
+is "how much will tomorrow bring". The day-ahead sensors therefore score each
+local day against the forecast as it stood at **18:00 local time the evening
+before** — one coherent model run, and exactly the numbers somebody would have
+read off the dashboard. Only complete days count, and nothing is published
+until three of them are in, so a single day's weather cannot masquerade as an
+accuracy figure. Expect the day-ahead number to sit well above the nowcast one:
+that gap is the honest cost of forecasting a day ahead.
 
 ---
 

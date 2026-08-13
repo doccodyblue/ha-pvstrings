@@ -126,6 +126,60 @@ class TestForecastLog:
         assert day_ahead[0]["potential_kwh"] == pytest.approx(0.5)
 
 
+class TestForecastAsItStood:
+    """Pairing against one fixed instant rather than a rolling lead."""
+
+    HOUR = 1_700_003_600
+
+    def _measured(self, store: Store) -> None:
+        store.upsert_hourly(
+            [(self.HOUR, "s1", 1.0, 1.0, 0.0, None, None, None, "measured", "exact")]
+        )
+
+    def test_the_issue_before_the_cutoff_wins(self, store: Store):
+        self._measured(store)
+        cutoff = self.HOUR - 12 * 3600
+        store.log_forecast([(cutoff - 3600, self.HOUR, "s1", 0.5, "physics")])
+        store.log_forecast([(cutoff, self.HOUR, "s1", 0.6, "physics")])
+        # Issued after the cutoff: knows more than the reader did.
+        store.log_forecast([(cutoff + 3600, self.HOUR, "s1", 0.9, "physics")])
+
+        rows = store.forecast_vs_actual_before(self.HOUR, self.HOUR + 3600, cutoff)
+        assert rows[0]["potential_kwh"] == pytest.approx(0.6)
+
+    def test_a_missing_run_falls_back_to_the_one_before(self, store: Store):
+        """HA was down at six; the reader saw the five o'clock run."""
+        self._measured(store)
+        cutoff = self.HOUR - 12 * 3600
+        store.log_forecast([(cutoff - 7200, self.HOUR, "s1", 0.4, "physics")])
+        store.log_forecast([(cutoff + 3600, self.HOUR, "s1", 0.9, "physics")])
+
+        rows = store.forecast_vs_actual_before(self.HOUR, self.HOUR + 3600, cutoff)
+        assert rows[0]["potential_kwh"] == pytest.approx(0.4)
+
+    def test_compaction_keeps_the_history_the_score_window_needs(self, store: Store):
+        """Thinning used to leave only the nowcast, which is not a forecast.
+
+        Every issue but the newest was dropped once a target hour aged past the
+        issue horizon -- so a day-ahead lookup found nothing and the hour left
+        the score without a word.  The horizon now has to outlive the widest
+        window anybody scores over.
+        """
+        hour = 1_700_000_000
+        store.upsert_hourly(
+            [(hour, "s1", 1.0, 1.0, 0.0, None, None, None, "measured", "exact")]
+        )
+        for lead in range(72, 0, -1):
+            store.log_forecast([(hour - lead * 3600, hour, "s1", 0.5, "physics")])
+        cutoff = hour - 12 * 3600
+
+        # Twenty days on: past the old fourteen-day horizon, inside a 30-day window.
+        store.compact(hour + 20 * 86400, issue_days=35)
+
+        rows = store.forecast_vs_actual_before(hour, hour + 3600, cutoff)
+        assert rows[0]["potential_kwh"] == pytest.approx(0.5)
+
+
 class TestWeather:
     def test_latest_issue_wins_per_target_hour(self, store: Store):
         hour = 1_700_000_000

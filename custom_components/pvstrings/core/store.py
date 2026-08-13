@@ -907,6 +907,24 @@ class Store:
             )
         return len(payload)
 
+    #: The two pairings below differ only in how the cut-off is expressed, so
+    #: they share their SQL.  ``{cutoff}`` is either an offset from the target
+    #: hour or a literal timestamp; everything else -- the columns, the
+    #: hindsight-proof ``<=``, the newest-issue-wins ordering -- has to stay
+    #: identical, or the two scores would stop being comparable.
+    _FORECAST_VS_ACTUAL_SQL = """
+        SELECT h.ts_utc, h.string_id, h.energy_kwh, h.quality, h.value_kind,
+               h.curtailed_fraction, h.coverage,
+               (SELECT f.potential_kwh FROM forecast_log f
+                 WHERE f.ts_utc = h.ts_utc
+                   AND f.string_id = h.string_id
+                   AND f.issued_at_utc <= {cutoff}
+                 ORDER BY f.issued_at_utc DESC LIMIT 1) AS potential_kwh
+        FROM string_hourly h
+        WHERE h.ts_utc >= ? AND h.ts_utc < ?
+        ORDER BY h.ts_utc
+    """
+
     def forecast_vs_actual(
         self, start_ts: int, end_ts: int, lead_time_h: float = 0.0
     ) -> list[sqlite3.Row]:
@@ -919,19 +937,28 @@ class Store:
         """
         lead_seconds = int(lead_time_h * 3600)
         return self._query(
-            """
-            SELECT h.ts_utc, h.string_id, h.energy_kwh, h.quality, h.value_kind,
-                   h.curtailed_fraction, h.coverage,
-                   (SELECT f.potential_kwh FROM forecast_log f
-                     WHERE f.ts_utc = h.ts_utc
-                       AND f.string_id = h.string_id
-                       AND f.issued_at_utc <= h.ts_utc - ?
-                     ORDER BY f.issued_at_utc DESC LIMIT 1) AS potential_kwh
-            FROM string_hourly h
-            WHERE h.ts_utc >= ? AND h.ts_utc < ?
-            ORDER BY h.ts_utc
-            """,
+            self._FORECAST_VS_ACTUAL_SQL.format(cutoff="h.ts_utc - ?"),
             (lead_seconds, start_ts, end_ts),
+        )
+
+    def forecast_vs_actual_before(
+        self, start_ts: int, end_ts: int, issued_before_ts: int
+    ) -> list[sqlite3.Row]:
+        """Pair measured hours with the forecast as it stood at one moment.
+
+        The sibling above asks "how far ahead was this issued", which lets
+        different hours of the same day come from different model runs.  This
+        one pins a single instant -- in practice the evening before -- so a
+        whole day is scored against one coherent run, and against exactly the
+        numbers somebody would have read off the dashboard at that time.
+
+        A missing issue at that instant is not an error: the ordering falls
+        back to the newest run before it, which is what the reader would have
+        seen too.
+        """
+        return self._query(
+            self._FORECAST_VS_ACTUAL_SQL.format(cutoff="?"),
+            (issued_before_ts, start_ts, end_ts),
         )
 
     # -- shading ----------------------------------------------------------- #
@@ -1116,7 +1143,13 @@ class Store:
         self,
         now_ts: int,
         raw_days: int = 90,
-        issue_days: int = 14,
+        #: Forecast issues have to outlive the longest window they are scored
+        #: over, or day-ahead accuracy quietly degrades: past this horizon only
+        #: the newest issue per hour survives, which is the *nowcast*, and an
+        #: older-issue lookup then finds nothing and drops the hour from the
+        #: score without saying so.  The caller passes the value derived from
+        #: its score windows; this default only has to be safe on its own.
+        issue_days: int = 35,
         exclusion_days: int = 90,
         shading_days: int = 730,
     ) -> dict[str, int]:

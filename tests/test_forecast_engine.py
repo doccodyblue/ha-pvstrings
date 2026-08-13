@@ -13,7 +13,13 @@ import math
 import pytest
 
 from core.config import GeometrySegment, PlantConfig
-from core.forecast import HOUR, ForecastEngine, floor_hour
+from core.forecast import (
+    DAY_AHEAD_ISSUE_HOUR_LOCAL,
+    HOUR,
+    MIN_SCORED_DAYS,
+    ForecastEngine,
+    floor_hour,
+)
 from core.physics import PhysicsEngine, to_index
 from core.store import Store
 
@@ -530,6 +536,125 @@ class TestScoring:
         result = engine.score(DAY_START, DAY_START + HOUR)
         assert result["uncensored"]["wmape"] is None
         assert result["hours_scored"] == 0
+
+    def test_daily_bias_is_per_day_not_per_hour(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """The two bias fields differ by exactly the day's scored hour count.
+
+        Publishing the hourly mean as "how far off the day was" understates it
+        by an order of magnitude, which is why the daily figure exists.
+        """
+        self._score_day(engine, seeded_store, actual_ratio=0.8)
+        metrics = engine.score(DAY_START, DAY_START + 24 * HOUR)["uncensored"]
+
+        assert metrics["days"] == 1
+        assert metrics["daily_bias_kwh"] == pytest.approx(
+            metrics["bias"] * metrics["n"], rel=1e-3
+        )
+        assert metrics["daily_bias_kwh"] > metrics["bias"]
+
+
+class TestDayAheadScore:
+    """Scoring against what the forecast said the evening before."""
+
+    def _day(self, engine: ForecastEngine, store: Store, day_start: int) -> None:
+        """One complete day: perfect nowcasts, an evening run that was half."""
+        clear_sky_forecast(engine, store, day_start - HOUR, day_start, 24)
+        rows = engine.forecast(
+            day_start, hours=24, start_ts=day_start, apply_learning=False
+        )
+        cutoff = engine.day_ahead_cutoff(day_start)
+
+        store.upsert_hourly(
+            [
+                (
+                    row.ts_utc,
+                    row.string_id,
+                    row.potential_kwh,
+                    1.0,
+                    0.0,
+                    None,
+                    None,
+                    None,
+                    "measured",
+                    "exact" if row.potential_kwh > 0 else "night",
+                )
+                for row in rows
+            ]
+        )
+        store.log_forecast(
+            [(row.ts_utc - HOUR, row.ts_utc, row.string_id, row.potential_kwh, "physics")
+             for row in rows]
+        )
+        store.log_forecast(
+            [(cutoff, row.ts_utc, row.string_id, row.potential_kwh * 0.5, "physics")
+             for row in rows]
+        )
+
+    def _days(self, engine: ForecastEngine, store: Store, count: int) -> int:
+        for index in range(count):
+            self._day(engine, store, DAY_START + index * 24 * HOUR)
+        # Midday of the day after the last complete one.
+        return DAY_START + count * 24 * HOUR + 12 * HOUR
+
+    def test_it_reads_the_evening_run_not_the_nowcast(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        now_ts = self._days(engine, seeded_store, 3)
+
+        nowcast = engine.score(DAY_START, now_ts)
+        day_ahead = engine.score_day_ahead(3, now_ts)
+
+        assert nowcast["uncensored"]["wmape"] == pytest.approx(0.0, abs=1e-6)
+        assert day_ahead["uncensored"]["wmape"] == pytest.approx(0.5, rel=0.02)
+        assert day_ahead["days_scored"] == 3
+        assert day_ahead["issue_hour_local"] == DAY_AHEAD_ISSUE_HOUR_LOCAL
+
+    def test_the_running_day_never_enters_the_score(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """Half a day of production against a whole day of forecast is not a miss."""
+        now_ts = self._days(engine, seeded_store, 3)
+        before = engine.score_day_ahead(3, now_ts)
+
+        # Today, still in progress: only the morning has been measured.
+        today = DAY_START + 3 * 24 * HOUR
+        clear_sky_forecast(engine, seeded_store, today - HOUR, today, 24)
+        rows = engine.forecast(today, hours=24, start_ts=today, apply_learning=False)
+        cutoff = engine.day_ahead_cutoff(today)
+        partial = [row for row in rows if row.ts_utc < today + 10 * HOUR]
+        seeded_store.upsert_hourly(
+            [
+                (r.ts_utc, r.string_id, r.potential_kwh, 1.0, 0.0, None, None, None,
+                 "measured", "exact" if r.potential_kwh > 0 else "night")
+                for r in partial
+            ]
+        )
+        seeded_store.log_forecast(
+            [(cutoff, r.ts_utc, r.string_id, r.potential_kwh * 0.5, "physics")
+             for r in rows]
+        )
+
+        after = engine.score_day_ahead(3, now_ts)
+        assert after["days_scored"] == before["days_scored"] == 3
+        assert after["uncensored"]["wmape"] == pytest.approx(
+            before["uncensored"]["wmape"]
+        )
+
+    def test_it_withholds_the_number_until_enough_days(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """One day of history makes a confident percentage out of one day's weather."""
+        now_ts = self._days(engine, seeded_store, MIN_SCORED_DAYS - 1)
+        result = engine.score_day_ahead(MIN_SCORED_DAYS - 1, now_ts)
+
+        assert result["uncensored"]["wmape"] is None
+        assert result["uncensored"]["daily_bias_kwh"] is None
+        # Silent about the number, but not about how far off publishing is.
+        assert result["days_scored"] == MIN_SCORED_DAYS - 1
+        assert result["uncensored"]["days"] == MIN_SCORED_DAYS - 1
+        assert result["hours_scored"] > 0
 
 
 def test_monthly_weights_are_geometry_weighted(engine: ForecastEngine):

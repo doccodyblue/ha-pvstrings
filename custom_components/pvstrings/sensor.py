@@ -38,7 +38,7 @@ from homeassistant.util import dt as dt_util
 from . import PvStringsConfigEntry, plant_device_info, string_device_info
 from .const import SUBENTRY_STRING
 from .coordinator import PvStringsCoordinator, PvStringsData
-from .core.forecast import floor_hour
+from .core.forecast import DAY_AHEAD_ISSUE_HOUR_LOCAL, floor_hour
 from .core import units
 
 #: Fallback when Home Assistant has no currency configured.
@@ -96,8 +96,20 @@ def _now_ts() -> int:
     return int(dt_util.utcnow().timestamp())
 
 
-def _score(data: PvStringsData, days: int, field: str, censored: bool) -> Any:
-    block = data.scores.get(days, {})
+def _score(
+    data: PvStringsData,
+    days: int,
+    field: str,
+    censored: bool,
+    day_ahead: bool = False,
+) -> Any:
+    """Read one metric out of either score family.
+
+    Nowcast and day-ahead scores have the same shape, so they share a reader
+    rather than drifting apart in two copies.
+    """
+    source = data.scores_day_ahead if day_ahead else data.scores
+    block = source.get(days, {})
     bucket = block.get("all_hours" if censored else "uncensored", {})
     value = bucket.get(field)
     if value is None:
@@ -105,18 +117,39 @@ def _score(data: PvStringsData, days: int, field: str, censored: bool) -> Any:
     return round(value * 100, 2) if field == "wmape" else round(value, 4)
 
 
-def _score_attrs(data: PvStringsData, days: int) -> dict[str, Any]:
-    block = data.scores.get(days, {})
-    return {
+_GRANULARITY_NOTE = (
+    "wmape and daily_bias_kwh are about whole days; bias, mae_kwh and nmae "
+    "are means over single hours."
+)
+
+_COMPARABILITY_NOTE = (
+    "Only the uncensored figure is comparable with other forecast "
+    "services; it excludes hours in which an inverter limit was binding."
+)
+
+
+def _score_attrs(
+    data: PvStringsData, days: int, day_ahead: bool = False
+) -> dict[str, Any]:
+    source = data.scores_day_ahead if day_ahead else data.scores
+    block = source.get(days, {})
+    attrs = {
         "hours_scored": block.get("hours_scored"),
         "hours_uncensored": block.get("hours_uncensored"),
+        "days_scored": block.get("days_scored"),
         "uncensored": block.get("uncensored"),
         "all_hours": block.get("all_hours"),
-        "note": (
-            "Only the uncensored figure is comparable with other forecast "
-            "services; it excludes hours in which an inverter limit was binding."
-        ),
+        "note": f"{_COMPARABILITY_NOTE} {_GRANULARITY_NOTE}",
     }
+    if day_ahead:
+        attrs["issue_hour_local"] = block.get("issue_hour_local")
+        attrs["note"] = (
+            "Scored against the forecast as it stood at "
+            f"{block.get('issue_hour_local')}:00 local time the evening before, "
+            "not against the last run before each hour. "
+            f"{_COMPARABILITY_NOTE} {_GRANULARITY_NOTE}"
+        )
+    return attrs
 
 
 PLANT_SENSORS: tuple[PlantSensorDescription, ...] = (
@@ -242,6 +275,10 @@ PLANT_SENSORS: tuple[PlantSensorDescription, ...] = (
         translation_key="deviation_yesterday",
         native_unit_of_measurement="%",
         suggested_display_precision=1,
+        # Against the forecast as it stood the evening before, not against the
+        # sum of that day's nowcasts.  Unknown rather than -100 % while no such
+        # forecast exists yet: a fresh install has nothing to be measured
+        # against, which is not the same as having predicted nothing.
         value_fn=lambda data, _c: (
             round(
                 (data.forecast_yesterday_kwh - data.produced_yesterday_kwh)
@@ -250,11 +287,17 @@ PLANT_SENSORS: tuple[PlantSensorDescription, ...] = (
                 2,
             )
             if data.produced_yesterday_kwh > 0
+            and data.forecast_yesterday_kwh is not None
             else None
         ),
         attrs_fn=lambda data, _c: {
-            "forecast_kwh": round(data.forecast_yesterday_kwh, 3),
+            "forecast_kwh": (
+                None
+                if data.forecast_yesterday_kwh is None
+                else round(data.forecast_yesterday_kwh, 3)
+            ),
             "actual_kwh": round(data.produced_yesterday_kwh, 3),
+            "issue_hour_local": DAY_AHEAD_ISSUE_HOUR_LOCAL,
         },
     ),
     PlantSensorDescription(
@@ -282,6 +325,44 @@ PLANT_SENSORS: tuple[PlantSensorDescription, ...] = (
         suggested_display_precision=3,
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda data, _c: _score(data, 7, "bias", censored=False),
+    ),
+    PlantSensorDescription(
+        key="wmape_day_ahead_7d",
+        translation_key="wmape_day_ahead_7d",
+        native_unit_of_measurement="%",
+        suggested_display_precision=1,
+        # Not diagnostic, unlike its nowcast siblings above.  "How much will
+        # tomorrow bring" is what this integration exists to answer, and the
+        # number that says how well it does so belongs next to the forecast
+        # rather than folded away with the plumbing.
+        value_fn=lambda data, _c: _score(
+            data, 7, "wmape", censored=False, day_ahead=True
+        ),
+        attrs_fn=lambda data, _c: _score_attrs(data, 7, day_ahead=True),
+    ),
+    PlantSensorDescription(
+        key="wmape_day_ahead_30d",
+        translation_key="wmape_day_ahead_30d",
+        native_unit_of_measurement="%",
+        suggested_display_precision=1,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda data, _c: _score(
+            data, 30, "wmape", censored=False, day_ahead=True
+        ),
+        attrs_fn=lambda data, _c: _score_attrs(data, 30, day_ahead=True),
+    ),
+    PlantSensorDescription(
+        key="bias_day_ahead_30d",
+        translation_key="bias_day_ahead_30d",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        suggested_display_precision=2,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        # Per *day*, not per hour: "typically half a kilowatt-hour too
+        # optimistic" is a sentence somebody can act on.
+        value_fn=lambda data, _c: _score(
+            data, 30, "daily_bias_kwh", censored=False, day_ahead=True
+        ),
+        attrs_fn=lambda data, _c: _score_attrs(data, 30, day_ahead=True),
     ),
     PlantSensorDescription(
         key="savings_today",

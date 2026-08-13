@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
+from functools import partial
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -87,8 +88,14 @@ class PvStringsData:
     plant_unshaded: list[tuple[int, float]] = field(default_factory=list)
     produced_today: dict[str, float] = field(default_factory=dict)
     produced_yesterday_kwh: float = 0.0
-    forecast_yesterday_kwh: float = 0.0
+    #: ``None`` while no forecast from the evening before yesterday exists --
+    #: a fresh install has no such record, and reporting nought would read as
+    #: "we predicted nothing" rather than "we were not there yet".
+    forecast_yesterday_kwh: float | None = None
     scores: dict[int, dict[str, Any]] = field(default_factory=dict)
+    #: The same windows scored against the forecast as it stood the evening
+    #: before, which is the question the plant is actually bought to answer.
+    scores_day_ahead: dict[int, dict[str, Any]] = field(default_factory=dict)
     savings: dict[str, Any] = field(default_factory=dict)
     scenarios: dict[str, float] = field(default_factory=dict)
     amortisation: Any = None
@@ -373,8 +380,16 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
             return
         self._last_purge = today
         try:
+            # Forecast issues have to outlive the widest score window, or
+            # day-ahead accuracy starts silently dropping the hours whose
+            # older issues have already been thinned away.
             deleted = await self.hass.async_add_executor_job(
-                self.store.compact, int(now.timestamp()), self.plant.retention_days
+                partial(
+                    self.store.compact,
+                    int(now.timestamp()),
+                    self.plant.retention_days,
+                    issue_days=max(SCORE_WINDOWS) + 5,
+                )
             )
             if any(deleted.values()):
                 _LOGGER.debug("pvstrings: compacted %s", deleted)
@@ -468,6 +483,7 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
             data.scores[days] = self.engine.score(
                 now_ts - days * 86400, now_ts, lead_time_h=0.0
             )
+            data.scores_day_ahead[days] = self.engine.score_day_ahead(days, now_ts)
 
         data.savings = self._savings(now, day_start, now_ts)
         data.amortisation = data.savings.pop("amortisation", None)
@@ -672,11 +688,19 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
             },
         }
 
-    def _logged_forecast_sum(self, start_ts: int, end_ts: int) -> float:
-        rows = self.store.forecast_vs_actual(start_ts, end_ts, lead_time_h=0.0)
-        return sum(
-            row["potential_kwh"] or 0.0 for row in rows
+    def _logged_forecast_sum(self, start_ts: int, end_ts: int) -> float | None:
+        """What we said the day would bring, as of the evening before.
+
+        Deliberately not the nowcast sum: "deviation yesterday" reads as a
+        comparison against an announcement, and summing forecasts issued
+        minutes before each hour is not an announcement -- it flattered the
+        number without answering the question anybody was asking of it.
+        """
+        rows = self.store.forecast_vs_actual_before(
+            start_ts, end_ts, self.engine.day_ahead_cutoff(start_ts)
         )
+        predicted = [row["potential_kwh"] for row in rows if row["potential_kwh"]]
+        return sum(predicted) if predicted else None
 
     def _savings(
         self, now: datetime, day_start: int, now_ts: int
