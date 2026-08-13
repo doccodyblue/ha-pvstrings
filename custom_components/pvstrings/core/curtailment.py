@@ -165,6 +165,40 @@ def curtailed_fraction(flags: Sequence[bool | None]) -> float:
     return sum(1 for flag in known if flag) / len(known)
 
 
+#: How far physics has to exceed what a full-battery group actually delivered
+#: before the shortfall counts as throttling rather than measurement noise.
+FULL_BATTERY_SHORTFALL = 1.10
+
+
+def full_battery_binding(
+    measured_sum_w: float | None,
+    physics_sum_w: float | None,
+    soc_pct: float | None,
+    soc_limit_pct: float,
+) -> bool | None:
+    """Was a battery-coupled group held back because the battery was full?
+
+    No inverter commands a limit for this.  The battery simply stops accepting
+    charge, the inverter backs off to whatever the house and the feed-in path
+    can take, and the strings follow it down -- so the measurement is a lower
+    bound with nothing in the data to say so.  Left undetected it is learned as
+    genuine underperformance, every sunny afternoon, at the same sun positions:
+    precisely the signature the sky map reads as a permanent obstruction.
+
+    A full battery alone is not enough to censor.  The strings may equally have
+    been dim, and censoring a dim hour throws away a good observation.  So the
+    shortfall against physics has to be real as well.
+
+    ``None`` when the battery state is unknown -- guessing there would censor
+    on no evidence at all.
+    """
+    if soc_pct is None or measured_sum_w is None or physics_sum_w is None:
+        return None
+    if soc_pct < soc_limit_pct:
+        return False
+    return physics_sum_w > measured_sum_w * FULL_BATTERY_SHORTFALL
+
+
 def combine_binding(*flags: bool | None) -> bool | None:
     """Merge several censoring verdicts for the same interval.
 

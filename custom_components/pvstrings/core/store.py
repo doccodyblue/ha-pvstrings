@@ -846,6 +846,22 @@ class Store:
             )
             return cursor.rowcount
 
+    def battery_soc_series(self, start_ts: int, end_ts: int) -> dict[int, float]:
+        """Battery state of charge per five-minute interval.
+
+        Used to tell a throttled interval from a dim one: once the battery is
+        full there is a known mechanism holding the strings back, and a
+        measurement taken through it is a lower bound rather than a reading.
+        """
+        return {
+            int(row["ts_utc"]): float(row["battery_soc_pct"])
+            for row in self._query(
+                "SELECT ts_utc, battery_soc_pct FROM plant_state_5min "
+                "WHERE ts_utc >= ? AND ts_utc < ? AND battery_soc_pct IS NOT NULL",
+                (start_ts, end_ts),
+            )
+        }
+
     def _raw_grid_kwh(self, start_ts: int, end_ts: int) -> tuple[float, float]:
         if end_ts <= start_ts:
             return 0.0, 0.0

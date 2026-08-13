@@ -72,6 +72,43 @@ class TestBinding:
         assert curt.value_kind_for(None) == "measured"
 
 
+class TestFullBattery:
+    """A battery-coupled group throttles without commanding anything.
+
+    Nothing in the data says so: the battery stops accepting charge, the
+    inverter backs off, the strings follow. Left undetected it is learned as
+    genuine underperformance every sunny afternoon -- at the same sun
+    positions, which is what the sky map reads as a permanent obstruction.
+    """
+
+    def test_full_battery_holding_the_strings_back_is_curtailment(self):
+        """Physics offers 1500 W, the capped path passes 790 W."""
+        assert curt.full_battery_binding(790.0, 1500.0, 100.0, 100.0) is True
+
+    def test_a_charging_battery_never_censors(self):
+        """The best hours of the day must stay learnable."""
+        assert curt.full_battery_binding(1500.0, 1500.0, 62.0, 100.0) is False
+
+    def test_a_full_battery_on_a_dim_afternoon_is_not_curtailment(self):
+        """Full, but physics agrees with what came in -- nothing was held back."""
+        assert curt.full_battery_binding(400.0, 420.0, 100.0, 100.0) is False
+
+    def test_the_threshold_is_configurable(self):
+        """A BMS that calls 98 % full should be believed at 98 %."""
+        assert curt.full_battery_binding(790.0, 1500.0, 98.0, 98.0) is True
+        assert curt.full_battery_binding(790.0, 1500.0, 97.0, 98.0) is False
+
+    def test_unknown_state_of_charge_censors_nothing(self):
+        """Distinct from False -- guessing here would censor on no evidence."""
+        assert curt.full_battery_binding(790.0, 1500.0, None, 100.0) is None
+
+    def test_it_combines_with_a_commanded_limit(self):
+        """Either mechanism alone is enough to make the reading a lower bound."""
+        assert curt.combine_binding(False, True) is True
+        assert curt.combine_binding(None, True) is True
+        assert curt.combine_binding(None, None) is None
+
+
 class TestPeerReconstruction:
     def _peer(self, **kwargs):
         base = dict(

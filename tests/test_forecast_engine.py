@@ -12,7 +12,8 @@ import math
 
 import pytest
 
-from core.config import GeometrySegment, PlantConfig
+from core.config import INTERVAL_SECONDS, GeometrySegment, PlantConfig
+from core.quality import VALUE_MEASURED
 from core.forecast import (
     DAY_AHEAD_ISSUE_HOUR_LOCAL,
     HOUR,
@@ -290,6 +291,78 @@ class TestCurtailmentEvaluation:
         engine.evaluate_curtailment(NOON, NOON + HOUR)
         rows = seeded_store.fivemin_range("s3", NOON, NOON + HOUR)
         assert all(row["limit_binding"] is None for row in rows)
+
+    def _soc(self, store: Store, pct: float) -> None:
+        store.upsert_plant_state(
+            [
+                (ts, pct, 0.0, 0.0, 400.0)
+                for ts in range(NOON, NOON + HOUR, INTERVAL_SECONDS)
+            ]
+        )
+
+    def test_a_full_battery_censors_without_any_commanded_limit(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """Nothing commands a limit here -- the battery simply stops taking charge.
+
+        Undetected, this is learned as genuine underperformance on every sunny
+        afternoon, at the same sun positions, which is exactly what the sky map
+        reads as a permanent obstruction.
+        """
+        clear_sky_forecast(engine, seeded_store, NOON - HOUR, NOON, 1)
+        write_measurements(seeded_store, "s1", NOON, power_w=60.0, limit_w=None)
+        write_measurements(seeded_store, "s2", NOON, power_w=40.0, limit_w=None)
+        self._soc(seeded_store, 100.0)
+        engine.evaluate_curtailment(NOON, NOON + HOUR)
+
+        for string_id in ("s1", "s2"):
+            rows = seeded_store.fivemin_range(string_id, NOON, NOON + HOUR)
+            assert all(row["limit_binding"] == 1 for row in rows), string_id
+            assert all(row["value_kind"] == "lower_bound" for row in rows), string_id
+
+    def test_a_charging_battery_leaves_the_good_hours_alone(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """The brightest hours are the most informative; censoring them is a loss."""
+        clear_sky_forecast(engine, seeded_store, NOON - HOUR, NOON, 1)
+        write_measurements(seeded_store, "s1", NOON, power_w=60.0, limit_w=None)
+        write_measurements(seeded_store, "s2", NOON, power_w=40.0, limit_w=None)
+        self._soc(seeded_store, 62.0)
+        engine.evaluate_curtailment(NOON, NOON + HOUR)
+
+        rows = seeded_store.fivemin_range("s1", NOON, NOON + HOUR)
+        assert all(row["limit_binding"] == 0 for row in rows)
+        assert all(row["value_kind"] == "measured" for row in rows)
+
+    def test_an_unknown_state_of_charge_censors_nothing(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """No battery reading at all must not be read as a full battery."""
+        clear_sky_forecast(engine, seeded_store, NOON - HOUR, NOON, 1)
+        write_measurements(seeded_store, "s1", NOON, power_w=60.0, limit_w=None)
+        write_measurements(seeded_store, "s2", NOON, power_w=40.0, limit_w=None)
+        engine.evaluate_curtailment(NOON, NOON + HOUR)
+
+        rows = seeded_store.fivemin_range("s1", NOON, NOON + HOUR)
+        assert all(row["limit_binding"] is None for row in rows)
+
+    def test_a_censored_interval_is_invisible_to_the_sky_map(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """The whole point: a throttled afternoon must not become a shadow.
+
+        The shading collector gates on exactly these two columns, so asserting
+        them is asserting that the observation is never taken.
+        """
+        clear_sky_forecast(engine, seeded_store, NOON - HOUR, NOON, 1)
+        write_measurements(seeded_store, "s1", NOON, power_w=60.0, limit_w=None)
+        write_measurements(seeded_store, "s2", NOON, power_w=40.0, limit_w=None)
+        self._soc(seeded_store, 100.0)
+        engine.evaluate_curtailment(NOON, NOON + HOUR)
+
+        for row in seeded_store.fivemin_range("s1", NOON, NOON + HOUR):
+            skipped = row["value_kind"] != VALUE_MEASURED or row["limit_binding"]
+            assert skipped
 
 
 class TestMaterialisation:

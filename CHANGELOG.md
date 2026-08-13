@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.11.0
+
+### Fixed
+
+- **A full battery no longer teaches the model that the plant is broken.** On a
+  battery-coupled group the battery eventually stops accepting charge, the
+  inverter backs off to what the house and the feed-in path can take, and the
+  strings follow it down. Nothing commands a limit, so nothing in the data said
+  the measurement was held back -- and every such interval was learned at full
+  weight as genuine underperformance. On a sunny plant that recurs every
+  afternoon at the same sun positions, which is exactly the signature the sky
+  map reads as a permanent obstruction: the correction was on its way to
+  becoming a phantom shadow with a two-year half-life.
+
+  Such intervals are now marked as lower bounds, which the learning layer
+  already treats correctly -- they may push the model up, never down -- and
+  which keeps them out of the sky map and out of the uncensored accuracy
+  figures entirely.
+
+  Requires `battery_coupled` on the curtailment group and a battery SOC entity
+  on the plant. Where the state of charge is unknown nothing is censored:
+  guessing there would throw away good observations on no evidence.
+
+  A full battery alone does not censor. The strings may equally have been dim,
+  and censoring a dim hour discards a perfectly good observation -- so the
+  shortfall against physics has to be real as well. If your BMS reports full
+  early, lower `soc_limit_pct` on the group.
+
 ## 1.10.0
 
 ### Added

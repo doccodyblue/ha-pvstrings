@@ -731,13 +731,37 @@ class ForecastEngine:
         self.store.update_curtailment_flags(updates)
         return len(updates)
 
+    @staticmethod
+    def _binding_span(rows: dict[str, dict[int, Any]]) -> tuple[int, int]:
+        """The interval range covered by ``rows``, as a half-open span."""
+        stamps = [ts for series in rows.values() for ts in series]
+        if not stamps:
+            return 0, 0
+        return min(stamps), max(stamps) + INTERVAL_SECONDS
+
     def _group_binding(
         self,
         rows: dict[str, dict[int, Any]],
         potentials: dict[str, dict[int, float]],
     ) -> dict[str, dict[int, bool | None]]:
-        """Per group and interval: was the shared inverter limit in effect?"""
+        """Per group and interval: was the group held back?
+
+        Two quite different mechanisms, merged into one verdict: a commanded
+        inverter limit, and a battery-coupled group whose battery has filled up.
+        The second commands nothing and leaves no trace in the data -- only the
+        state of charge betrays it.
+        """
         out: dict[str, dict[int, bool | None]] = {}
+        # The plant's battery, not the group's.  ``CurtailmentGroup.soc_entity``
+        # exists for sites with one battery per inverter, but only the plant
+        # level is collected today -- so a second battery would be judged by the
+        # first one's state.  Correct for one battery, which is every site we
+        # have seen; worth revisiting before that stops being true.
+        soc = (
+            self.store.battery_soc_series(*self._binding_span(rows))
+            if any(group.battery_coupled for group in self.plant.groups)
+            else {}
+        )
         for group in self.plant.groups:
             members = self.plant.strings_in_group(group.group_id)
             if not members:
@@ -767,7 +791,15 @@ class ForecastEngine:
                     # binding limit, so we decline to judge rather than guess.
                     flags[ts] = None
                     continue
-                flags[ts] = curt.group_binding(measured, limit, physics)
+                commanded = curt.group_binding(measured, limit, physics)
+                battery = (
+                    curt.full_battery_binding(
+                        measured, physics, soc.get(ts), group.soc_limit_pct
+                    )
+                    if group.battery_coupled
+                    else None
+                )
+                flags[ts] = curt.combine_binding(commanded, battery)
             out[group.group_id] = flags
         return out
 
