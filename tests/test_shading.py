@@ -737,3 +737,55 @@ class TestTheUserSwitchIsHonoured:
         )
         engine.fit_shading(SUMMER + 3600)
         assert calls["n"] == 1
+
+
+class TestTheGridShowsTheShape:
+    """A ranked top-six hides the one thing a map is for.
+
+    You cannot see a gable edge or the outline of a tree in a list of the six
+    worst sectors -- and the shape is the whole reason for indexing on sun
+    position in the first place.
+    """
+
+    def test_every_observed_cell_is_there(self):
+        sky = ShadingMap.fit(full_sky(1.0))
+        assert len(sky.grid()) == sky.observed_cells
+
+    def test_cells_carry_their_place_in_the_sky(self):
+        sky = ShadingMap.fit(shade(full_sky(1.0), 110.0, 15.0, 0.2))
+        cell = next(c for c in sky.grid() if c["az"] == 110.0 and c["el"] == 15.0)
+        assert cell["loss"] > 50.0
+        assert cell["n"] > 0
+
+    def test_an_unshaded_sky_is_all_zeros(self):
+        for cell in ShadingMap.fit(full_sky(1.0)).grid():
+            assert cell["loss"] == pytest.approx(0.0, abs=2.0)
+
+    def test_an_empty_map_has_no_grid(self):
+        assert ShadingMap.fit([]).grid() == []
+
+    def test_the_model_hands_out_grids_per_string(self):
+        model = ShadingModel.fit({"s1": shade(full_sky(1.0), 110.0, 15.0, 0.2)})
+        assert model.grid("s1")
+        assert model.grid("nobody") == []
+
+    def test_seasonal_cells_are_exported_too(self):
+        """The forecast looks them up, so a map without them lies.
+
+        And it lies on exactly the cells where the two halves disagree, which
+        is the only reason those cells exist at all.
+        """
+        rows = shade(full_sky(1.0), 150.0, 55.0, 0.9, count=30, ts=SPRING)
+        rows += observations(150.0, 55.0, 0.45, 30, ts=SUMMER)
+        sky = ShadingMap.fit(rows, now_ts=SUMMER + 60 * DAY)
+        assert sky.seasonal, "the fixture must produce a split"
+        cell = [c for c in sky.grid() if c["az"] == 150.0 and c["el"] == 55.0]
+        seasons = {c["season"] for c in cell}
+        assert seasons == {None, "ascending", "descending"}
+        spring = next(c for c in cell if c["season"] == "ascending")
+        autumn = next(c for c in cell if c["season"] == "descending")
+        assert autumn["loss"] > spring["loss"] + 10
+
+    def test_an_unsplit_map_reports_only_pooled_cells(self):
+        sky = ShadingMap.fit(full_sky(1.0))
+        assert {c["season"] for c in sky.grid()} == {None}

@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.8.0
+
+### Added
+
+- **The correction chain, per hour.** The forecast attribute now reports what
+  each layer did: `source_bias` on the irradiance, then `physics_kwh`,
+  `shading` and `model` on the energy. The three energy factors multiply out
+  to the published figure exactly. The irradiance bias is deliberately not one
+  of them -- it was applied upstream and is already inside `physics_kwh` --
+  and it is named `source_bias` so nothing downstream multiplies it in twice.
+- **`Sky map` sensor, per string.** Every fitted cell as
+  `(azimuth, elevation, loss, n, season)`, so a card can draw the sky instead
+  of tabulating it. A ranked list of the six worst sectors cannot show a gable
+  edge or the outline of a tree, and the shape is the entire reason for
+  indexing on sun position.
+
+  On its own sensor rather than beside the live shading figure: Home Assistant
+  deduplicates attribute blobs by hash, and a static map sitting next to a
+  moving sun position would be written to the recorder again every update.
+
+  Seasonally split cells are included and labelled, because those are what the
+  forecast looks up once it knows the date -- a map without them would show
+  the pooled value while the forecast quietly used a different one.
+
 ## 1.7.1
 
 ### Fixed

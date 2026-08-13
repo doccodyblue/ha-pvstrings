@@ -906,3 +906,54 @@ class TestUnshadedIsCarriedAlongside:
         nameplate_kwh = 1.80  # s1, one hour at full output
         for row in rows:
             assert row.unshaded_kwh <= nameplate_kwh + 1e-6
+
+    def test_the_chain_multiplies_out_to_the_forecast(
+        self, engine: ForecastEngine, seeded_store
+    ):
+        """Every layer reported, and they have to reconstruct the result.
+
+        A dashboard that shows the chain is only worth looking at if the
+        chain is the one that actually ran.
+        """
+        self._sky(engine, 0.6)
+        rows = self._rows(engine, seeded_store)
+        assert rows
+        for row in rows:
+            physics = row.unshaded_kwh / row.correction if row.correction else 0.0
+            rebuilt = physics * row.shading_factor * row.correction
+            assert rebuilt == pytest.approx(row.potential_kwh, rel=1e-6)
+
+    def test_an_unshaded_string_reports_a_shading_factor_of_one(
+        self, engine: ForecastEngine, seeded_store
+    ):
+        for row in self._rows(engine, seeded_store):
+            assert row.shading_factor == pytest.approx(1.0)
+
+    def test_the_bias_is_not_part_of_the_energy_chain(
+        self, engine: ForecastEngine, seeded_store
+    ):
+        """It was applied to the irradiance, upstream of the physics.
+
+        Reporting it alongside a baseline that already contains it invites a
+        waterfall that multiplies the same correction in twice.
+        """
+        self._sky(engine, 0.6)
+        # Seed a real bias, or every row reports 1.0 and the assertion below
+        # passes against an implementation that double-counts.
+        for hour_local in range(24):
+            for _ in range(60):
+                engine.ghi_bias.observe(
+                    hour_local=hour_local,
+                    horizon_h=0.0,
+                    measured_ghi=800.0,
+                    forecast_ghi=1000.0,
+                )
+        rows = self._rows(engine, seeded_store)
+        biased = [row for row in rows if row.bias_factor != 1.0]
+        assert biased, "the fixture must actually exercise a non-neutral bias"
+        for row in biased:
+            physics = row.unshaded_kwh / row.correction if row.correction else 0.0
+            plain = physics * row.shading_factor * row.correction
+            with_bias = plain * row.bias_factor
+            assert plain == pytest.approx(row.potential_kwh, rel=1e-6)
+            assert with_bias != pytest.approx(row.potential_kwh, rel=1e-6)

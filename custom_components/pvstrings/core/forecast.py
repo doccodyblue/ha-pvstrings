@@ -116,6 +116,11 @@ class HourForecast:
     part: str
     method: str
     correction: float
+    #: The two corrections that happen before the log-ratio one, kept so a
+    #: dashboard can show the chain instead of only its result: what the
+    #: irradiance source was trusted at, and what the sky map took away.
+    bias_factor: float = 1.0
+    shading_factor: float = 1.0
 
     def as_log_row(self, issued_at_utc: int) -> tuple[Any, ...]:
         return (
@@ -365,6 +370,7 @@ class ForecastEngine:
                 ]
             )
             fc_ghi = fc_ghi * factors
+            out["bias_factor"] = factors
             fc_dni = fc_dni * factors
             fc_dhi = fc_dhi * factors
 
@@ -372,6 +378,8 @@ class ForecastEngine:
         # NaN into 0 W/m2 makes a short-horizon weather entity produce a
         # confident 0.00 kWh for the day after tomorrow, sitting next to a
         # correct today and indistinguishable from a genuinely dark forecast.
+        if "bias_factor" not in out:
+            out["bias_factor"] = np.ones(len(index))
         out["covered"] = np.isfinite(fc_ghi)
 
         for name, forecast, cs_column in (
@@ -450,6 +458,20 @@ class ForecastEngine:
             int(hour) for hour in {int(h) for h in hour_keys} if covered.get(hour, True)
         )
         classes = self._classify_hours(conditions)
+        # Weighted by irradiance: the bias of a dark interval is real but says
+        # nothing about the hour's energy, and a plain mean lets dawn dominate.
+        weights = conditions["ghi"].to_numpy()
+        bias_frame = pd.DataFrame(
+            {
+                "hour": conditions["hour"].to_numpy(),
+                "w": weights,
+                "wb": weights * conditions["bias_factor"].to_numpy(),
+            }
+        ).groupby("hour").sum()
+        bias_by_hour = {
+            int(hour): (row["wb"] / row["w"] if row["w"] > 0 else 1.0)
+            for hour, row in bias_frame.iterrows()
+        }
         # Shading is a learned correction like any other, so it answers to both
         # gates: ``apply_learning`` for callers that want the bare physics --
         # the accuracy baseline, and every test that pins the chain itself --
@@ -561,6 +583,12 @@ class ForecastEngine:
                         physics_kwh=physics_kwh,
                         unshaded_kwh=per_hour_unshaded.get(hour, physics_kwh)
                         * correction,
+                        bias_factor=float(bias_by_hour.get(hour, 1.0)),
+                        shading_factor=(
+                            physics_kwh / per_hour_unshaded[hour]
+                            if per_hour_unshaded.get(hour)
+                            else 1.0
+                        ),
                         weather=weather,
                         part=part,
                         method=method,

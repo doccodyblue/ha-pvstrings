@@ -52,6 +52,7 @@ def _iso(ts_utc: int) -> str:
 def _forecast_attribute(
     hourly: list[tuple[int, float]],
     unshaded: list[tuple[int, float]] | None = None,
+    chain: dict[int, dict[str, float]] | None = None,
 ) -> list[dict[str, Any]]:
     """Hourly forecast, and what it would have been without the sky map.
 
@@ -60,11 +61,13 @@ def _forecast_attribute(
     that remains to the measurement is the part it has not.
     """
     bare = dict(unshaded or [])
+    steps = chain or {}
     return [
         {
             "datetime": _iso(ts),
             "potential_kwh": round(value, 4),
             "unshaded_kwh": round(bare.get(ts, value), 4),
+            **(steps.get(ts) or {}),
         }
         for ts, value in hourly
     ]
@@ -406,6 +409,17 @@ PLANT_SENSORS: tuple[PlantSensorDescription, ...] = (
 
 STRING_SENSORS: tuple[StringSensorDescription, ...] = (
     StringSensorDescription(
+        key="sky_map",
+        translation_key="string_sky_map",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        icon="mdi:grid",
+        # Its own sensor precisely because it is static between refits: the
+        # recorder deduplicates attribute blobs by hash, so a map kept away
+        # from the moving sun position is stored once instead of every update.
+        value_fn=lambda data, sid: len(data.sky_map.get(sid) or []),
+        attrs_fn=lambda data, sid: {"cells": data.sky_map.get(sid) or []},
+    ),
+    StringSensorDescription(
         key="shading_now",
         translation_key="string_shading_now",
         native_unit_of_measurement=PERCENTAGE,
@@ -454,7 +468,9 @@ STRING_SENSORS: tuple[StringSensorDescription, ...] = (
         ),
         attrs_fn=lambda data, sid: {
             "forecast": _forecast_attribute(
-                data.strings[sid].hourly, data.strings[sid].unshaded
+                data.strings[sid].hourly,
+                data.strings[sid].unshaded,
+                data.strings[sid].chain,
             )
         },
     ),

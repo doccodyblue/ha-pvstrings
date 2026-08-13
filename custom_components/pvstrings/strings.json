@@ -331,6 +331,9 @@
       },
       "string_shading_now": {
         "name": "Shading now"
+      },
+      "string_sky_map": {
+        "name": "Sky map"
       }
     }
   },

@@ -308,6 +308,45 @@ class ShadingMap:
     def observed_cells(self) -> int:
         return len(self.cells)
 
+    def grid(self) -> list[dict[str, object]]:
+        """Every observed cell as ``(azimuth, elevation, loss)``.
+
+        The map's shape is the interesting thing about it and a ranked list of
+        the worst six sectors hides that completely -- you cannot see a gable
+        edge or the outline of a tree in a top-six.  Handing out the raw cells
+        lets a card draw the sky instead of tabulating it.
+
+        ``season`` is ``None`` for the pooled value and names the half of the
+        year for the split ones, so a card can pick the same cell the forecast
+        picks: the seasonal entry when one exists for today, the pooled one
+        otherwise.
+        """
+        def entry(key: tuple[int, int], cell: Cell, season: str | None) -> dict:
+            return {
+                "az": key[0] * AZIMUTH_BIN_DEG,
+                "el": key[1] * ELEVATION_BIN_DEG,
+                "loss": round(
+                    (1.0 - _clamp(math.exp(cell.shrunk - self.reference))) * 100, 1
+                ),
+                "n": round(cell.n, 1),
+                "season": season,
+            }
+
+        out = [entry(key, cell, None) for key, cell in sorted(self.cells.items())]
+        # Seasonally split cells are what the forecast actually looks up once
+        # it knows the date, so a map without them would show the pooled value
+        # while the forecast quietly used a different one -- on precisely the
+        # cells where the two disagree, which is the only reason they exist.
+        for (azimuth, elevation, half), cell in sorted(self.seasonal.items()):
+            out.append(
+                entry(
+                    (azimuth, elevation),
+                    cell,
+                    "ascending" if half == ASCENDING else "descending",
+                )
+            )
+        return out
+
     def summary(self, limit: int = 12) -> dict[str, object]:
         """The most-shaded corners of the sky, for diagnostics."""
         # Sorted by loss, worst first -- the same order the name promises.
@@ -385,6 +424,10 @@ class ShadingModel:
             for string_id, found in sorted(self.maps.items())
             if found.observed_cells
         }
+
+    def grid(self, string_id: str) -> list[dict[str, object]]:
+        found = self.maps.get(string_id)
+        return found.grid() if found else []
 
 
 _AZIMUTH_BINS = int(360.0 / AZIMUTH_BIN_DEG)

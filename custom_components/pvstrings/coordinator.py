@@ -56,6 +56,8 @@ class StringForecast:
     #: The same hours with the sky map switched off.  Plotted against
     #: ``hourly`` it shows how much of the gap to reality the map explains.
     unshaded: list[tuple[int, float]] = field(default_factory=list)
+    #: Per hour, what each layer of the model did to the raw physics.
+    chain: dict[int, dict[str, float]] = field(default_factory=dict)
 
     def sum_between(self, start_ts: int, end_ts: int) -> float:
         return sum(
@@ -93,6 +95,10 @@ class PvStringsData:
     model_summary: dict[str, Any] = field(default_factory=dict)
     string_detail: dict[str, Any] = field(default_factory=dict)
     shading: dict[str, Any] = field(default_factory=dict)
+    #: The fitted cells per string.  Separate from ``shading`` because this
+    #: changes only on a refit, and the recorder can then reuse one stored
+    #: attribute blob instead of writing the map out on every update.
+    sky_map: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     irradiance: dict[str, Any] = field(default_factory=dict)
     learn_stats: dict[str, int] = field(default_factory=dict)
     weather_ok: bool = True
@@ -402,6 +408,20 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
                 continue
             bucket.hourly.append((row.ts_utc, round(row.potential_kwh, 4)))
             bucket.unshaded.append((row.ts_utc, round(row.unshaded_kwh, 4)))
+            # ``physics_kwh`` is the chain's starting point and the three
+            # factors multiply out to ``potential_kwh`` exactly.  The
+            # irradiance bias is *not* one of them: it was applied upstream to
+            # the irradiance itself and is therefore already inside
+            # ``physics_kwh``.  Reported as ``source_bias`` and named that way
+            # so nothing downstream is tempted to multiply it in a second time.
+            bucket.chain[row.ts_utc] = {
+                "source_bias": round(row.bias_factor, 4),
+                "shading": round(row.shading_factor, 4),
+                "model": round(row.correction, 4),
+                "physics_kwh": round(
+                    row.unshaded_kwh / row.correction if row.correction else 0.0, 4
+                ),
+            }
             plant_hourly[row.ts_utc] = plant_hourly.get(row.ts_utc, 0.0) + row.potential_kwh
             plant_unshaded[row.ts_utc] = (
                 plant_unshaded.get(row.ts_utc, 0.0) + row.unshaded_kwh
@@ -452,6 +472,10 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         data.string_detail = self._string_detail(day_start, now_ts)
         data.irradiance = self._irradiance_now(now_ts)
         data.shading = self._shading_now(now_ts)
+        data.sky_map = {
+            string.string_id: self.engine.shading.grid(string.string_id)
+            for string in self.plant.strings
+        }
         data.model_summary = {
             "log_ratio": self.engine.model.summary(),
             "ghi_bias": self.engine.ghi_bias.summary(),
@@ -474,6 +498,11 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         elevation = float(position["apparent_elevation"].iloc[0])
         counts = self.store.shading_observations_by_string()
 
+        # The map itself is deliberately *not* in here.  These fields change
+        # on every update as the sun moves, and Home Assistant deduplicates
+        # attribute blobs by hash -- a static grid sitting next to a moving
+        # sun position would be written to the recorder again every few
+        # minutes.  It lives on its own sensor, which changes only on a refit.
         out: dict[str, Any] = {
             "sun_azimuth": round(azimuth, 1),
             "sun_elevation": round(elevation, 1),
