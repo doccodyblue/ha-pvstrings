@@ -1,5 +1,41 @@
 # Changelog
 
+## 1.15.0
+
+### Fixed
+
+- **The sky map could normalise a shadow away entirely.** Every cell's loss is
+  measured against one number per string — what that string reaches where
+  nothing is in the way. That reference was the 0.90 quantile over only the
+  cells with at least twelve observations.
+
+  On a roof shaded until early afternoon the sun crosses the shaded morning
+  sky low and slowly, so the *shaded* cells collect the most observations,
+  while the clear afternoon cells are crossed quickly and stay just under the
+  threshold. The filter then discarded every bright cell and kept only shaded
+  ones. Measured on a live plant: the reference settled at 0.317, so the map
+  treated 31 % of physics as a clear view. Every cell came out at or above
+  that, clamped, and the map reported a flawless sky over a string producing
+  18 % of its forecast all morning. A sibling on the same roof escaped only
+  because three of its well-sampled cells happened to be bright ones.
+
+  The reference is now weighted by evidence instead of filtered by it. A thin
+  cell still cannot set the standard alone, but a bright one is never thrown
+  away. Excluding cells can only ever lower this estimate, and lowering it is
+  the ruinous direction.
+
+  Maps are refitted from the raw observations at every startup, so the
+  correction applies to everything already collected — no backfill needed to
+  recover a shadow that was measured but normalised away.
+
+### Added
+
+- The sky map now reports each cell's own `ratio` — measured over physics,
+  before normalisation — and the `reference_ratio` the whole map is measured
+  against. Without them a flat map is unreadable: nothing in the way and
+  everything equally in the way look identical, and they want opposite fixes.
+  This is what made the bug above findable.
+
 ## 1.14.1
 
 ### Fixed

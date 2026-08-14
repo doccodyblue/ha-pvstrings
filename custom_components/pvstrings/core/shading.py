@@ -73,16 +73,10 @@ SHRINK_K = 6.0
 
 #: The reference cell is this quantile of all cell values rather than the
 #: outright maximum, so that one lucky cell cannot declare every other part of
-#: the sky shaded.
+#: the sky shaded.  Weighted by evidence rather than filtered by it: filtering
+#: was tried and removed, because it can only lower the estimate of "unshaded",
+#: and a reference that lands inside a shadow normalises that shadow away.
 REFERENCE_QUANTILE = 0.90
-
-#: Only cells with at least this much evidence may define "unshaded".
-#: Shrinkage drags a thin cell towards no-correction, so a reference taken
-#: over shrunk values lets the emptiest corners of the sky set the standard --
-#: and then a perfectly clear string whose physics runs a little optimistic
-#: comes out shaded everywhere, swallowing level that belongs to the
-#: per-string effect.
-REFERENCE_MIN_OBSERVATIONS = 12.0
 
 #: A correction is never allowed past these.  Total darkness is a broken
 #: sensor, not a shadow, and the map may never amplify.
@@ -474,23 +468,34 @@ def _weighted_quantile(samples: list[tuple[float, float]], quantile: float) -> f
 def _reference_level(cells: Mapping[tuple[int, int], Cell]) -> float:
     """The log-ratio a string reaches where nothing is in the way.
 
-    Taken over the cells' raw values, not their shrunk ones, and only over
-    cells with enough evidence to have an opinion.  A thin cell's shrunk value
-    says "we do not know", which is not the same as "the sky is clear here",
-    and must never become the yardstick everything else is measured against.
+    Taken over the cells' raw values, not their shrunk ones: a thin cell's
+    shrunk value says "we do not know", which is not the same as "the sky is
+    clear here".
+
+    Weighted by evidence rather than filtered by it.  Excluding thin cells can
+    only ever *lower* this estimate, and lowering it is the ruinous direction:
+    it was excluding them, and on a string whose well-sampled cells all happen
+    to sit in shadow -- a roof shaded every morning, sampled every morning --
+    the reference dropped into the shadow itself.  Every cell was then measured
+    against the shadow, came out at or above it, clamped to 1.0, and the map
+    reported a flawless sky over a roof that was dark until one in the
+    afternoon.  Weighting keeps a lucky thin cell from setting the standard
+    alone without ever discarding a bright one.
+
+    The bright end still has to carry weight to be heard: at the 0.90 quantile
+    it needs rather more than a tenth of the total evidence.  A string whose
+    clear sky is one thin cell against a thoroughly sampled shadow will still
+    read as unshaded -- weighting makes that unlikely rather than impossible,
+    and only more observations can settle it.
+
+    Cells with no weight are dropped rather than passed on: a zero-weight
+    population makes the quantile return its *lowest* value, which is the
+    darkest cell -- exactly the wrong answer for "nothing in the way".
     """
-    confident = [
-        cell for cell in cells.values() if cell.n >= REFERENCE_MIN_OBSERVATIONS
-    ]
-    population = confident or list(cells.values())
-    values = sorted(cell.value for cell in population)
-    if len(values) == 1:
-        return values[0]
-    position = REFERENCE_QUANTILE * (len(values) - 1)
-    lower = int(math.floor(position))
-    upper = min(lower + 1, len(values) - 1)
-    weight = position - lower
-    return values[lower] * (1.0 - weight) + values[upper] * weight
+    weighted = [(cell.value, cell.n) for cell in cells.values() if cell.n > 0.0]
+    if not weighted:
+        return 0.0
+    return _weighted_quantile(weighted, REFERENCE_QUANTILE)
 
 
 def _cell_from(rows: Sequence[Sample]) -> Cell | None:

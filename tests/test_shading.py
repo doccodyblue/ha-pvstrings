@@ -409,6 +409,30 @@ class TestTheReferenceComesFromEvidence:
     carry, and leaving the two layers to fight over it.
     """
 
+    def test_a_shadow_the_sun_visits_most_is_still_a_shadow(self):
+        """The reference must never be allowed to settle inside the shadow.
+
+        Taken from real data: a roof dark until one in the afternoon. The sun
+        crosses the shaded morning sky slowly and low, so those cells collect
+        the *most* observations; the clear afternoon cells are crossed fast and
+        collect fewer. Filtering the reference by observation count therefore
+        threw away every bright cell and kept only shaded ones -- the string
+        was measured against its own shadow, every cell came out at or above
+        that, clamped, and the map reported a flawless sky over a dark roof.
+        """
+        rows = []
+        for azimuth in range(80, 140, 10):          # Vormittag: verschattet, gut belegt
+            rows += observations(float(azimuth), 25.0, 0.18, 30)
+        for azimuth in range(190, 260, 10):         # Nachmittag: frei, duenn belegt
+            rows += observations(float(azimuth), 40.0, 1.05, 8)
+
+        sky = ShadingMap.fit(rows)
+        morgens = sky.factor(100.0, 26.0)
+        nachmittags = sky.factor(210.0, 41.0)
+
+        assert morgens < 0.45, f"Morgenschatten nicht erkannt: Faktor {morgens}"
+        assert nachmittags > 0.9, f"freier Nachmittag faelschlich korrigiert: {nachmittags}"
+
     def test_an_optimistic_but_unshaded_string_is_not_corrected(self):
         """Physics 15 % optimistic across a sky with uneven coverage."""
         rows = []
