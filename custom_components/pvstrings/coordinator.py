@@ -28,6 +28,7 @@ from .const import (
     WEATHER_INTERVAL,
 )
 from .core import economics as econ
+from .core.aggregate import merge_hourly
 from .core.config import PlantConfig
 from .core.forecast import HOUR, ForecastEngine, LearnStats, floor_hour
 from .core.health import Health, learn_summary
@@ -73,6 +74,27 @@ class StringForecast:
 
 
 @dataclass(slots=True)
+class GroupForecast:
+    """The forecast for the strings behind one shared inverter.
+
+    A controller deciding what to do with a surplus needs to know how much of
+    what is still to come can reach a particular inverter -- because only that
+    part can charge the battery behind it, or run into its ceiling. Summing the
+    plant tells it nothing, and reconstructing the share from what has already
+    been produced tells it about the wrong half of the day: a plant whose
+    groups face different ways has a share that moves from morning to evening.
+    """
+
+    group_id: str
+    name: str
+    members: list[str] = field(default_factory=list)
+    hourly: list[tuple[int, float]] = field(default_factory=list)
+
+    def sum_between(self, start_ts: int, end_ts: int) -> float:
+        return sum(value for ts, value in self.hourly if start_ts <= ts < end_ts)
+
+
+@dataclass(slots=True)
 class PvStringsData:
     """Everything the sensor platform needs, computed once per update."""
 
@@ -92,6 +114,9 @@ class PvStringsData:
     #: a fresh install has no such record, and reporting nought would read as
     #: "we predicted nothing" rather than "we were not there yet".
     forecast_yesterday_kwh: float | None = None
+    #: Per curtailment group, keyed by group id.  Empty when the plant has no
+    #: groups, which is the common case and must stay invisible.
+    groups: dict[str, GroupForecast] = field(default_factory=dict)
     scores: dict[int, dict[str, Any]] = field(default_factory=dict)
     #: The same windows scored against the forecast as it stood the evening
     #: before, which is the question the plant is actually bought to answer.
@@ -449,6 +474,27 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
             bucket.hourly.sort()
             bucket.unshaded.sort()
 
+        # Aggregated only after every string has been computed, so that strings
+        # inside one group may have entirely different geometry histories --
+        # each was already evaluated against its own.  Strings belonging to no
+        # group are in none of these sums, which is why the groups need not add
+        # up to the plant and no synthetic "ungrouped" bucket is invented.
+        groups: dict[str, GroupForecast] = {}
+        for group in self.plant.groups:
+            members = self.plant.strings_in_group(group.group_id)
+            if not members:
+                continue
+            groups[group.group_id] = GroupForecast(
+                group_id=group.group_id,
+                name=group.name,
+                members=[member.name for member in members],
+                hourly=merge_hourly(
+                    strings[member.string_id].hourly
+                    for member in members
+                    if member.string_id in strings
+                ),
+            )
+
         data = PvStringsData(
             generated_at=now_ts,
             day_start=day_start,
@@ -458,6 +504,7 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
             day_after_start=day_after_start,
             day_after_end=day_after_end,
             strings=strings,
+            groups=groups,
             plant_hourly=sorted(
                 (ts, round(value, 4)) for ts, value in plant_hourly.items()
             ),

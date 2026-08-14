@@ -35,8 +35,13 @@ from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 
-from . import PvStringsConfigEntry, plant_device_info, string_device_info
-from .const import SUBENTRY_STRING
+from . import (
+    PvStringsConfigEntry,
+    group_device_info,
+    plant_device_info,
+    string_device_info,
+)
+from .const import SUBENTRY_GROUP, SUBENTRY_STRING
 from .coordinator import PvStringsCoordinator, PvStringsData
 from .core.forecast import DAY_AHEAD_ISSUE_HOUR_LOCAL, floor_hour
 from .core import units
@@ -648,15 +653,23 @@ async def async_setup_entry(
     )
 
     for subentry_id, subentry in entry.subentries.items():
-        if subentry.subentry_type != SUBENTRY_STRING:
-            continue
-        async_add_entities(
-            [
-                StringSensor(coordinator, entry, subentry_id, subentry.title, description)
-                for description in STRING_SENSORS
-            ],
-            config_subentry_id=subentry_id,
-        )
+        if subentry.subentry_type == SUBENTRY_STRING:
+            async_add_entities(
+                [
+                    StringSensor(
+                        coordinator, entry, subentry_id, subentry.title, description
+                    )
+                    for description in STRING_SENSORS
+                ],
+                config_subentry_id=subentry_id,
+            )
+        elif subentry.subentry_type == SUBENTRY_GROUP:
+            # One per configured group. A plant with no groups -- the common
+            # case -- gets nothing here and is unchanged.
+            async_add_entities(
+                [GroupForecastSensor(coordinator, entry, subentry_id, subentry.title)],
+                config_subentry_id=subentry_id,
+            )
 
 
 class PvStringsEntity(CoordinatorEntity[PvStringsCoordinator], SensorEntity):
@@ -697,6 +710,70 @@ class PlantSensor(PvStringsEntity):
         if self.coordinator.data is None or self.entity_description.attrs_fn is None:
             return None
         return self.entity_description.attrs_fn(self.coordinator.data, self.coordinator)
+
+
+class GroupForecastSensor(PvStringsEntity):
+    """What is still to come behind one shared inverter, today.
+
+    One entity per group rather than three: a controller asks "how much can
+    still reach this inverter", and today's and tomorrow's totals along with
+    the hourly shape ride along as attributes instead of multiplying the
+    entity count by the number of groups.
+    """
+
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_suggested_display_precision = 2
+    _attr_translation_key = "group_forecast_remaining"
+
+    def __init__(
+        self,
+        coordinator: PvStringsCoordinator,
+        entry: ConfigEntry,
+        group_id: str,
+        name: str,
+    ) -> None:
+        super().__init__(coordinator)
+        self._group_id = group_id
+        self._attr_translation_placeholders = {"group": name}
+        self._attr_unique_id = f"{entry.entry_id}_{group_id}_forecast_remaining"
+        self._attr_device_info = group_device_info(entry, group_id, name)
+
+    def _group(self) -> Any:
+        data = self.coordinator.data
+        return None if data is None else data.groups.get(self._group_id)
+
+    @property
+    def available(self) -> bool:
+        return super().available and self._group() is not None
+
+    @property
+    def native_value(self) -> Any:
+        group = self._group()
+        if group is None:
+            return None
+        data = self.coordinator.data
+        return round(group.sum_between(_now_ts(), data.day_end), 3)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        group = self._group()
+        if group is None:
+            return None
+        data = self.coordinator.data
+        return {
+            "today_kwh": round(group.sum_between(data.day_start, data.day_end), 3),
+            "tomorrow_kwh": round(
+                group.sum_between(data.tomorrow_start, data.tomorrow_end), 3
+            ),
+            "strings": group.members,
+            "forecast": _forecast_attribute(group.hourly),
+            "note": (
+                "Only the strings behind this inverter. Strings in no group are "
+                "in no such total, so the groups need not add up to the plant."
+            ),
+        }
 
 
 class StringSensor(PvStringsEntity):

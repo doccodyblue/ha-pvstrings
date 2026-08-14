@@ -82,6 +82,13 @@ Per plant:
 Per string: forecast today / remaining / tomorrow, potential this hour, produced
 today.
 
+Per curtailment group, on its own device: a **Remaining forecast** — how much of
+what is still to come today can reach *that* inverter, with today's and
+tomorrow's totals, the hourly series and the member strings as attributes. It is
+what a controller needs to decide whether a surplus is about to be thrown away,
+and it cannot be derived from the plant total. Plants without groups get none of
+this.
+
 All energy sensors carry proper `device_class` and `state_class`, so they work
 in the Energy dashboard and in long-term statistics.
 

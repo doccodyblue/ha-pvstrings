@@ -274,3 +274,25 @@ def hourly_from_5min(
         "value_kind": value_kind,
         "intervals": seen,
     }
+
+
+def merge_hourly(
+    series: Iterable[Sequence[tuple[int, float]]],
+) -> list[tuple[int, float]]:
+    """Sum several hourly series into one, sorted by hour.
+
+    Used to roll per-string forecasts up to the inverter they sit behind. The
+    strings are summed only after each has been evaluated against its own
+    geometry, so a group may hold strings that face different ways, or that
+    changed orientation on different dates, without any of that leaking into
+    the total.
+
+    Hours missing from one series simply do not contribute to that hour --
+    they are absent, not zero, and inventing a zero would understate the hour
+    for every other member.
+    """
+    merged: dict[int, float] = {}
+    for one in series:
+        for ts, value in one:
+            merged[ts] = merged.get(ts, 0.0) + value
+    return sorted((ts, round(value, 4)) for ts, value in merged.items())

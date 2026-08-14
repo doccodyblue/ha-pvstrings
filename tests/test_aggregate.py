@@ -11,6 +11,7 @@ from core.aggregate import (
     hourly_from_5min,
     integrate,
     interval_mid,
+    merge_hourly,
     interval_start,
 )
 
@@ -187,3 +188,30 @@ class TestFlushMarkerAhead:
 
     def test_first_run_writes_exactly_one_window(self):
         assert self._range(None, self.BOUNDARY + 1) == [self.BOUNDARY - 300]
+
+
+class TestMergeHourly:
+    """Rolling per-string forecasts up to the inverter they sit behind."""
+
+    def test_hours_are_summed_across_strings(self):
+        assert merge_hourly(
+            [[(0, 1.0), (3600, 2.0)], [(0, 0.5), (3600, 0.25)]]
+        ) == [(0, 1.5), (3600, 2.25)]
+
+    def test_a_missing_hour_is_absent_not_zero(self):
+        """One string starting later must not drag the others' hour down."""
+        merged = merge_hourly([[(0, 1.0), (3600, 2.0)], [(3600, 0.5)]])
+        assert merged == [(0, 1.0), (3600, 2.5)]
+
+    def test_the_result_is_sorted_however_the_inputs_arrive(self):
+        merged = merge_hourly([[(7200, 1.0), (0, 3.0)], [(3600, 2.0)]])
+        assert [ts for ts, _ in merged] == [0, 3600, 7200]
+
+    def test_no_series_at_all_is_an_empty_forecast(self):
+        """A group whose strings have no forecast yet, not a crash."""
+        assert merge_hourly([]) == []
+        assert merge_hourly([[]]) == []
+
+    def test_floating_point_noise_does_not_accumulate(self):
+        merged = merge_hourly([[(0, 0.1)]] * 3)
+        assert merged == [(0, 0.3)]

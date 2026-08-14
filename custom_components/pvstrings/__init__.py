@@ -288,6 +288,23 @@ def string_device_info(entry: ConfigEntry, string_id: str, name: str) -> DeviceI
     )
 
 
+def group_device_info(entry: ConfigEntry, group_id: str, name: str) -> DeviceInfo:
+    """A curtailment group is a real thing -- the inverter the strings sit behind.
+
+    Given its own device rather than hung off the plant, for the same reason
+    strings are: entities added against a config subentry must live on a device
+    belonging to that subentry, so that removing the group takes its entities
+    with it instead of leaving them orphaned.
+    """
+    return DeviceInfo(
+        identifiers={(DOMAIN, f"{entry.entry_id}_{group_id}")},
+        name=name,
+        manufacturer="pvstrings",
+        model="Curtailment group",
+        via_device=(DOMAIN, entry.entry_id),
+    )
+
+
 def plant_device_info(entry: ConfigEntry) -> DeviceInfo:
     return DeviceInfo(
         identifiers={(DOMAIN, entry.entry_id)},

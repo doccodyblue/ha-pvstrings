@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.14.0
+
+### Added
+
+- **A forecast per curtailment group.** Every configured group now gets its own
+  device with a `Remaining forecast` sensor: how much of what is still to come
+  today can reach *that* inverter. Attributes carry today's and tomorrow's
+  totals, the hourly series in the usual `forecast` format, and the member
+  strings.
+
+  A controller deciding what to do with a surplus needs this and cannot
+  reconstruct it. The plant total says nothing about which inverter the energy
+  arrives at, and deriving the share from what has already been produced
+  describes the wrong half of the day: on a plant whose groups face different
+  ways, the share moves with the sun. Measured on a plant with a south-facing
+  battery group and an east-facing grid group, a share taken from the morning
+  understated the battery group's share of the *remaining* day by 35 points at
+  09:00 and was still 11 points low at 18:00 — so the clipping risk read low,
+  and the surplus was steered into the house later than it should have been.
+
+  Summed only after each string has been evaluated against its own geometry,
+  so one group may hold strings that face different ways or that changed
+  orientation on different dates. Strings belonging to no group are in no such
+  total, which is why the groups need not add up to the plant; no synthetic
+  "ungrouped" total is invented.
+
+  Plants without curtailment groups — the common case — gain no devices, no
+  entities and no attributes.
+
 ## 1.13.0
 
 ### Added
