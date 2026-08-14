@@ -260,7 +260,7 @@
         "name": "Restprognose heute"
       },
       "group_forecast_remaining": {
-        "name": "Restprognose {group}"
+        "name": "Restprognose heute"
       },
       "forecast_tomorrow": {
         "name": "Prognose morgen"

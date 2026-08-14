@@ -260,7 +260,7 @@
         "name": "Forecast remaining today"
       },
       "group_forecast_remaining": {
-        "name": "Remaining forecast {group}"
+        "name": "Remaining forecast today"
       },
       "forecast_tomorrow": {
         "name": "Forecast tomorrow"

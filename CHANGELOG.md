@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.14.1
+
+### Fixed
+
+- The group forecast sensor was named "Remaining forecast <group>" while
+  already living on a device named after the group, so it read "Speicher
+  Remaining forecast Speicher". Named plainly now; Home Assistant supplies the
+  device prefix. Entity ids created by 1.14.0 keep their stutter -- Home
+  Assistant never renames an id it has issued -- so rename them by hand if you
+  installed that version, before anything depends on them.
+
 ## 1.14.0
 
 ### Added

@@ -736,7 +736,6 @@ class GroupForecastSensor(PvStringsEntity):
     ) -> None:
         super().__init__(coordinator)
         self._group_id = group_id
-        self._attr_translation_placeholders = {"group": name}
         self._attr_unique_id = f"{entry.entry_id}_{group_id}_forecast_remaining"
         self._attr_device_info = group_device_info(entry, group_id, name)
 

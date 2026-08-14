@@ -74,12 +74,18 @@ def test_two_sensors_never_share_a_name():
     for label, source in (("de", GERMAN), ("en", ENGLISH)):
         names = [v["name"] for v in source["entity"]["sensor"].values()]
         duplicates = {n for n in names if names.count(n) > 1}
-        # Plant and string sensors legitimately share names -- they live on
-        # different devices -- so only flag collisions within one prefix group.
-        plant = [
-            v["name"]
-            for k, v in source["entity"]["sensor"].items()
-            if not k.startswith("string_")
-        ]
-        clashes = {n for n in plant if plant.count(n) > 1}
-        assert not clashes, f"{label}: plant sensors share a name: {clashes} ({duplicates})"
+        # Sensors on different devices legitimately share a name -- Home
+        # Assistant prefixes the device -- so collisions only matter within one
+        # device kind. Plant, string and curtailment group are three kinds.
+        for kind, belongs in (
+            ("plant", lambda k: not k.startswith(("string_", "group_"))),
+            ("string", lambda k: k.startswith("string_")),
+            ("group", lambda k: k.startswith("group_")),
+        ):
+            group = [
+                v["name"] for k, v in source["entity"]["sensor"].items() if belongs(k)
+            ]
+            clashes = {n for n in group if group.count(n) > 1}
+            assert not clashes, (
+                f"{label}: {kind} sensors share a name: {clashes} ({duplicates})"
+            )
