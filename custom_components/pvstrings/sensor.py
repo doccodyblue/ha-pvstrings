@@ -531,7 +531,10 @@ STRING_SENSORS: tuple[StringSensorDescription, ...] = (
         # recorder deduplicates attribute blobs by hash, so a map kept away
         # from the moving sun position is stored once instead of every update.
         value_fn=lambda data, sid: len(data.sky_map.get(sid) or []),
-        attrs_fn=lambda data, sid: {"cells": data.sky_map.get(sid) or []},
+        attrs_fn=lambda data, sid: {
+            "cells": data.sky_map.get(sid) or [],
+            "reference_ratio": data.sky_reference.get(sid),
+        },
     ),
     StringSensorDescription(
         key="shading_now",

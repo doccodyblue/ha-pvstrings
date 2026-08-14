@@ -131,6 +131,9 @@ class PvStringsData:
     #: changes only on a refit, and the recorder can then reuse one stored
     #: attribute blob instead of writing the map out on every update.
     sky_map: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    #: Per string, the ratio the map treats as "nothing in the way".  A flat
+    #: map only means something next to it.
+    sky_reference: dict[str, float | None] = field(default_factory=dict)
     #: What the sky is expected to do today and tomorrow, from the same
     #: forecast rows that drive the yield prediction.
     outlook: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -548,6 +551,10 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         data.shading = self._shading_now(now_ts)
         data.sky_map = {
             string.string_id: self.engine.shading.grid(string.string_id)
+            for string in self.plant.strings
+        }
+        data.sky_reference = {
+            string.string_id: self.engine.shading.reference_ratio(string.string_id)
             for string in self.plant.strings
         }
         data.model_summary = {

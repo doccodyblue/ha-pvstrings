@@ -328,6 +328,12 @@ class ShadingMap:
                 "loss": round(
                     (1.0 - _clamp(math.exp(cell.shrunk - self.reference))) * 100, 1
                 ),
+                # What the string actually did here, before any normalisation:
+                # measured over physics, upper envelope.  Without it a flat map
+                # is unreadable -- there is no way to tell "nothing is in the
+                # way" from "everything is equally in the way", and those want
+                # opposite fixes.
+                "ratio": round(math.exp(cell.value), 3),
                 "n": round(cell.n, 1),
                 "season": season,
             }
@@ -428,6 +434,17 @@ class ShadingModel:
     def grid(self, string_id: str) -> list[dict[str, object]]:
         found = self.maps.get(string_id)
         return found.grid() if found else []
+
+    def reference_ratio(self, string_id: str) -> float | None:
+        """What this string counts as "nothing in the way", as a plain ratio.
+
+        Every loss in the grid is measured against this one number, so a map
+        that reports no shadow anywhere is only interpretable next to it: if
+        the reference itself sits deep in shadow, the map is normalising the
+        shadow away rather than finding none.
+        """
+        found = self.maps.get(string_id)
+        return None if found is None else round(math.exp(found.reference), 3)
 
 
 _AZIMUTH_BINS = int(360.0 / AZIMUTH_BIN_DEG)
