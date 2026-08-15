@@ -433,6 +433,41 @@ class TestTheReferenceComesFromEvidence:
         assert morgens < 0.45, f"Morgenschatten nicht erkannt: Faktor {morgens}"
         assert nachmittags > 0.9, f"freier Nachmittag faelschlich korrigiert: {nachmittags}"
 
+    def test_a_string_that_beats_physics_is_not_shaded_everywhere(self):
+        """Physics running low is a level, and the level is not the map's job.
+
+        Taken from a live plant: the reference reached 1.78, so a cell matching
+        physics exactly came out 44 % "shaded" and a nearly flat panel with a
+        clear view of the whole sky carried 10 to 36 % loss. Ratios above one
+        do not mean an absence of shadow, they mean the physics runs low there
+        -- and the per-string log-ratio layer exists to carry exactly that.
+        """
+        rows = []
+        for azimuth in range(90, 271, 10):
+            for elevation in (15.0, 25.0, 35.0, 45.0):
+                rows += observations(float(azimuth), elevation, 1.35, 40)
+
+        sky = ShadingMap.fit(rows)
+        for azimuth in (100.0, 180.0, 250.0):
+            assert sky.factor(azimuth, 26.0) == pytest.approx(1.0, abs=1e-6)
+
+    def test_a_shadow_is_still_measured_against_parity_not_the_best_cell(self):
+        """The shadow survives the cap; it is measured against 1.0, not 1.35."""
+        rows = []
+        for azimuth in range(150, 271, 10):
+            rows += observations(float(azimuth), 35.0, 1.35, 40)
+        for azimuth in range(90, 150, 10):
+            rows += observations(float(azimuth), 25.0, 0.30, 40)
+
+        sky = ShadingMap.fit(rows)
+        schatten = sky.factor(100.0, 26.0)
+        # Gegen Parität landet die Zelle bei ~0.35 -- ihr Rohwert 0.30, von der
+        # Schrumpfung bei n=40 leicht angehoben.  Ohne den Deckel läge die
+        # Referenz bei 1.35 und dieselbe Zelle bei ~0.26: derselbe Schatten,
+        # um ein Drittel übertrieben, weil der Physik-Versatz mitgerechnet wird.
+        assert 0.32 < schatten < 0.40, schatten
+        assert sky.factor(200.0, 36.0) == pytest.approx(1.0, abs=1e-6)
+
     def test_an_optimistic_but_unshaded_string_is_not_corrected(self):
         """Physics 15 % optimistic across a sky with uneven coverage."""
         rows = []

@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.15.1
+
+### Fixed
+
+- **The reference may no longer exceed parity, which 1.15.0 let it do.**
+  Weighting the reference instead of filtering it found the shadow it was
+  meant to find — but it also let the reference climb to between 1.36 and 1.81
+  on a live plant, so the map treated "36 to 81 % above physics" as a clear
+  view. A ratio above one is not an absence of shadow; it is physics running
+  low, which is a *level*, and the level is the per-string log-ratio layer's
+  job. Within a day the map had put 10 to 36 % of loss on a nearly flat panel
+  with a clear view of the whole sky, and the day-ahead bias had swung from
+  +0.71 kWh/day to −0.70.
+
+  Capped at parity, the shadow that prompted 1.15.0 survives intact — 69 %
+  through the morning on the string it was found on, lifting at one in the
+  afternoon exactly as its owner described — while the phantom loss on the flat
+  and east-facing strings falls to nearly nothing.
+
+  Known cost, quantified in the source: where a string's physics genuinely runs
+  low everywhere, a shadow that does not push a cell below parity stays
+  invisible, hiding up to `1 − 1/A` of loss. Separating it out needs the
+  string's level removed before the map is fitted, which is a different design.
+
 ## 1.15.0
 
 ### Fixed

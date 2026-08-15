@@ -495,7 +495,23 @@ def _reference_level(cells: Mapping[tuple[int, int], Cell]) -> float:
     weighted = [(cell.value, cell.n) for cell in cells.values() if cell.n > 0.0]
     if not weighted:
         return 0.0
-    return _weighted_quantile(weighted, REFERENCE_QUANTILE)
+    # Never above parity.  A cell that matches physics exactly is not shaded,
+    # whatever the rest of the sky manages -- and a string that beats physics
+    # everywhere is not shaded either, it is a string whose physics runs low.
+    # That is a level, and the level belongs to the per-string log-ratio model;
+    # letting it into the map here reports it as shadow on every cell at once.
+    # Measured: a reference of 1.78 put 10 to 36 % of phantom loss on a nearly
+    # flat panel that can see the whole sky.
+    #
+    # The cap has a cost, and it is the one case this design cannot see: where
+    # a string's physics genuinely runs low everywhere -- true clear ratio A
+    # above one -- any shadow that fails to push a cell below parity stays
+    # invisible, hiding up to 1 - 1/A of loss.  At A = 1.35 that is 26
+    # percentage points.  Distinguishing it needs the string's level separated
+    # out before the map is fitted, which is a different design; until then,
+    # under-reporting one string's shadow beats inventing shade on every
+    # string at once.
+    return min(_weighted_quantile(weighted, REFERENCE_QUANTILE), 0.0)
 
 
 def _cell_from(rows: Sequence[Sample]) -> Cell | None:
