@@ -1,30 +1,40 @@
 # PV Strings
 
-> ## ⚠️ Beta — largely unproven in the field
+> ## ⚠️ Beta — young, and honest about it
 >
-> This is version 1.1.0 of an integration that has been running on **exactly
-> one installation, for one day**. Treat every number it produces as
-> provisional.
+> Version 1.15.1. Running on **two installations** since 11 August 2026 — long
+> enough to have found real bugs, nowhere near long enough to be trusted
+> blindly. Treat every number it produces as provisional.
 >
 > **What that means concretely:**
 >
-> - The learning layer needs weeks of data before its corrections mean
->   anything. Until then you are looking at pure physics plus noise, and the
->   accuracy sensors will show figures based on a handful of hours.
+> - The learning layer needs weeks of data. The first three days publish no
+>   accuracy figure at all, deliberately: one day of history makes a confident
+>   percentage out of one day's weather.
+> - The sky map needs longer still. It learns only the sky the sun has actually
+>   crossed, so a full year is what it takes to be complete — and on a fresh
+>   install it corrects nothing, which is the correct behaviour rather than a
+>   fault.
 > - Only Home Assistant **2026.8** has actually been run. The 2025.9 minimum
->   was established by checking that the required APIs exist in that release,
->   not by running it.
-> - The database schema may still change. There is a migration mechanism, but
->   no upgrade path has been exercised yet, and a future version may ask you
->   to start over.
-> - Expect breaking changes between minor versions until 2.0.
+>   was established by checking that the required APIs exist there, not by
+>   running it.
+> - Expect breaking changes between minor versions until 2.0. The database
+>   schema migrates in place and the v2 → v3 upgrade has been exercised against
+>   a real database, but further migrations may still ask you to start over.
 >
-> **What is tested:** 249 automated tests cover the physics chain, the learning
-> rules, censoring, storage and the config-flow schemas — including the parts
-> that only fail against a real Home Assistant. The core logic is exercised;
-> the integration as a whole is not battle-hardened.
+> **What is tested:** 575 automated tests cover the physics chain, the learning
+> rules, censoring, the sky map, storage and the config-flow schemas —
+> including the parts that only fail against a real Home Assistant.
 >
-> Bug reports are very welcome. Please include the diagnostics download.
+> **What the tests did not catch**, and what the field did, is worth knowing
+> before you rely on this: a correction layer whose gate was set above the
+> value it could ever reach, so it never once switched on; a sky map whose
+> reference settled inside a shadow and reported a flawless sky over a roof
+> that was dark all morning; and the same map, once fixed, putting phantom loss
+> on a panel with a clear view of the whole sky. All three looked exactly like
+> "not enough data yet" from the outside. If a number here looks wrong to you,
+> it may well be — please open an issue with the diagnostics download.
+
 
 
 A Home Assistant integration that forecasts and evaluates PV yield **per string**,
@@ -138,9 +148,21 @@ battery SOC. Skip this entirely if nothing throttles your inverters.
 which curtailment group it belongs to. Each string becomes its own device.
 
 **4. Optional, in the options flow:** grid power (enables export-aware savings),
-house load, battery, and any local weather sensors. A pyranometer or illuminance
-sensor lets the bias model learn against measured irradiance rather than the
-forecast's own analysis.
+house load, battery, and any local weather sensors.
+
+**The irradiance sensor is the one worth having.** Without it the source-bias
+layer — the single largest correction in the chain — has nothing to check the
+forecast against except the forecast's own shortest-horizon run. It can then
+learn how the forecast *decays with lead time*, but not whether it is wrong in
+the first place. With a sensor it learns both. The `Irradiance forecast` entity
+reports which of the two is in use as `truth_source`, so you can tell at a
+glance.
+
+It does not have to be a pyranometer. A silicon reference cell in the plane of
+the modules matches their spectral response better than a thermopile does, and
+even a weather station's lux-derived figure recovers most of the benefit — a
+constant scale error cancels out between this layer and the per-string one, and
+what remains is the spectral drift with cloud cover.
 
 ### No internet access?
 
