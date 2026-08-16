@@ -1251,7 +1251,7 @@ class ForecastEngine:
         potentials: dict[str, dict[int, float]],
         stats: LearnStats,
     ) -> None:
-        """Store raw shading observations.  v1 only collects, never corrects.
+        """Store raw shading observations for the sky map to be fitted from.
 
         Deliberately not rasterised on write: a fixed grid built from thin data
         is a lossy commitment.  Raw azimuth/elevation pairs can be binned any

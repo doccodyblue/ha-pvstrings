@@ -393,6 +393,38 @@ are tiny and they are the memory of the system.
 
 ---
 
+## Shading, and what the map can and cannot see
+
+The sky is divided into cells of ten degrees of azimuth by five of elevation,
+and each string learns its own map of them: for every clean five-minute
+interval, measured over physics at that sun position. The forecast is corrected
+with it. Indexed on the sun rather than the clock, because a chimney's shadow
+sits at a fixed place in the sky while the time it arrives drifts by an hour
+twice a year.
+
+What it will not do:
+
+- **Invent sky it has not seen.** In August the sun never reaches the winter
+  cells, so those correct nothing. A complete map takes a full turn of the
+  seasons; `pvstrings.backfill_shading` reconstructs what it can from Home
+  Assistant's own history.
+- **Carry the string's overall level.** The map is normalised against parity,
+  so it reports *shape* — how a string varies across the sky — and leaves the
+  level to the per-string log-ratio layer. The cost is real and known: on a
+  string whose physics runs low everywhere, a shadow that does not push a cell
+  below parity stays invisible.
+- **Learn from an interval it should not.** Curtailed intervals, a full
+  battery, a charge controller holding a voltage — all are excluded, because a
+  throttled afternoon recurs at the same sun positions as a shadow does and
+  would otherwise be learned as one.
+
+Each cell reports its own `ratio` and the map its `reference_ratio`, because a
+map showing no loss anywhere is unreadable without them: nothing in the way and
+everything equally in the way draw the same picture, and they want opposite
+repairs.
+
+---
+
 ## Not in this version
 
 - No `usable_kwh`. Reporting how much of the potential you can actually *use*
@@ -400,10 +432,6 @@ are tiny and they are the memory of the system.
   own subproject; guessing would be worse than not answering. Only
   `potential_kwh` is published. The economics run on measured values and are
   unaffected.
-- No automatic shading **correction**. Raw observations (azimuth, elevation,
-  ratio) are collected from uncensored intervals so the analysis can be done
-  later on a year of data. They are stored unrasterised on purpose: a fixed grid
-  built from thin data is a lossy commitment.
 - No neural networks or tree ensembles, no champion/challenger, no multi-source
   blending, no snow model.
 
