@@ -350,3 +350,38 @@ class TestHaWeatherCarriesRainProbability:
         store.upsert_weather_forecast([row.as_row() for row in rows])
         out = store.weather_outlook(ISSUED, ISSUED + 7200, "ha_weather")
         assert out["rain_probability_pct"] == 60.0
+
+class TestAmortisationDoesNotProjectNonsense:
+    """Reported from the field: OverflowError on every coordinator refresh.
+
+    A plant commissioned months before this integration was installed has its
+    recorded savings scaled up over the whole period since commissioning, not
+    over the period anything was measured. The annual figure comes out tiny,
+    the projected amortisation runs to tens of thousands of months, and the
+    date arithmetic overflows -- taking down the refresh, not just the sensor.
+    """
+
+    def test_an_absurd_projection_is_declined_rather_than_dated(self):
+        result = amortisation(1800.0, 12.0, 0.5, date(2026, 8, 17))
+        assert result.target_date is None
+        assert result.months_remaining is None
+        # The parts that are still knowable stay knowable.
+        assert result.progress_pct == pytest.approx(12.0 / 1800.0 * 100, abs=0.01)
+        assert result.annual_saving_eur == 0.5
+
+    def test_a_rate_that_never_pays_off_does_not_raise(self):
+        """The exact report: a hundredth of a euro a year used to overflow."""
+        result = amortisation(1800.0, 12.0, 0.01, date(2026, 8, 17))
+        assert result.target_date is None
+
+    def test_a_plausible_projection_is_still_dated(self):
+        result = amortisation(1800.0, 200.0, 200.0, date(2026, 8, 17))
+        assert result.target_date is not None
+        assert result.target_date.year == 2034
+
+    def test_the_boundary_is_a_century(self):
+        just_inside = amortisation(1200.0, 0.0, 12.0, date(2026, 8, 17))
+        assert just_inside.months_remaining == pytest.approx(1200.0, abs=1)
+        assert just_inside.target_date is not None
+        just_outside = amortisation(1300.0, 0.0, 12.0, date(2026, 8, 17))
+        assert just_outside.target_date is None

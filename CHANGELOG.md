@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.15.2
+
+### Fixed
+
+- **The coordinator crashed on every refresh when the commissioning date was
+  months before the integration was installed** (#1, reported by
+  @wagner-heist). Recorded savings were scaled up to a year over the period
+  since *commissioning*, but nothing was recorded before the integration
+  existed — so a week of savings was divided by a third of a year, the annual
+  estimate came out tiny, and the projected amortisation ran to tens of
+  thousands of months. Building a date that far out raised `OverflowError`,
+  which took down the whole refresh rather than one sensor.
+
+  The annual estimate is now scaled over the period actually measured: the
+  later of the commissioning date and the first hour in the database. Savings
+  before the integration was installed remain unknown, which is honest, but
+  they no longer stretch the denominator.
+
+- **A projection beyond a century is declined rather than dated.** Even without
+  the overflow, an amortisation date in the fifty-sixth century is not an
+  estimate. Past `MAX_AMORTISATION_MONTHS` both the month count and the target
+  date report nothing; progress and the annual figure stay, because those are
+  still knowable.
+
 ## 1.15.1
 
 ### Fixed

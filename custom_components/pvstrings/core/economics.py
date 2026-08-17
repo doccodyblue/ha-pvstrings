@@ -158,6 +158,12 @@ def annual_estimate(
     return observed_value / share
 
 
+#: Beyond this the projection is not an estimate, it is a decoration.  A PV
+#: plant lasts twenty-five to thirty years; a hundred is generous and still
+#: far inside what a date can hold.
+MAX_AMORTISATION_MONTHS = 100 * 12
+
+
 @dataclass(frozen=True, slots=True)
 class Amortisation:
     investment_eur: float
@@ -184,7 +190,14 @@ def amortisation(
     target: date | None = None
     if annual_saving_eur and annual_saving_eur > 0:
         months = remaining_eur / (annual_saving_eur / 12.0)
-        target = today + timedelta(days=int(months * 30.44))
+        if months > MAX_AMORTISATION_MONTHS:
+            # At this rate it does not amortise, and saying so is the honest
+            # answer.  Projecting anyway produced dates in the fifty-sixth
+            # century and, when the rate was small enough, an OverflowError
+            # that took the whole coordinator down on every refresh.
+            months = None
+        else:
+            target = today + timedelta(days=int(months * 30.44))
     return Amortisation(
         investment_eur=investment_eur,
         saved_total_eur=saved_total_eur,

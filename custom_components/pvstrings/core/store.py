@@ -477,6 +477,18 @@ class Store:
             params.append(string_id)
         return float(self._query(sql, params)[0]["wh"])
 
+    def first_hour_ts(self) -> int | None:
+        """The earliest hour the plant has any measurement for.
+
+        Not the same thing as the commissioning date, and the difference is the
+        point: a plant commissioned in May and given this integration in August
+        has four months of production nobody recorded.  Scaling what *was*
+        recorded up to a year using the period since commissioning divides a
+        week of savings by a third of a year.
+        """
+        rows = self._query("SELECT MIN(ts_utc) AS first FROM string_hourly")
+        return None if not rows or rows[0]["first"] is None else int(rows[0]["first"])
+
     def energy_kwh_between(
         self, start_ts: int, end_ts: int, string_id: str | None = None
     ) -> float:

@@ -812,12 +812,28 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         }
 
         weights = self._weights()
+        # Scaled over the period the data actually covers, not over the period
+        # since commissioning.  A plant commissioned in May and given this
+        # integration in August has four months nobody recorded; dividing one
+        # week of savings by a third of a year understates the annual figure so
+        # badly that the amortisation lands centuries out -- and, when the rate
+        # gets small enough, overflows the date entirely.
+        first_ts = self.store.first_hour_ts()
+        measured_from = (
+            commissioning
+            if first_ts is None
+            else max(
+                commissioning,
+                datetime.fromtimestamp(first_ts, tz=local.tzinfo).date(),
+            )
+        )
         annual = econ.annual_estimate(
             out["total"]["eur"],
-            commissioning,
+            measured_from,
             local.date(),
             weights,
         )
+        out["measured_from"] = measured_from.isoformat()
         out["annual_estimate_eur"] = round(annual, 2) if annual is not None else None
         out["amortisation"] = econ.amortisation(
             economics.investment_eur,
