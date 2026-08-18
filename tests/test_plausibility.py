@@ -318,7 +318,7 @@ class TestEngineDropsImplausibleHours:
 
 
 class TestTheAfternoonStation:
-    """Regression: the real numbers from 2026-08-11 at the reference plant.
+    """Regression: the real numbers from 2026-08-11 on the reference plant.
 
     A 4.2 kWp plant over five planes.  The station tracked the array until
     early afternoon and then drifted low; by 17:00 local the array was making

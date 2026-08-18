@@ -12,3 +12,4 @@ SPEC.md
 # Logs from other people's instances -- they carry entity names, addresses and
 # tokens, and none of that belongs in a public repository.
 _logs/
+AGENTS.md
