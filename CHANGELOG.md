@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.16.0
+
+### Changed
+
+- **Per-string quality stats cover daylight only.** `coverage_mean` and its
+  companions on `strings_detail` were averaged over every five-minute row
+  since midnight — which graded a source's night-time manners rather than its
+  data quality. A Victron MPPT reports a numeric 0 W all night and counts as
+  covered; a DTU-style source goes unavailable while its microinverter sleeps
+  and started every day with a systematic handicap that had nothing to do
+  with capture (verified live: 0.62 against 0.96 on the same day, both with
+  gap-free daytime data — and drifting with the season, because the handicap
+  is exactly the length of the night).
+
+  The stats window is now clamped to the day's astronomical daylight —
+  sunrise to sunset for the plant's location, pure astronomy, no weather, no
+  per-brand special cases. The whole window is clamped rather than just the
+  coverage figure, so `intervals`, `samples_mean`, `curtailed_fraction` and
+  `value_kinds` describe the same hours and stay mutually consistent. Before
+  sunrise the stats come back in their empty shape rather than as zeros,
+  which is the honest answer at 05:00. A genuine daytime outage lowers
+  coverage exactly as before.
+
+  Per-interval and per-hour coverage in the database are untouched — learning
+  weights and censoring consume those and were correct as they were. Users of
+  DTU-style sources will see the published coverage jump to its true daytime
+  value.
+
 ## 1.15.2
 
 ### Fixed

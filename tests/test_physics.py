@@ -12,7 +12,7 @@ import pandas as pd
 import pytest
 
 from core.config import GeometrySegment
-from core.physics import PhysicsEngine, to_index
+from core.physics import PhysicsEngine, clamp_to_daylight, to_index
 
 LAT, LON = 53.5, 10.0
 
@@ -47,6 +47,53 @@ class TestSolarGeometry:
         index = to_index([SUMMER_NOON - 12 * 3600])
         elevation = engine.solar_position(index)["apparent_elevation"].iloc[0]
         assert elevation < 0
+
+
+#: 21 December, 12:00 UTC -- the short end of the year.
+WINTER_NOON = SUMMER_NOON + 183 * 86400
+
+
+class TestDaylightWindow:
+    def test_summer_window_brackets_solar_noon(self, engine: PhysicsEngine):
+        window = engine.daylight_window_for(SUMMER_NOON)
+        assert window is not None
+        sunrise, sunset = window
+        assert sunrise < engine.solar_noon_for(SUMMER_NOON) < sunset
+        # ~17 hours of daylight at 53.5 deg north in June.
+        assert 15 * 3600 < sunset - sunrise < 19 * 3600
+
+    def test_winter_days_are_short(self, engine: PhysicsEngine):
+        window = engine.daylight_window_for(WINTER_NOON)
+        assert window is not None
+        sunrise, sunset = window
+        assert 6 * 3600 < sunset - sunrise < 9 * 3600
+
+    def test_window_is_cached_per_day(self, engine: PhysicsEngine):
+        assert engine.daylight_window_for(SUMMER_NOON) == engine.daylight_window_for(
+            SUMMER_NOON + 1800
+        )
+
+    def test_polar_night_and_day_have_no_window(self):
+        svalbard = PhysicsEngine(78.0, 15.0)
+        assert svalbard.daylight_window_for(WINTER_NOON) is None
+        assert svalbard.daylight_window_for(SUMMER_NOON) is None
+
+
+class TestClampToDaylight:
+    WINDOW = (6 * 3600.0, 20 * 3600.0)  # sunrise 06:00, sunset 20:00
+
+    def test_night_edges_are_cut(self):
+        assert clamp_to_daylight(0, 86400, self.WINDOW) == (6 * 3600, 20 * 3600)
+
+    def test_midday_now_caps_the_end(self):
+        assert clamp_to_daylight(0, 12 * 3600, self.WINDOW) == (6 * 3600, 12 * 3600)
+
+    def test_before_sunrise_the_window_is_empty(self):
+        start, end = clamp_to_daylight(0, 5 * 3600, self.WINDOW)
+        assert end <= start
+
+    def test_no_window_means_no_clamp(self):
+        assert clamp_to_daylight(0, 86400, None) == (0, 86400)
 
 
 class TestComponentPlausibility:

@@ -64,6 +64,28 @@ def to_epoch(index: pd.DatetimeIndex) -> list[int]:
     return [int(value.timestamp()) for value in index]
 
 
+def clamp_to_daylight(
+    start_ts: int, end_ts: int, window: tuple[float, float] | None
+) -> tuple[int, int]:
+    """Restrict a stats window to the hours in which yield is possible.
+
+    Coverage averaged over a whole day measures the source's night-time
+    manners, not its data quality: a Victron MPPT reports 0 W all night and
+    counts as covered, a DTU-style source goes unavailable and counts as a
+    gap.  Clamping to daylight makes strings comparable regardless of which
+    inverter feeds them -- pure astronomy, no per-brand special cases.
+
+    The result may be empty (``end <= start``) before sunrise; callers get
+    their "no rows" shape from that, which is the honest answer at 05:00.
+    ``window`` is ``None`` on polar day and night, where clamping has nothing
+    defensible to clamp to and the full window is returned unchanged.
+    """
+    if window is None:
+        return start_ts, end_ts
+    sunrise, sunset = window
+    return max(start_ts, int(sunrise)), min(end_ts, int(sunset))
+
+
 class PhysicsEngine:
     """Site-level physics.  One instance per config entry."""
 
@@ -164,6 +186,30 @@ class PhysicsEngine:
     def solar_noon_for(self, ts_utc: float) -> float:
         day = datetime.fromtimestamp(ts_utc, tz=timezone.utc).date()
         return self.solar_noon_ts(day.toordinal())
+
+    @functools.lru_cache(maxsize=512)
+    def daylight_window_ts(self, day_ordinal: int) -> tuple[float, float] | None:
+        """Epoch seconds of sunrise and sunset for a proleptic day ordinal.
+
+        ``None`` on polar day and polar night, where the SPA reports no rise or
+        set at all.  The two cases would need a solar-position lookup to tell
+        apart, and every caller so far wants the same answer for both: fall
+        back to the unclamped window rather than guess.
+        """
+        day = datetime.fromordinal(day_ordinal).replace(tzinfo=timezone.utc)
+        index = pd.DatetimeIndex([pd.Timestamp(day)])
+        events = pvlib.solarposition.sun_rise_set_transit_spa(
+            index, self.latitude, self.longitude
+        )
+        sunrise = events["sunrise"].iloc[0]
+        sunset = events["sunset"].iloc[0]
+        if pd.isna(sunrise) or pd.isna(sunset):
+            return None
+        return float(sunrise.timestamp()), float(sunset.timestamp())
+
+    def daylight_window_for(self, ts_utc: float) -> tuple[float, float] | None:
+        day = datetime.fromtimestamp(ts_utc, tz=timezone.utc).date()
+        return self.daylight_window_ts(day.toordinal())
 
     # -- irradiance components --------------------------------------------- #
 

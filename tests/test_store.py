@@ -101,6 +101,43 @@ class TestFiveMinute:
         assert row["value_kind"] == "measured"
 
 
+class TestIntervalStats:
+    """The daylight clamp happens in the caller; what the store must guarantee
+    is that the stats describe exactly the window it was given -- including an
+    empty window, which is what "before sunrise" looks like from here."""
+
+    def _row(self, ts, coverage):
+        return (ts, "s1", 50.0, 600.0, coverage, 10, None, None, "measured")
+
+    def _night_and_day(self, store: Store):
+        # A DTU-style source: unavailable all night (coverage 0), clean by day.
+        store.upsert_5min([self._row(ts, 0.0) for ts in range(0, 21600, 300)])
+        store.upsert_5min([self._row(ts, 1.0) for ts in range(21600, 43200, 300)])
+
+    def test_night_rows_drag_the_unclamped_mean(self, store: Store):
+        self._night_and_day(store)
+        assert store.interval_stats("s1", 0, 43200)["coverage_mean"] == 0.5
+
+    def test_daylight_window_sees_only_daytime_quality(self, store: Store):
+        self._night_and_day(store)
+        stats = store.interval_stats("s1", 21600, 43200)
+        assert stats["coverage_mean"] == 1.0
+        assert stats["intervals"] == 72
+
+    def test_a_daytime_outage_still_lowers_the_mean(self, store: Store):
+        self._night_and_day(store)
+        store.upsert_5min([self._row(ts, 0.0) for ts in range(30000, 33600, 300)])
+        stats = store.interval_stats("s1", 21600, 43200)
+        assert stats["coverage_mean"] < 1.0
+
+    def test_empty_window_returns_the_no_rows_shape(self, store: Store):
+        self._night_and_day(store)
+        stats = store.interval_stats("s1", 21600, 21600)
+        assert stats["intervals"] == 0
+        assert stats["coverage_mean"] is None
+        assert stats["value_kinds"] == {}
+
+
 class TestForecastLog:
     def test_scoring_never_uses_hindsight(self, store: Store):
         """A forecast issued during the hour it predicts is not a forecast."""

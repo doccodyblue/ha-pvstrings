@@ -32,7 +32,7 @@ from .core.aggregate import merge_hourly
 from .core.config import PlantConfig
 from .core.forecast import HOUR, ForecastEngine, LearnStats, floor_hour
 from .core.health import Health, learn_summary
-from .core.physics import PhysicsEngine, to_index
+from .core.physics import PhysicsEngine, clamp_to_daylight, to_index
 from .core.quality import NIGHT_ELEVATION_DEG
 from .core.store import Store
 from .core.weather import (
@@ -620,12 +620,23 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         its own, and it is exactly what you need when a string starts drifting:
         a tilt that was changed three weeks ago explains a pattern that would
         otherwise look like shading.
+
+        The quality stats cover daylight only.  Averaged over the whole day
+        they would grade the source's night-time manners instead: a DTU-style
+        source goes unavailable while its microinverter sleeps and started
+        every day with a coverage handicap that a Victron, reporting 0 W all
+        night, never had.
         """
+        # Local noon's UTC date is the calendar day this daylight belongs to;
+        # the UTC date of local midnight is yesterday's for any site east of
+        # Greenwich.
+        window = self.engine.physics.daylight_window_for(day_start + 43200)
+        stats_start, stats_end = clamp_to_daylight(day_start, now_ts, window)
         out: dict[str, Any] = {}
         for string in self.plant.strings:
             history = self.store.geometry_history(string.string_id)
             current = self.store.geometry_at(string.string_id, now_ts)
-            stats = self.store.interval_stats(string.string_id, day_start, now_ts)
+            stats = self.store.interval_stats(string.string_id, stats_start, stats_end)
             group = None
             if string.curtailment_group_id:
                 try:
