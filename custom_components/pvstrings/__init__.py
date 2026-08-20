@@ -29,15 +29,14 @@ from .const import (
     CONF_ALBEDO,
     CONF_AZIMUTH,
     CONF_BATTERY_COUPLED,
-    CONF_BATTERY_EFFICIENCY,
     CONF_BATTERY_POWER,
     CONF_BATTERY_SOC,
     CONF_COMMISSIONING,
     CONF_ECONOMICS_MODE,
     CONF_ELEVATION,
     CONF_ENERGY_ENTITY,
-    CONF_EXPORT_LIMIT,
     CONF_FEED_IN,
+    CONF_FIXED_LIMIT,
     CONF_FORECAST_MODEL,
     CONF_FORECAST_SOURCE,
     CONF_GHI_ENTITY,
@@ -63,7 +62,6 @@ from .const import (
     CONF_PRICE,
     CONF_RAIN_ENTITY,
     CONF_RETENTION_DAYS,
-    CONF_SOC_ENTITY,
     CONF_SOC_LIMIT,
     CONF_STRING_EFFICIENCY,
     CONF_SYSTEM_EFFICIENCY,
@@ -175,11 +173,9 @@ def build_plant_config(hass: HomeAssistant, entry: ConfigEntry) -> PlantConfig:
                     limit_entity=data.get(CONF_LIMIT_ENTITY) or None,
                     limit_abs_entity=data.get(CONF_LIMIT_ABS_ENTITY) or None,
                     inverter_max_ac_w=data.get(CONF_INVERTER_MAX_AC) or None,
+                    fixed_limit_w=data.get(CONF_FIXED_LIMIT) or None,
                     battery_coupled=bool(data.get(CONF_BATTERY_COUPLED, False)),
-                    soc_entity=data.get(CONF_SOC_ENTITY) or None,
                     soc_limit_pct=float(data.get(CONF_SOC_LIMIT, 100.0)),
-                    battery_power_entity=data.get(CONF_BATTERY_POWER) or None,
-                    export_limit_w=data.get(CONF_EXPORT_LIMIT),
                 )
             )
 
@@ -212,7 +208,6 @@ def build_plant_config(hass: HomeAssistant, entry: ConfigEntry) -> PlantConfig:
         feed_in_tariff=float(config.get(CONF_FEED_IN, 0.08)),
         investment_eur=float(config.get(CONF_INVESTMENT, 0.0)),
         commissioning_date=_parse_date(config.get(CONF_COMMISSIONING)),
-        battery_efficiency=float(config.get(CONF_BATTERY_EFFICIENCY, 0.90)),
     )
 
     return PlantConfig(

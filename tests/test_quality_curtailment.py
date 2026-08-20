@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from core import curtailment as curt
+from core.config import ConfigError, CurtailmentGroup
 from core.quality import (
     QUALITY_EXACT,
     QUALITY_MISSING,
@@ -42,6 +43,54 @@ class TestQuality:
     def test_censored_observations_are_down_weighted(self):
         assert assess(1.0, 40.0, VALUE_LOWER_BOUND).weight == pytest.approx(0.5)
         assert assess(1.0, 40.0, VALUE_RECONSTRUCTED).weight == pytest.approx(0.35)
+
+
+class TestFixedLimit:
+    """The statically configured cap, e.g. a balcony plant's legal 800 W.
+
+    Nothing reports a persistent inverter limit as an entity, so it lives in
+    the group configuration and applies on top of whatever the limit entities
+    command -- both constraints hold at once, the lower one wins.
+    """
+
+    def _group(self, **kwargs) -> CurtailmentGroup:
+        return CurtailmentGroup(group_id="g", name="Group", **kwargs)
+
+    def test_no_fixed_limit_passes_the_entity_limit_through(self):
+        assert self._group().effective_limit(2400.0) == 2400.0
+        assert self._group().effective_limit(None) is None
+
+    def test_fixed_limit_alone_is_the_limit(self):
+        assert self._group(fixed_limit_w=800.0).effective_limit(None) == 800.0
+
+    def test_the_lower_of_both_wins(self):
+        """DTU commands 100 % of 2400 W hardware, but 800 W is set persistently."""
+        group = self._group(fixed_limit_w=800.0)
+        assert group.effective_limit(2400.0) == 800.0
+        assert group.effective_limit(600.0) == 600.0
+
+    def test_a_fixed_limit_counts_as_having_a_limit(self):
+        assert self._group(fixed_limit_w=800.0).has_limit is True
+        assert self._group().has_limit is False
+
+    def test_an_unreadable_live_limit_declines_to_judge(self):
+        """A configured limit entity with no reading is not "no limit".
+
+        The live limit may have been below the static cap, so recording the
+        cap would let the binding test clear measurements it cannot vouch for.
+        """
+        group = self._group(
+            limit_abs_entity="number.limit_absolute", fixed_limit_w=800.0
+        )
+        assert group.effective_limit(None) is None
+        assert group.effective_limit(600.0) == 600.0
+        assert group.effective_limit(2400.0) == 800.0
+
+    def test_a_non_positive_fixed_limit_is_rejected(self):
+        with pytest.raises(ConfigError):
+            self._group(fixed_limit_w=0.0)
+        with pytest.raises(ConfigError):
+            self._group(fixed_limit_w=-800.0)
 
 
 class TestBinding:

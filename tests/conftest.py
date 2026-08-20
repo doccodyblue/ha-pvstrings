@@ -73,7 +73,6 @@ def plant() -> PlantConfig:
                 limit_entity="number.limit_relative",
                 inverter_max_ac_w=1600.0,
                 battery_coupled=True,
-                soc_entity="sensor.soc",
             ),
         ),
         economics=Economics(

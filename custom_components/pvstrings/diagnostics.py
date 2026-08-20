@@ -104,6 +104,7 @@ async def async_get_config_entry_diagnostics(
                     "has_limit": group.has_limit,
                     "battery_coupled": group.battery_coupled,
                     "inverter_max_ac_w": group.inverter_max_ac_w,
+                    "fixed_limit_w": group.fixed_limit_w,
                 }
                 for group in plant.groups
             ],

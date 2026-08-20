@@ -752,11 +752,9 @@ class ForecastEngine:
         state of charge betrays it.
         """
         out: dict[str, dict[int, bool | None]] = {}
-        # The plant's battery, not the group's.  ``CurtailmentGroup.soc_entity``
-        # exists for sites with one battery per inverter, but only the plant
-        # level is collected today -- so a second battery would be judged by the
-        # first one's state.  Correct for one battery, which is every site we
-        # have seen; worth revisiting before that stops being true.
+        # The plant's battery.  One battery per site is every installation we
+        # have seen; a site with one battery per inverter would need per-group
+        # SOC collection -- worth revisiting before that stops being true.
         soc = (
             self.store.battery_soc_series(*self._binding_span(rows))
             if any(group.battery_coupled for group in self.plant.groups)

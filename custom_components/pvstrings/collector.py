@@ -337,6 +337,7 @@ class Collector:
         except KeyError:
             return None
 
+        limit: float | None = None
         if group.limit_abs_entity:
             buffer = self._buffers.get(group.limit_abs_entity)
             if buffer is not None:
@@ -345,16 +346,17 @@ class Collector:
                     raw = last_of(buffer.samples, start, end)
                 value = group.limit_watts(raw, absolute=True)
                 if value is not None:
-                    return value * self._power_scale(group.limit_abs_entity)
+                    limit = value * self._power_scale(group.limit_abs_entity)
 
-        if group.limit_entity:
+        if limit is None and group.limit_entity:
             buffer = self._buffers.get(group.limit_entity)
             if buffer is not None:
                 raw = mean_of(buffer.samples, start, end)
                 if raw is None:
                     raw = last_of(buffer.samples, start, end)
-                return group.limit_watts(raw, absolute=False)
-        return None
+                limit = group.limit_watts(raw, absolute=False)
+
+        return group.effective_limit(limit)
 
     def _build_string_rows(self, start: int, end: int) -> list[tuple[Any, ...]]:
         rows: list[tuple[Any, ...]] = []

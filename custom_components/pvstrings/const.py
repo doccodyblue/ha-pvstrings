@@ -33,7 +33,6 @@ CONF_PRICE: Final = "price_per_kwh"
 CONF_FEED_IN: Final = "feed_in_tariff"
 CONF_INVESTMENT: Final = "investment_eur"
 CONF_COMMISSIONING: Final = "commissioning_date"
-CONF_BATTERY_EFFICIENCY: Final = "battery_efficiency"
 
 # -- plant state entities --------------------------------------------------- #
 
@@ -82,10 +81,9 @@ GEOMETRY_MODE_CORRECTION: Final = "correction"
 CONF_LIMIT_ENTITY: Final = "limit_entity"
 CONF_LIMIT_ABS_ENTITY: Final = "limit_abs_entity"
 CONF_INVERTER_MAX_AC: Final = "inverter_max_ac_w"
+CONF_FIXED_LIMIT: Final = "fixed_limit_w"
 CONF_BATTERY_COUPLED: Final = "battery_coupled"
-CONF_SOC_ENTITY: Final = "soc_entity"
 CONF_SOC_LIMIT: Final = "soc_limit"
-CONF_EXPORT_LIMIT: Final = "export_limit_w"
 
 NO_GROUP: Final = "__none__"
 

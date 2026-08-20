@@ -1,5 +1,75 @@
 # Changelog
 
+## 1.17.0
+
+### Added
+
+- **Fixed limit (W) on curtailment groups.** A permanently configured cap —
+  the legal 800 W of a balcony plant being the canonical case — had no home:
+  the two places users put it (`inverter_max_ac_w`, `export_limit_w`) were
+  respectively harmful and inert. The new field applies on top of the limit
+  entities; the lower value wins. So a DTU commanding 100 % of a 2400 W
+  inverter that is persistently capped at 800 W now yields a commanded limit
+  of 800 W, and the binding test judges measurements against the cap the
+  plant actually runs under. A configured limit entity that yields no reading
+  still means "no verdict" rather than falling back to the cap — the live
+  limit may have been lower, and the binding test must not clear measurements
+  it cannot vouch for.
+- **Help texts under every non-obvious form field** (`data_description`, EN
+  and DE). The headline fix: `inverter_max_ac_w` now says explicitly that it
+  is the *technical* AC maximum from the datasheet — not the legal feed-in
+  cap — and is used solely to turn a relative percent limit into watts.
+  Fractions (`system_efficiency`, `string_efficiency`, albedo) say "0–1, not
+  a percentage", prices say "per kWh, not cents", the grid power sensor spells
+  out its sign convention, and the commissioning date explains that it starts
+  the savings total and the amortisation clock.
+
+### Changed
+
+- **Labels disambiguated.** "Nameplate" meant DC module power on a string and
+  AC inverter power on a group; the string field is now "Module power DC
+  (kWp)" and the group field "Inverter hardware maximum AC (W)". "Tracker
+  ceiling" became "MPPT input ceiling"; tilt spells out its convention
+  (0 = flat, 90 = vertical); the geometry step's dangling "Applies" label
+  became "Validity".
+
+### Removed
+
+- **`export_limit_w` (dead field).** Collected in the group form, parsed,
+  stored — and never read by anything. Removed from the form until zero-export
+  detection actually exists; stored values are ignored harmlessly. The intent
+  is documented in SPEC.md.
+- **Group-level `soc_entity` and `battery_power_entity` (unused).** The
+  full-battery binding test reads the plant-level battery SOC; the group
+  fields were subscribed to and never evaluated. The `battery_coupled` help
+  text now points at the plant-level entity.
+- **`battery_efficiency` (unused).** Validated, stored, never consumed by the
+  savings model — removed from the tariffs form and from the runtime config;
+  values already stored in existing entries are ignored. It returns if and
+  when battery-aware economics land.
+
+### Fixed
+
+- **Plant name in the options flow was a silent no-op** — the title of the
+  config entry is the plant name and options cannot change it. The field is
+  gone from the options form (renaming works via the entry's own rename).
+- **String efficiency override could brick the setup.** The form accepted
+  values down to 0.01, and anything at or below 0.1 then failed the reload
+  with a hard `ConfigError` — a percent-vs-fraction mixup with no hint which
+  field caused it. The flow now rejects overrides below 0.5 with a translated
+  field error; the core guard deliberately stays at 0.1 so configs stored
+  before this check keep loading.
+
+### Migration notes
+
+- Existing entries keep working unchanged; removed keys in stored subentry
+  data are ignored.
+- **Check your "Inverter hardware maximum AC" after updating:** if you put a
+  legal feed-in cap (e.g. 800 W) there, move it to the new "Fixed limit"
+  field and enter the datasheet maximum instead. With the cap in the wrong
+  field, a relative limit entity converts to the wrong watt value and the
+  curtailment detection censors good measurements.
+
 ## 1.16.0
 
 ### Changed

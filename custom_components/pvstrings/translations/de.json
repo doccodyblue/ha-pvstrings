@@ -12,6 +12,10 @@
           "forecast_source": "Einstrahlungsquelle",
           "forecast_model": "Open-Meteo-Modell",
           "weather_entity": "Wetter-Entität (Ersatzquelle)"
+        },
+        "data_description": {
+          "forecast_model": "Wird nur genutzt, solange die Einstrahlungsquelle Open-Meteo ist.",
+          "weather_entity": "Nur für die Quelle „Home-Assistant-Wetter“ nötig."
         }
       },
       "economics": {
@@ -22,8 +26,13 @@
           "price_per_kwh": "Strompreis",
           "feed_in_tariff": "Einspeisevergütung",
           "investment_eur": "Investition",
-          "commissioning_date": "Inbetriebnahme",
-          "battery_efficiency": "Speicher-Wirkungsgrad"
+          "commissioning_date": "Inbetriebnahme"
+        },
+        "data_description": {
+          "price_per_kwh": "Je kWh in Landeswährung, z. B. 0.30 — nicht in Cent.",
+          "feed_in_tariff": "Je kWh in Landeswährung, z. B. 0.0786 — nicht in Cent.",
+          "investment_eur": "Gesamtkosten der Anlage; die Amortisations-Sensoren teilen sie durch die laufende Ersparnis.",
+          "commissioning_date": "Startpunkt für Gesamtersparnis und Amortisationsuhr. Leer heißt: die Zählung beginnt heute."
         }
       }
     },
@@ -53,8 +62,13 @@
           "price_per_kwh": "Strompreis",
           "feed_in_tariff": "Einspeisevergütung",
           "investment_eur": "Investition",
-          "commissioning_date": "Inbetriebnahme",
-          "battery_efficiency": "Speicher-Wirkungsgrad"
+          "commissioning_date": "Inbetriebnahme"
+        },
+        "data_description": {
+          "price_per_kwh": "Je kWh in Landeswährung, z. B. 0.30 — nicht in Cent.",
+          "feed_in_tariff": "Je kWh in Landeswährung, z. B. 0.0786 — nicht in Cent.",
+          "investment_eur": "Gesamtkosten der Anlage; die Amortisations-Sensoren teilen sie durch die laufende Ersparnis.",
+          "commissioning_date": "Startpunkt für Gesamtersparnis und Amortisationsuhr. Leer heißt: die Zählung beginnt heute."
         }
       },
       "entities": {
@@ -72,6 +86,10 @@
           "pressure_entity": "Luftdruck",
           "ghi_entity": "Globalstrahlung (GHI)",
           "illuminance_entity": "Beleuchtungsstärke"
+        },
+        "data_description": {
+          "grid_power_entity": "Vorzeichen: positiv = Netzbezug, negativ = Einspeisung. Ein umgekehrtes Vorzeichen kehrt die Ersparnisrechnung um.",
+          "battery_soc_entity": "Wird auch von speichergekoppelten Abregelungsgruppen genutzt, um einen vollen Speicher zu erkennen."
         }
       },
       "advanced": {
@@ -84,18 +102,26 @@
           "watchdog_seconds": "Watchdog-Intervall",
           "learning_enabled": "Gelernte Korrektur anwenden",
           "retention_days": "Aufbewahrung der Rohdaten"
+        },
+        "data_description": {
+          "albedo": "Bruch 0–1: 0.2 ist Gras, 0.8 frischer Schnee.",
+          "system_efficiency": "Bruch 0–1, z. B. 0.90 — Kabel-, Wechselrichter- und Verschmutzungsverluste. Kein Prozentwert.",
+          "retention_days": "Gelöscht werden nur die 5-Minuten-Rohwerte; Stundenaggregate und Geometrie-Historie bleiben erhalten."
         }
       },
       "forecast": {
         "title": "Standort und Einstrahlungsquelle",
         "data": {
-          "name": "Anlagenname",
           "latitude": "Breitengrad",
           "longitude": "Längengrad",
           "elevation": "Höhe über NN",
           "forecast_source": "Einstrahlungsquelle",
           "forecast_model": "Open-Meteo-Modell",
           "weather_entity": "Wetter-Entität (Ersatzquelle)"
+        },
+        "data_description": {
+          "forecast_model": "Wird nur genutzt, solange die Einstrahlungsquelle Open-Meteo ist.",
+          "weather_entity": "Nur für die Quelle „Home-Assistant-Wetter“ nötig."
         }
       }
     }
@@ -116,15 +142,23 @@
             "name": "Name",
             "power_entity": "Leistungssensor",
             "azimuth": "Azimut (0 = N, 90 = O, 180 = S, 270 = W)",
-            "tilt": "Neigung",
-            "kwp": "Nennleistung",
+            "tilt": "Neigung (0 = flach, 90 = senkrecht)",
+            "kwp": "Modulleistung DC (kWp)",
             "curtailment_group_id": "Abregelungsgruppe",
             "temp_coeff": "Temperaturkoeffizient",
             "mount_type": "Montage",
             "energy_entity": "Energiesensor (nur Gegenprüfung)",
             "string_efficiency": "Abweichender Strang-Wirkungsgrad (0 = Anlagenwert)",
-            "max_power_w": "Maximalleistung des Trackers in W (0 = keine)",
+            "max_power_w": "Obergrenze des MPPT-Eingangs in W (0 = keine)",
             "charger_state_entity": "Reglerzustand (optional, z. B. Victron)"
+          },
+          "data_description": {
+            "kwp": "Summe der Datenblatt-Nennleistungen (STC) der Module an diesem Eingang. DC-Modulleistung — nicht die AC-Leistung des Wechselrichters.",
+            "temp_coeff": "Leistungskoeffizient aus dem Moduldatenblatt als Bruch je Kelvin: −0,4 %/K = −0.004.",
+            "energy_entity": "Nur Gegenprüfung; fließt nie in die Prognose ein.",
+            "string_efficiency": "Bruch zwischen 0.5 und 1.0, z. B. 0.85. Bei 0 gilt der Anlagenwert.",
+            "max_power_w": "Hardware-Grenze dieses einzelnen Tracker-Eingangs, z. B. 430 W je Kanal bei vielen Mikrowechselrichtern. Deckelt die Prognose und markiert Messwerte an der Grenze als zensiert.",
+            "charger_state_entity": "Text-Zustand wie Victrons bulk/absorption/float. In absorption oder float gilt die gemessene Leistung als wirksames Limit."
           }
         },
         "reconfigure": {
@@ -134,29 +168,38 @@
             "name": "Name",
             "power_entity": "Leistungssensor",
             "azimuth": "Azimut (0 = N, 90 = O, 180 = S, 270 = W)",
-            "tilt": "Neigung",
-            "kwp": "Nennleistung",
+            "tilt": "Neigung (0 = flach, 90 = senkrecht)",
+            "kwp": "Modulleistung DC (kWp)",
             "curtailment_group_id": "Abregelungsgruppe",
             "temp_coeff": "Temperaturkoeffizient",
             "mount_type": "Montage",
             "energy_entity": "Energiesensor (nur Gegenprüfung)",
             "string_efficiency": "Abweichender Strang-Wirkungsgrad (0 = Anlagenwert)",
-            "max_power_w": "Maximalleistung des Trackers in W (0 = keine)",
+            "max_power_w": "Obergrenze des MPPT-Eingangs in W (0 = keine)",
             "charger_state_entity": "Reglerzustand (optional, z. B. Victron)"
+          },
+          "data_description": {
+            "kwp": "Summe der Datenblatt-Nennleistungen (STC) der Module an diesem Eingang. DC-Modulleistung — nicht die AC-Leistung des Wechselrichters.",
+            "temp_coeff": "Leistungskoeffizient aus dem Moduldatenblatt als Bruch je Kelvin: −0,4 %/K = −0.004.",
+            "energy_entity": "Nur Gegenprüfung; fließt nie in die Prognose ein.",
+            "string_efficiency": "Bruch zwischen 0.5 und 1.0, z. B. 0.85. Bei 0 gilt der Anlagenwert.",
+            "max_power_w": "Hardware-Grenze dieses einzelnen Tracker-Eingangs, z. B. 430 W je Kanal bei vielen Mikrowechselrichtern. Deckelt die Prognose und markiert Messwerte an der Grenze als zensiert.",
+            "charger_state_entity": "Text-Zustand wie Victrons bulk/absorption/float. In absorption oder float gilt die gemessene Leistung als wirksames Limit."
           }
         },
         "geometry": {
           "title": "Ab wann gilt die neue Geometrie?",
           "description": "Eine geänderte Neigung oder Ausrichtung ist keine Korrektur, sondern ein neuer Gültigkeitsabschnitt. Altdaten werden weiter gegen die Geometrie gerechnet, die damals wirklich montiert war — sonst bucht die Lernschicht einen saisonal wandernden Montagefehler als Wetter- oder Verschattungseffekt ein.\n\nBisherige Abschnitte:\n{history}",
           "data": {
-            "geometry_mode": "Gilt",
+            "geometry_mode": "Gültigkeit",
             "valid_from": "Gültig ab",
             "note": "Notiz (z. B. „Halter Winterstellung“)"
           }
         }
       },
       "error": {
-        "helper_overlaps": "Dieser Helfer fasst Entitäten zusammen, die bereits ein anderer Strang nutzt. Jeden Strang direkt auf seinen physischen Kanal zeigen lassen."
+        "helper_overlaps": "Dieser Helfer fasst Entitäten zusammen, die bereits ein anderer Strang nutzt. Jeden Strang direkt auf seinen physischen Kanal zeigen lassen.",
+        "efficiency_out_of_range": "Wirkungsgrad als Bruch zwischen 0.5 und 1.0 eingeben (0 = Anlagenwert), nicht in Prozent."
       }
     },
     "curtailment_group": {
@@ -169,36 +212,48 @@
       "step": {
         "user": {
           "title": "Abregelungsgruppe hinzufügen",
-          "description": "Stränge, die nur gemeinsam abgeregelt werden können — normalerweise eine Gruppe je Wechselrichter. Ein gesetztes Limit ist noch keine Abregelung: es zählt erst, wenn die verfügbare Leistung es tatsächlich erreicht.",
+          "description": "Stränge, die nur gemeinsam abgeregelt werden können — normalerweise eine Gruppe je Wechselrichter. Ein gesetztes Limit ist noch keine Abregelung: es zählt erst, wenn die verfügbare Leistung es tatsächlich erreicht. Eine dauerhafte gesetzliche Grenze wie 800 W gehört ins feste Limit, nicht ins Hardware-Maximum.",
           "data": {
             "name": "Name",
-            "limit_entity": "Relatives Limit (%)",
-            "inverter_max_ac_w": "Wechselrichter-Nennleistung AC",
-            "limit_abs_entity": "Absolutes Limit (W)",
+            "limit_entity": "Limit-Entität relativ (%)",
+            "inverter_max_ac_w": "Hardware-Maximalleistung AC (W)",
+            "limit_abs_entity": "Limit-Entität absolut (W)",
+            "fixed_limit_w": "Festes Limit in W (0 = keins)",
             "battery_coupled": "Speichergekoppelt",
-            "soc_entity": "Batterie-Ladestand",
-            "soc_limit": "Ladestand, ab dem nicht mehr geladen wird",
-            "battery_power_entity": "Batterieleistung",
-            "export_limit_w": "Einspeiselimit (−1 = keins)"
+            "soc_limit": "Ladestand, ab dem nicht mehr geladen wird"
+          },
+          "data_description": {
+            "limit_entity": "Entität mit dem aktuell gesetzten Limit in Prozent, z. B. das relative Limit von OpenDTU. 100 % heißt Hardware-Maximum.",
+            "inverter_max_ac_w": "Das technische AC-Maximum laut Wechselrichter-Datenblatt, z. B. 2400 W. NICHT die gesetzliche Einspeisegrenze wie 800 W — die gehört ins feste Limit darunter. Wird nur gebraucht, um ein relatives Limit in Prozent in Watt umzurechnen.",
+            "limit_abs_entity": "Entität mit dem gesetzten Limit in Watt, z. B. das absolute Limit von OpenDTU. Hat Vorrang vor dem relativen Limit.",
+            "fixed_limit_w": "Eine dauerhaft im Wechselrichter eingestellte Obergrenze, z. B. die gesetzlichen 800 W eines Balkonkraftwerks. Gilt zusätzlich zu den Limit-Entitäten — der niedrigere Wert zählt.",
+            "battery_coupled": "Der Wechselrichter drosselt, sobald der Speicher voll ist. Nutzt den Batterie-Ladestand aus den Optionen.",
+            "soc_limit": "Oberhalb dieses Ladestands gilt der Speicher als voll; gedrosselte Leistung wird dann als Abregelung gewertet."
           }
         },
         "reconfigure": {
           "title": "Abregelungsgruppe bearbeiten",
           "data": {
             "name": "Name",
-            "limit_entity": "Relatives Limit (%)",
-            "inverter_max_ac_w": "Wechselrichter-Nennleistung AC",
-            "limit_abs_entity": "Absolutes Limit (W)",
+            "limit_entity": "Limit-Entität relativ (%)",
+            "inverter_max_ac_w": "Hardware-Maximalleistung AC (W)",
+            "limit_abs_entity": "Limit-Entität absolut (W)",
+            "fixed_limit_w": "Festes Limit in W (0 = keins)",
             "battery_coupled": "Speichergekoppelt",
-            "soc_entity": "Batterie-Ladestand",
-            "soc_limit": "Ladestand, ab dem nicht mehr geladen wird",
-            "battery_power_entity": "Batterieleistung",
-            "export_limit_w": "Einspeiselimit (−1 = keins)"
+            "soc_limit": "Ladestand, ab dem nicht mehr geladen wird"
+          },
+          "data_description": {
+            "limit_entity": "Entität mit dem aktuell gesetzten Limit in Prozent, z. B. das relative Limit von OpenDTU. 100 % heißt Hardware-Maximum.",
+            "inverter_max_ac_w": "Das technische AC-Maximum laut Wechselrichter-Datenblatt, z. B. 2400 W. NICHT die gesetzliche Einspeisegrenze wie 800 W — die gehört ins feste Limit darunter. Wird nur gebraucht, um ein relatives Limit in Prozent in Watt umzurechnen.",
+            "limit_abs_entity": "Entität mit dem gesetzten Limit in Watt, z. B. das absolute Limit von OpenDTU. Hat Vorrang vor dem relativen Limit.",
+            "fixed_limit_w": "Eine dauerhaft im Wechselrichter eingestellte Obergrenze, z. B. die gesetzlichen 800 W eines Balkonkraftwerks. Gilt zusätzlich zu den Limit-Entitäten — der niedrigere Wert zählt.",
+            "battery_coupled": "Der Wechselrichter drosselt, sobald der Speicher voll ist. Nutzt den Batterie-Ladestand aus den Optionen.",
+            "soc_limit": "Oberhalb dieses Ladestands gilt der Speicher als voll; gedrosselte Leistung wird dann als Abregelung gewertet."
           }
         }
       },
       "error": {
-        "nameplate_required": "Ein relatives Limit in Prozent braucht die Wechselrichter-Nennleistung, um in Watt umgerechnet werden zu können."
+        "nameplate_required": "Ein relatives Limit in Prozent braucht die Hardware-Maximalleistung, um in Watt umgerechnet werden zu können."
       }
     }
   },

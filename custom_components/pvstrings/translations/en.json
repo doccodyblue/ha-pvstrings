@@ -8,10 +8,14 @@
           "name": "Plant name",
           "latitude": "Latitude",
           "longitude": "Longitude",
-          "elevation": "Elevation",
+          "elevation": "Site elevation above sea level",
           "forecast_source": "Irradiance source",
           "forecast_model": "Open-Meteo model",
           "weather_entity": "Weather entity (fallback source)"
+        },
+        "data_description": {
+          "forecast_model": "Only used while the irradiance source is Open-Meteo.",
+          "weather_entity": "Only needed for the Home Assistant weather source."
         }
       },
       "economics": {
@@ -22,8 +26,13 @@
           "price_per_kwh": "Electricity price",
           "feed_in_tariff": "Feed-in tariff",
           "investment_eur": "Investment",
-          "commissioning_date": "Commissioning date",
-          "battery_efficiency": "Battery round-trip efficiency"
+          "commissioning_date": "Commissioning date"
+        },
+        "data_description": {
+          "price_per_kwh": "Per kWh in your currency, e.g. 0.30 -- not in cents.",
+          "feed_in_tariff": "Per kWh in your currency, e.g. 0.0786 -- not in cents.",
+          "investment_eur": "Total system cost; the amortisation sensors divide it by the running savings.",
+          "commissioning_date": "Start of the savings total and the amortisation clock. Empty means counting starts today."
         }
       }
     },
@@ -53,8 +62,13 @@
           "price_per_kwh": "Electricity price",
           "feed_in_tariff": "Feed-in tariff",
           "investment_eur": "Investment",
-          "commissioning_date": "Commissioning date",
-          "battery_efficiency": "Battery round-trip efficiency"
+          "commissioning_date": "Commissioning date"
+        },
+        "data_description": {
+          "price_per_kwh": "Per kWh in your currency, e.g. 0.30 -- not in cents.",
+          "feed_in_tariff": "Per kWh in your currency, e.g. 0.0786 -- not in cents.",
+          "investment_eur": "Total system cost; the amortisation sensors divide it by the running savings.",
+          "commissioning_date": "Start of the savings total and the amortisation clock. Empty means counting starts today."
         }
       },
       "entities": {
@@ -72,6 +86,10 @@
           "pressure_entity": "Air pressure",
           "ghi_entity": "Solar irradiance (GHI)",
           "illuminance_entity": "Illuminance"
+        },
+        "data_description": {
+          "grid_power_entity": "Sign convention: positive = importing from the grid, negative = exporting. A reversed sign flips the savings calculation.",
+          "battery_soc_entity": "Also used by battery-coupled curtailment groups to spot a full battery."
         }
       },
       "advanced": {
@@ -84,18 +102,26 @@
           "watchdog_seconds": "Watchdog interval",
           "learning_enabled": "Apply learned correction",
           "retention_days": "Raw data retention"
+        },
+        "data_description": {
+          "albedo": "Fraction 0-1: 0.2 is grass, 0.8 is fresh snow.",
+          "system_efficiency": "Fraction 0-1, e.g. 0.90 -- cable, inverter and soiling losses. Not a percentage.",
+          "retention_days": "Only the 5-minute raw rows are purged; hourly aggregates and geometry history are kept."
         }
       },
       "forecast": {
         "title": "Location and irradiance source",
         "data": {
-          "name": "Plant name",
           "latitude": "Latitude",
           "longitude": "Longitude",
-          "elevation": "Elevation",
+          "elevation": "Site elevation above sea level",
           "forecast_source": "Irradiance source",
           "forecast_model": "Open-Meteo model",
           "weather_entity": "Weather entity (fallback source)"
+        },
+        "data_description": {
+          "forecast_model": "Only used while the irradiance source is Open-Meteo.",
+          "weather_entity": "Only needed for the Home Assistant weather source."
         }
       }
     }
@@ -116,15 +142,23 @@
             "name": "Name",
             "power_entity": "Power sensor",
             "azimuth": "Azimuth (0 = N, 90 = E, 180 = S, 270 = W)",
-            "tilt": "Tilt",
-            "kwp": "Nameplate",
+            "tilt": "Tilt (0 = flat, 90 = vertical)",
+            "kwp": "Module power DC (kWp)",
             "curtailment_group_id": "Curtailment group",
             "temp_coeff": "Temperature coefficient",
             "mount_type": "Mounting",
             "energy_entity": "Energy sensor (cross-check only)",
             "string_efficiency": "String efficiency override (0 = use plant value)",
-            "max_power_w": "Tracker ceiling in W (0 = none)",
+            "max_power_w": "MPPT input ceiling in W (0 = none)",
             "charger_state_entity": "Charger state (optional, e.g. Victron)"
+          },
+          "data_description": {
+            "kwp": "Sum of the module datasheet ratings (STC) on this input. This is DC module power -- not the inverter's AC rating.",
+            "temp_coeff": "Power coefficient from the module datasheet as a fraction per Kelvin: -0.4 %/K = -0.004.",
+            "energy_entity": "Cross-check only; it never feeds the forecast.",
+            "string_efficiency": "Fraction between 0.5 and 1.0, e.g. 0.85. Leave at 0 to inherit the plant value.",
+            "max_power_w": "Hardware cap of this single tracker input, e.g. 430 W per channel on many micro-inverters. Caps the forecast and marks measurements at the cap as censored.",
+            "charger_state_entity": "A text state such as Victron's bulk/absorption/float. In absorption or float the measured power is treated as the effective limit."
           }
         },
         "reconfigure": {
@@ -134,29 +168,38 @@
             "name": "Name",
             "power_entity": "Power sensor",
             "azimuth": "Azimuth (0 = N, 90 = E, 180 = S, 270 = W)",
-            "tilt": "Tilt",
-            "kwp": "Nameplate",
+            "tilt": "Tilt (0 = flat, 90 = vertical)",
+            "kwp": "Module power DC (kWp)",
             "curtailment_group_id": "Curtailment group",
             "temp_coeff": "Temperature coefficient",
             "mount_type": "Mounting",
             "energy_entity": "Energy sensor (cross-check only)",
             "string_efficiency": "String efficiency override (0 = use plant value)",
-            "max_power_w": "Tracker ceiling in W (0 = none)",
+            "max_power_w": "MPPT input ceiling in W (0 = none)",
             "charger_state_entity": "Charger state (optional, e.g. Victron)"
+          },
+          "data_description": {
+            "kwp": "Sum of the module datasheet ratings (STC) on this input. This is DC module power -- not the inverter's AC rating.",
+            "temp_coeff": "Power coefficient from the module datasheet as a fraction per Kelvin: -0.4 %/K = -0.004.",
+            "energy_entity": "Cross-check only; it never feeds the forecast.",
+            "string_efficiency": "Fraction between 0.5 and 1.0, e.g. 0.85. Leave at 0 to inherit the plant value.",
+            "max_power_w": "Hardware cap of this single tracker input, e.g. 430 W per channel on many micro-inverters. Caps the forecast and marks measurements at the cap as censored.",
+            "charger_state_entity": "A text state such as Victron's bulk/absorption/float. In absorption or float the measured power is treated as the effective limit."
           }
         },
         "geometry": {
           "title": "When does the new geometry apply?",
           "description": "A changed tilt or azimuth is not an edit, it is a new validity period. Past data keeps being evaluated against the geometry that was actually installed -- otherwise the learning layer books a seasonally drifting mounting error as a weather or shading effect.\n\nRecorded periods:\n{history}",
           "data": {
-            "geometry_mode": "Applies",
+            "geometry_mode": "Validity",
             "valid_from": "Valid from",
             "note": "Note (e.g. \"winter setting\")"
           }
         }
       },
       "error": {
-        "helper_overlaps": "This helper aggregates entities that another string already uses. Point each string at its physical channel instead."
+        "helper_overlaps": "This helper aggregates entities that another string already uses. Point each string at its physical channel instead.",
+        "efficiency_out_of_range": "Enter the efficiency as a fraction between 0.5 and 1.0 (0 inherits the plant value), not as a percentage."
       }
     },
     "curtailment_group": {
@@ -169,36 +212,48 @@
       "step": {
         "user": {
           "title": "Add curtailment group",
-          "description": "Strings that can only be curtailed together -- normally one group per inverter. A commanded limit is not curtailment: it only counts once the available power actually reaches it.",
+          "description": "Strings that can only be curtailed together -- normally one group per inverter. A commanded limit is not curtailment: it only counts once the available power actually reaches it. A permanent legal cap such as 800 W belongs in the fixed limit, not in the hardware maximum.",
           "data": {
             "name": "Name",
-            "limit_entity": "Relative limit (%)",
-            "inverter_max_ac_w": "Inverter nameplate AC power",
-            "limit_abs_entity": "Absolute limit (W)",
+            "limit_entity": "Limit entity, relative (%)",
+            "inverter_max_ac_w": "Inverter hardware maximum AC (W)",
+            "limit_abs_entity": "Limit entity, absolute (W)",
+            "fixed_limit_w": "Fixed limit in W (0 = none)",
             "battery_coupled": "Battery coupled",
-            "soc_entity": "Battery state of charge",
-            "soc_limit": "State of charge at which charging stops",
-            "battery_power_entity": "Battery power",
-            "export_limit_w": "Export limit (-1 = none)"
+            "soc_limit": "State of charge at which charging stops"
+          },
+          "data_description": {
+            "limit_entity": "An entity reporting the currently commanded limit in percent, e.g. OpenDTU's relative limit. 100 % means the hardware maximum.",
+            "inverter_max_ac_w": "The technical AC maximum from the inverter datasheet, e.g. 2400 W. NOT a legal feed-in cap such as 800 W -- that belongs in the fixed limit below. Only used to turn a relative limit in percent into watts.",
+            "limit_abs_entity": "An entity reporting the commanded limit in watts, e.g. OpenDTU's absolute limit. Takes precedence over the relative one.",
+            "fixed_limit_w": "A cap configured permanently in the inverter, e.g. the legal 800 W of a balcony plant. Applies on top of the limit entities -- the lower value wins.",
+            "battery_coupled": "The inverter throttles once the battery is full. Uses the plant-level battery state of charge from the options.",
+            "soc_limit": "Above this state of charge the battery counts as full, and throttled output is treated as curtailment."
           }
         },
         "reconfigure": {
           "title": "Edit curtailment group",
           "data": {
             "name": "Name",
-            "limit_entity": "Relative limit (%)",
-            "inverter_max_ac_w": "Inverter nameplate AC power",
-            "limit_abs_entity": "Absolute limit (W)",
+            "limit_entity": "Limit entity, relative (%)",
+            "inverter_max_ac_w": "Inverter hardware maximum AC (W)",
+            "limit_abs_entity": "Limit entity, absolute (W)",
+            "fixed_limit_w": "Fixed limit in W (0 = none)",
             "battery_coupled": "Battery coupled",
-            "soc_entity": "Battery state of charge",
-            "soc_limit": "State of charge at which charging stops",
-            "battery_power_entity": "Battery power",
-            "export_limit_w": "Export limit (-1 = none)"
+            "soc_limit": "State of charge at which charging stops"
+          },
+          "data_description": {
+            "limit_entity": "An entity reporting the currently commanded limit in percent, e.g. OpenDTU's relative limit. 100 % means the hardware maximum.",
+            "inverter_max_ac_w": "The technical AC maximum from the inverter datasheet, e.g. 2400 W. NOT a legal feed-in cap such as 800 W -- that belongs in the fixed limit below. Only used to turn a relative limit in percent into watts.",
+            "limit_abs_entity": "An entity reporting the commanded limit in watts, e.g. OpenDTU's absolute limit. Takes precedence over the relative one.",
+            "fixed_limit_w": "A cap configured permanently in the inverter, e.g. the legal 800 W of a balcony plant. Applies on top of the limit entities -- the lower value wins.",
+            "battery_coupled": "The inverter throttles once the battery is full. Uses the plant-level battery state of charge from the options.",
+            "soc_limit": "Above this state of charge the battery counts as full, and throttled output is treated as curtailment."
           }
         }
       },
       "error": {
-        "nameplate_required": "A relative limit in percent needs the inverter nameplate to be converted into watts."
+        "nameplate_required": "A relative limit in percent needs the inverter hardware maximum to be converted into watts."
       }
     }
   },

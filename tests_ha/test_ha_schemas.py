@@ -76,7 +76,6 @@ class TestRealInput:
                 "price_per_kwh": 0.38,
                 "feed_in_tariff": 0.08,
                 "investment_eur": 3500,
-                "battery_efficiency": 0.9,
             }
         )
         assert out["economics_mode"] == "net_metering"
@@ -122,12 +121,20 @@ class TestRealInput:
                 "name": "Speicher",
                 "limit_entity": "number.inverter_limit_relative",
                 "inverter_max_ac_w": 1600,
+                "fixed_limit_w": 800,
                 "battery_coupled": True,
-                "soc_entity": "sensor.battery_soc",
                 "soc_limit": 100,
             }
         )
         assert out["inverter_max_ac_w"] == 1600
+        assert out["fixed_limit_w"] == 800
+
+    def test_options_forecast_step_has_no_name_field(self, hass):
+        """The plant name is the entry title; options cannot change it, so
+        offering the field there would be a silent no-op."""
+        keys = {str(key) for key in cf.plant_schema(hass, include_name=False).schema}
+        assert "name" not in keys
+        assert "latitude" in keys
 
     def test_group_step_with_no_entities_at_all(self):
         """An all-in-one plant with nothing to curtail must still validate."""

@@ -48,15 +48,14 @@ from .const import (
     CONF_ALBEDO,
     CONF_AZIMUTH,
     CONF_BATTERY_COUPLED,
-    CONF_BATTERY_EFFICIENCY,
     CONF_BATTERY_POWER,
     CONF_BATTERY_SOC,
     CONF_COMMISSIONING,
     CONF_ECONOMICS_MODE,
     CONF_ELEVATION,
     CONF_ENERGY_ENTITY,
-    CONF_EXPORT_LIMIT,
     CONF_FEED_IN,
+    CONF_FIXED_LIMIT,
     CONF_FORECAST_MODEL,
     CONF_FORECAST_SOURCE,
     CONF_GEOMETRY_MODE,
@@ -84,7 +83,6 @@ from .const import (
     CONF_PRICE,
     CONF_RAIN_ENTITY,
     CONF_RETENTION_DAYS,
-    CONF_SOC_ENTITY,
     CONF_SOC_LIMIT,
     CONF_STRING_EFFICIENCY,
     CONF_SYSTEM_EFFICIENCY,
@@ -247,13 +245,24 @@ def check_power_entity(
 # --------------------------------------------------------------------------- #
 
 
-def plant_schema(hass: Any, defaults: dict[str, Any] | None = None) -> vol.Schema:
+def plant_schema(
+    hass: Any,
+    defaults: dict[str, Any] | None = None,
+    include_name: bool = True,
+) -> vol.Schema:
     values = defaults or {}
-    return vol.Schema(
+    name_field: dict[Any, Any] = (
         {
             vol.Required(
                 CONF_NAME, default=values.get(CONF_NAME, "PV Strings")
-            ): TextSelector(),
+            ): TextSelector()
+        }
+        if include_name
+        else {}
+    )
+    return vol.Schema(
+        {
+            **name_field,
             vol.Required(
                 CONF_LATITUDE,
                 default=values.get(CONF_LATITUDE, hass.config.latitude),
@@ -300,10 +309,6 @@ def economics_schema(
                 CONF_INVESTMENT, default=values.get(CONF_INVESTMENT, 0)
             ): _number(0, 1_000_000, 1, currency),
             _optional(CONF_COMMISSIONING, values.get(CONF_COMMISSIONING)): DateSelector(),
-            vol.Optional(
-                CONF_BATTERY_EFFICIENCY,
-                default=values.get(CONF_BATTERY_EFFICIENCY, 0.90),
-            ): _number(0.5, 1.0, 0.01),
         }
     )
 
@@ -429,22 +434,31 @@ def group_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
             ): _number(0, 100_000, 1, "W"),
             _optional(CONF_LIMIT_ABS_ENTITY, values.get(CONF_LIMIT_ABS_ENTITY)): EntitySelector(EntitySelectorConfig(domain=["number", "sensor", "input_number"])),
             vol.Optional(
+                CONF_FIXED_LIMIT, default=values.get(CONF_FIXED_LIMIT, 0)
+            ): _number(0, 100_000, 1, "W"),
+            vol.Optional(
                 CONF_BATTERY_COUPLED, default=values.get(CONF_BATTERY_COUPLED, False)
             ): BooleanSelector(),
-            _optional(CONF_SOC_ENTITY, values.get(CONF_SOC_ENTITY)): EntitySelector(
-                EntitySelectorConfig(domain=["sensor"], device_class=["battery"])
-            ),
             vol.Optional(
                 CONF_SOC_LIMIT, default=values.get(CONF_SOC_LIMIT, 100)
             ): _number(0, 100, 1, "%"),
-            _optional(CONF_BATTERY_POWER, values.get(CONF_BATTERY_POWER)): EntitySelector(
-                EntitySelectorConfig(domain=["sensor"], device_class=["power"])
-            ),
-            vol.Optional(
-                CONF_EXPORT_LIMIT, default=values.get(CONF_EXPORT_LIMIT, -1)
-            ): _number(-1, 100_000, 1, "W"),
         }
     )
+
+
+def _efficiency_out_of_range(data: dict[str, Any]) -> bool:
+    """A per-string efficiency override below 0.5 is a percent-vs-fraction mixup.
+
+    The selector cannot express "0 to inherit, otherwise at least 0.5", so this
+    has to be a flow check.  Without it a value at or below 0.1 sails through
+    the form and ``StringConfig`` rejects it during reload -- a hard error with
+    no hint which field caused it.  The core guard stays at 0.1 on purpose:
+    tightening it to 0.5 would refuse to *load* configs that were stored before
+    this check existed, and a form error is recoverable where a setup error is
+    not.
+    """
+    value = data.get(CONF_STRING_EFFICIENCY)
+    return value is not None and float(value) < 0.5
 
 
 def _clean(data: dict[str, Any]) -> dict[str, Any]:
@@ -455,9 +469,7 @@ def _clean(data: dict[str, Any]) -> dict[str, Any]:
             continue
         if key in (CONF_STRING_EFFICIENCY, CONF_MAX_POWER) and not value:
             continue
-        if key == CONF_EXPORT_LIMIT and value is not None and float(value) < 0:
-            continue
-        if key == CONF_INVERTER_MAX_AC and not value:
+        if key in (CONF_INVERTER_MAX_AC, CONF_FIXED_LIMIT) and not value:
             continue
         out[key] = value
     return out
@@ -582,8 +594,11 @@ class PvStringsOptionsFlow(OptionsFlow):
     ) -> ConfigFlowResult:
         if user_input is not None:
             return self._save(user_input, allow_clear=True)
+        # No name field here: the plant name is the config entry title, which
+        # options cannot change -- offering it would be a silent no-op.
         return self.async_show_form(
-            step_id="forecast", data_schema=plant_schema(self.hass, self._current())
+            step_id="forecast",
+            data_schema=plant_schema(self.hass, self._current(), include_name=False),
         )
 
     def _save(
@@ -697,6 +712,8 @@ class StringSubentryFlow(_ReloadingSubentryFlow):
             )
             if warning == "helper_overlaps":
                 errors[CONF_POWER_ENTITY] = warning
+            if _efficiency_out_of_range(data):
+                errors[CONF_STRING_EFFICIENCY] = "efficiency_out_of_range"
             if not errors:
                 title = data.pop(CONF_NAME)
                 if warning:
@@ -732,6 +749,8 @@ class StringSubentryFlow(_ReloadingSubentryFlow):
             )
             if warning == "helper_overlaps":
                 errors[CONF_POWER_ENTITY] = warning
+            if _efficiency_out_of_range(data):
+                errors[CONF_STRING_EFFICIENCY] = "efficiency_out_of_range"
             if not errors:
                 self._pending = data
                 if self._geometry_changed(current, data):

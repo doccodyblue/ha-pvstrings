@@ -136,22 +136,30 @@ class CurtailmentGroup:
 
     group_id: str
     name: str
-    #: Relative limit in percent of inverter nameplate (OpenDTU style).
+    #: Relative limit in percent of the inverter's hardware maximum
+    #: (OpenDTU style).
     limit_entity: str | None = None
     #: Absolute limit in watts.  Takes precedence when both are present.
     limit_abs_entity: str | None = None
-    #: Nameplate AC power, required to turn a relative limit into watts.
+    #: The inverter's *technical* AC maximum from the datasheet -- not a legal
+    #: feed-in cap.  A relative limit of 100 % means "hardware maximum", so
+    #: this is the denominator that turns percent into watts and nothing else.
     inverter_max_ac_w: float | None = None
+    #: Statically configured absolute limit in watts, e.g. the 800 W a
+    #: balcony plant's inverter is permanently set to.  Nothing reports a
+    #: persistent limit as an entity, so it has to live in the configuration.
+    #: Applies on top of whatever the limit entities command: the lower wins.
+    fixed_limit_w: float | None = None
     battery_coupled: bool = False
-    soc_entity: str | None = None
     soc_limit_pct: float = 100.0
-    battery_power_entity: str | None = None
-    #: Site export limit in watts; ``None`` means "not enforced".
-    export_limit_w: float | None = None
 
     def __post_init__(self) -> None:
         if not self.group_id:
             raise ConfigError("curtailment group needs an id")
+        if self.fixed_limit_w is not None and self.fixed_limit_w <= 0:
+            raise ConfigError(
+                f"group {self.group_id}: fixed_limit_w must be positive"
+            )
         if self.limit_entity and not self.limit_abs_entity:
             if not self.inverter_max_ac_w or self.inverter_max_ac_w <= 0:
                 raise ConfigError(
@@ -161,6 +169,11 @@ class CurtailmentGroup:
 
     @property
     def has_limit(self) -> bool:
+        return bool(self.limit_entity or self.limit_abs_entity or self.fixed_limit_w)
+
+    @property
+    def has_live_limit(self) -> bool:
+        """Is a limit *entity* configured, as opposed to only the static cap?"""
         return bool(self.limit_entity or self.limit_abs_entity)
 
     def limit_watts(self, raw: float | None, absolute: bool) -> float | None:
@@ -172,6 +185,27 @@ class CurtailmentGroup:
         if not self.inverter_max_ac_w:
             return None
         return float(raw) / 100.0 * float(self.inverter_max_ac_w)
+
+    def effective_limit(self, entity_limit_w: float | None) -> float | None:
+        """Combine the live commanded limit with the static one.
+
+        Both constraints hold at once -- a persistent 800 W cap does not go
+        away because the DTU commands 100 % -- so the lower of the two is the
+        limit the plant actually runs under.
+
+        A configured limit entity that yields no reading is different from no
+        entity at all: the live limit may have been *below* the static cap,
+        and recording the cap would let the binding test clear measurements it
+        cannot actually vouch for.  So an unreadable live limit means no
+        verdict, same as before the static cap existed.
+        """
+        if entity_limit_w is None and self.has_live_limit:
+            return None
+        if self.fixed_limit_w is None:
+            return entity_limit_w
+        if entity_limit_w is None:
+            return float(self.fixed_limit_w)
+        return min(float(entity_limit_w), float(self.fixed_limit_w))
 
 
 # --------------------------------------------------------------------------- #
@@ -245,15 +279,12 @@ class Economics:
     feed_in_tariff: float = 0.08
     investment_eur: float = 0.0
     commissioning_date: date | None = None
-    battery_efficiency: float = 0.90
 
     def __post_init__(self) -> None:
         if self.mode not in ECONOMICS_MODES:
             raise ConfigError(f"unknown economics mode: {self.mode}")
         if self.price_per_kwh < 0 or self.feed_in_tariff < 0:
             raise ConfigError("prices must not be negative")
-        if not 0.1 < self.battery_efficiency <= 1.0:
-            raise ConfigError("implausible battery_efficiency")
 
     def with_mode(self, mode: str) -> "Economics":
         """Return a copy in a different mode, for scenario comparison."""
@@ -378,12 +409,7 @@ class PlantConfig:
         for group in self.groups:
             out.extend(
                 e
-                for e in (
-                    group.limit_entity,
-                    group.limit_abs_entity,
-                    group.soc_entity,
-                    group.battery_power_entity,
-                )
+                for e in (group.limit_entity, group.limit_abs_entity)
                 if e
             )
         state = self.plant_state
