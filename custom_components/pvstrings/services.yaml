@@ -13,6 +13,10 @@ reset_learning:
       selector:
         config_entry:
           integration: pvstrings
+    string_id:
+      required: false
+      selector:
+        text:
 
 purge:
   fields:

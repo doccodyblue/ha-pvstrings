@@ -422,11 +422,15 @@
     },
     "reset_learning": {
       "name": "Reset learning",
-      "description": "Discard all learned corrections and fall back to pure physics. Measurements are kept.",
+      "description": "Discard learned corrections and fall back to pure physics — for one string or the whole plant. Measurements are kept.",
       "fields": {
         "config_entry_id": {
           "name": "Plant",
           "description": "Which plant to reset."
+        },
+        "string_id": {
+          "name": "String (optional)",
+          "description": "Reset only this string's observations and factors — the repair after correcting one string's geometry. Leave empty to reset everything."
         }
       }
     },

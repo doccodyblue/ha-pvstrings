@@ -122,6 +122,10 @@ ADD_GEOMETRY_SCHEMA = vol.Schema(
 )
 
 ENTRY_SERVICE_SCHEMA = vol.Schema({vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string})
+
+RESET_LEARNING_SCHEMA = ENTRY_SERVICE_SCHEMA.extend(
+    {vol.Optional(ATTR_STRING_ID): cv.string}
+)
 BACKFILL_SCHEMA = vol.Schema(
     {
         vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
@@ -416,9 +420,14 @@ def _async_register_services(hass: HomeAssistant) -> None:
         ).async_recalculate()
 
     async def _reset_learning(call: ServiceCall) -> None:
-        await _coordinator_for(
-            hass, call.data[ATTR_CONFIG_ENTRY_ID]
-        ).async_reset_learning()
+        coordinator = _coordinator_for(hass, call.data[ATTR_CONFIG_ENTRY_ID])
+        # "" means the field was left empty in the UI: a full reset, per docs.
+        string_id = call.data.get(ATTR_STRING_ID) or None
+        if string_id is not None and string_id not in {
+            s.string_id for s in coordinator.plant.strings
+        }:
+            raise ServiceValidationError(f"unknown string: {string_id}")
+        await coordinator.async_reset_learning(string_id)
 
     async def _purge(call: ServiceCall) -> None:
         coordinator = _coordinator_for(hass, call.data[ATTR_CONFIG_ENTRY_ID])
@@ -466,7 +475,7 @@ def _async_register_services(hass: HomeAssistant) -> None:
         DOMAIN, SERVICE_RECALCULATE, _recalculate, schema=ENTRY_SERVICE_SCHEMA
     )
     hass.services.async_register(
-        DOMAIN, SERVICE_RESET_LEARNING, _reset_learning, schema=ENTRY_SERVICE_SCHEMA
+        DOMAIN, SERVICE_RESET_LEARNING, _reset_learning, schema=RESET_LEARNING_SCHEMA
     )
     hass.services.async_register(
         DOMAIN, SERVICE_PURGE, _purge, schema=ENTRY_SERVICE_SCHEMA

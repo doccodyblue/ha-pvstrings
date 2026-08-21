@@ -886,8 +886,8 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         await self.async_fetch_weather(force=True)
         await self.async_request_refresh()
 
-    async def async_reset_learning(self) -> None:
-        """Discard every learned correction, including the sky map.
+    async def async_reset_learning(self, string_id: str | None = None) -> None:
+        """Discard learned corrections -- one string's, or everything.
 
         The shading map is a learned correction like any other, and it is the
         one the per-string effects are calibrated against.  Clearing the
@@ -895,8 +895,21 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         the forecast keeps being multiplied down without the offsetting level
         the model had learned.  It is also the only way back from a backfill
         built on a mis-scaled sensor.
+
+        With ``string_id``: only that string's observations and factors go --
+        the repair for one corrected geometry.  Plant-scope factors, ghi_bias
+        and the siblings stay; whatever the bad string leaked into the plant
+        scope relearns on its own.
         """
-        await self.hass.async_add_executor_job(self.store.clear_effects, None)
-        await self.hass.async_add_executor_job(self.store.clear_shading_obs)
+        if string_id:
+            await self.hass.async_add_executor_job(
+                self.store.clear_effects_for_string, string_id
+            )
+            await self.hass.async_add_executor_job(
+                self.store.clear_shading_obs, string_id
+            )
+        else:
+            await self.hass.async_add_executor_job(self.store.clear_effects, None)
+            await self.hass.async_add_executor_job(self.store.clear_shading_obs)
         await self.hass.async_add_executor_job(self.engine.load_models)
         await self.async_request_refresh()

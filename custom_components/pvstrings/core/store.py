@@ -1083,18 +1083,42 @@ class Store:
             )
         return grouped
 
-    def clear_shading_obs(self) -> int:
-        """Forget every shading observation.
+    def clear_shading_obs(self, string_id: str | None = None) -> int:
+        """Forget shading observations -- one string's, or every string's.
 
         Part of resetting the model, not a maintenance chore: the map is a
         learned correction, and leaving it in place while the per-string
         effects that offset it are wiped leaves the forecast worse than either
         state on its own.  It is also the only way back from a backfill that
-        turned out to be built on a mis-scaled sensor.
+        turned out to be built on a mis-scaled sensor.  Per string because
+        ratios are frozen against the geometry at collect time: correcting one
+        string's geometry poisons only that string's rows.
         """
         with self._tx() as conn:
-            cur = conn.execute("DELETE FROM shading_obs")
+            if string_id:
+                cur = conn.execute(
+                    "DELETE FROM shading_obs WHERE string_id = ?", (string_id,)
+                )
+            else:
+                cur = conn.execute("DELETE FROM shading_obs")
             return cur.rowcount
+
+    def clear_effects_for_string(self, string_id: str) -> None:
+        """One string's learned factors; plant scope and ghi_bias stay.
+
+        Key shapes owned by the learning layer: scope "string" keys on the
+        bare id, "string_daypart" on ``id|part``.
+        """
+        with self._tx() as conn:
+            conn.execute(
+                "DELETE FROM model_effects WHERE scope = 'string' AND key = ?",
+                (string_id,),
+            )
+            conn.execute(
+                "DELETE FROM model_effects "
+                "WHERE scope = 'string_daypart' AND key LIKE ? || '|%'",
+                (string_id,),
+            )
 
     def shading_observations_by_string(self) -> dict[str, int]:
         """Counts in one query -- a dashboard should not cost one per string."""

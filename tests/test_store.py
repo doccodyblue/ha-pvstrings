@@ -461,6 +461,36 @@ class TestResettingLearning:
         store.clear_shading_obs()
         assert store.shading_rows_by_string() == {}
 
+    def test_one_string_can_be_cleared_without_its_siblings(self, store: Store):
+        """The repair for one corrected geometry: the siblings' rows were
+        never wrong and must survive."""
+        self._observe(store)  # 20 rows for s1
+        store.add_shading_obs(
+            [(1_700_100_000 + i * 300, "s2", 180.0, 30.0, 0.9, 1.0) for i in range(7)]
+        )
+        assert store.clear_shading_obs("s1") == 20
+        assert store.shading_count("s1") == 0
+        assert store.shading_count("s2") == 7
+
+    def test_string_effects_go_but_plant_scope_and_bias_stay(self, store: Store):
+        store.save_effects("plant", {"clear|midday": (0.1, 20.0)}, 1_700_000_000)
+        store.save_effects("string", {"s1": (0.2, 10.0), "s2": (0.3, 10.0)}, 1_700_000_000)
+        store.save_effects(
+            "string_daypart",
+            {"s1|morning": (-0.1, 8.0), "s2|morning": (0.05, 8.0)},
+            1_700_000_000,
+        )
+        store.save_ghi_bias("open_meteo", {(12, "0-6h"): (0.02, 5.0)}, 1_700_000_000)
+
+        store.clear_effects_for_string("s1")
+
+        assert "s1" not in store.load_effects("string")
+        assert "s2" in store.load_effects("string")
+        assert "s1|morning" not in store.load_effects("string_daypart")
+        assert "s2|morning" in store.load_effects("string_daypart")
+        assert store.load_effects("plant"), "plant scope must survive"
+        assert store.load_ghi_bias("open_meteo"), "ghi bias must survive"
+
 
 class TestThinningSparesTheBackfill:
     """Two fixes that were each right and together destroyed the feature.

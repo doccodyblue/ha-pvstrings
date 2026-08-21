@@ -422,11 +422,15 @@
     },
     "reset_learning": {
       "name": "Lernen zurücksetzen",
-      "description": "Alle gelernten Korrekturen verwerfen und auf reine Physik zurückfallen. Messdaten bleiben erhalten.",
+      "description": "Gelernte Korrekturen verwerfen und auf reine Physik zurückfallen — für einen Strang oder die ganze Anlage. Messdaten bleiben erhalten.",
       "fields": {
         "config_entry_id": {
           "name": "Anlage",
           "description": "Welche Anlage zurückgesetzt wird."
+        },
+        "string_id": {
+          "name": "Strang (optional)",
+          "description": "Nur die Beobachtungen und Faktoren dieses Strangs zurücksetzen — die Reparatur nach einer Geometrie-Korrektur. Leer lassen setzt alles zurück."
         }
       }
     },
