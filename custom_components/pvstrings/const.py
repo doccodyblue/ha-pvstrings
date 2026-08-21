@@ -85,6 +85,30 @@ CONF_FIXED_LIMIT: Final = "fixed_limit_w"
 CONF_BATTERY_COUPLED: Final = "battery_coupled"
 CONF_SOC_LIMIT: Final = "soc_limit"
 
+# -- conversion layer (upgrade.md) ------------------------------------------ #
+
+CONF_OUTPUT_PATH: Final = "output_path"
+CONF_INVERTER_MODEL: Final = "inverter_model"
+CONF_CUSTOM_CURVE: Final = "custom_curve"
+CONF_FORECAST_CLIPPING: Final = "forecast_clipping"
+CONF_MPPT_EFFICIENCY: Final = "mppt_efficiency"
+CONF_CHARGE_EFFICIENCY: Final = "charge_efficiency"
+CONF_DISCHARGE_EFFICIENCY: Final = "discharge_efficiency"
+CONF_AC_POWER_ENTITY: Final = "ac_power_entity"
+
+OUTPUT_PATH_NONE: Final = "none"
+OUTPUT_PATH_DIRECT: Final = "direct"
+OUTPUT_PATH_STORAGE: Final = "storage"
+OUTPUT_PATHS: Final = (OUTPUT_PATH_NONE, OUTPUT_PATH_DIRECT, OUTPUT_PATH_STORAGE)
+
+#: Ids of shipped datasheet curves in inverter_models/.  A constant, not a
+#: directory scan: forms must not do disk I/O, and a test keeps this list and
+#: the files in sync.
+INVERTER_MODELS: Final = ("hoymiles_hms1600_4t",)
+INVERTER_MODEL_CUSTOM: Final = "custom"
+#: Neutral pass-through: AC equals DC until a curve is chosen (upgrade.md §6).
+INVERTER_MODEL_NONE: Final = "none"
+
 NO_GROUP: Final = "__none__"
 
 # -- timings ---------------------------------------------------------------- #

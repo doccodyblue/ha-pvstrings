@@ -45,9 +45,23 @@ from homeassistant.util import dt as dt_util
 
 from .const import (
     AGGREGATE_HELPER_PLATFORMS,
+    CONF_AC_POWER_ENTITY,
     CONF_ALBEDO,
     CONF_AZIMUTH,
     CONF_BATTERY_COUPLED,
+    CONF_CHARGE_EFFICIENCY,
+    CONF_CUSTOM_CURVE,
+    CONF_DISCHARGE_EFFICIENCY,
+    CONF_FORECAST_CLIPPING,
+    CONF_INVERTER_MODEL,
+    CONF_MPPT_EFFICIENCY,
+    CONF_OUTPUT_PATH,
+    INVERTER_MODEL_CUSTOM,
+    INVERTER_MODEL_NONE,
+    INVERTER_MODELS,
+    OUTPUT_PATH_DIRECT,
+    OUTPUT_PATH_NONE,
+    OUTPUT_PATHS,
     CONF_BATTERY_POWER,
     CONF_BATTERY_SOC,
     CONF_COMMISSIONING,
@@ -442,8 +456,110 @@ def group_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
             vol.Optional(
                 CONF_SOC_LIMIT, default=values.get(CONF_SOC_LIMIT, 100)
             ): _number(0, 100, 1, "%"),
+            vol.Required(
+                CONF_OUTPUT_PATH,
+                default=values.get(CONF_OUTPUT_PATH, OUTPUT_PATH_NONE),
+            ): _select(list(OUTPUT_PATHS), "output_path"),
         }
     )
+
+
+def conversion_schema(path: str, defaults: dict[str, Any] | None = None) -> vol.Schema:
+    """Step two of the group flow, shaped by the chosen path.
+
+    Two schemas instead of conditional fields -- HA forms are static, and a
+    storage field on a direct plant is exactly the double-MPPT mistake the
+    spec wants structurally prevented.
+    """
+    values = defaults or {}
+    if path == OUTPUT_PATH_DIRECT:
+        return vol.Schema(
+            {
+                vol.Required(
+                    CONF_INVERTER_MODEL,
+                    default=values.get(CONF_INVERTER_MODEL, INVERTER_MODEL_NONE),
+                ): _select(
+                    [INVERTER_MODEL_NONE]
+                    + list(INVERTER_MODELS)
+                    + [INVERTER_MODEL_CUSTOM],
+                    "inverter_model",
+                ),
+                vol.Optional(
+                    CONF_CUSTOM_CURVE,
+                    default=_curve_to_text(values.get(CONF_CUSTOM_CURVE)),
+                ): TextSelector(),
+                vol.Optional(
+                    CONF_FORECAST_CLIPPING,
+                    default=values.get(CONF_FORECAST_CLIPPING, False),
+                ): BooleanSelector(),
+                _optional(
+                    CONF_AC_POWER_ENTITY, values.get(CONF_AC_POWER_ENTITY)
+                ): _power_entity_selector(),
+            }
+        )
+    return vol.Schema(
+        {
+            vol.Optional(
+                CONF_MPPT_EFFICIENCY,
+                default=values.get(CONF_MPPT_EFFICIENCY, 0),
+            ): _number(0, 1, 0.001),
+            vol.Required(
+                CONF_CHARGE_EFFICIENCY,
+                default=values.get(CONF_CHARGE_EFFICIENCY, 0.96),
+            ): _number(0.5, 1, 0.001),
+            vol.Required(
+                CONF_DISCHARGE_EFFICIENCY,
+                default=values.get(CONF_DISCHARGE_EFFICIENCY, 0.96),
+            ): _number(0.5, 1, 0.001),
+        }
+    )
+
+
+#: Conversion keys per path; switching paths drops the other side's keys so
+#: a storage-era mppt_efficiency can never leak into a direct plant.
+_DIRECT_KEYS = (
+    CONF_INVERTER_MODEL,
+    CONF_CUSTOM_CURVE,
+    CONF_FORECAST_CLIPPING,
+    CONF_AC_POWER_ENTITY,
+)
+_STORAGE_KEYS = (
+    CONF_MPPT_EFFICIENCY,
+    CONF_CHARGE_EFFICIENCY,
+    CONF_DISCHARGE_EFFICIENCY,
+)
+
+
+def _curve_to_text(curve: Any) -> str:
+    if not curve:
+        return ""
+    return ", ".join(f"{point[0]:g}:{point[1]:g}" for point in curve)
+
+
+def _parse_curve(text: str) -> list[list[float]] | None:
+    """"5:0.90, 10:0.935, ..." -> [[load_pct, eff], ...] or None if invalid."""
+    points: list[list[float]] = []
+    for chunk in text.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        load_text, sep, eff_text = chunk.partition(":")
+        if not sep:
+            return None
+        try:
+            points.append([float(load_text), float(eff_text)])
+        except ValueError:
+            return None
+    if len(points) < 2:
+        return None
+    last_load = -1.0
+    for load, efficiency in points:
+        if not (0.0 <= load <= 150.0 and 0.5 < efficiency <= 1.0):
+            return None
+        if load <= last_load:
+            return None
+        last_load = load
+    return points
 
 
 def _efficiency_out_of_range(data: dict[str, Any]) -> bool:
@@ -471,6 +587,9 @@ def _clean(data: dict[str, Any]) -> dict[str, Any]:
             continue
         if key in (CONF_INVERTER_MAX_AC, CONF_FIXED_LIMIT) and not value:
             continue
+        # 0 means "no external MPPT stage", not a 0 % efficiency.
+        if key == CONF_MPPT_EFFICIENCY and not value:
+            continue
         out[key] = value
     return out
 
@@ -484,6 +603,8 @@ class PvStringsConfigFlow(ConfigFlow, domain=DOMAIN):
     """Plant-level setup."""
 
     VERSION = 1
+    #: Minor 2: conversion-layer group fields (additive, upgrade.md).
+    MINOR_VERSION = 2
 
     def __init__(self) -> None:
         self._data: dict[str, Any] = {}
@@ -642,6 +763,11 @@ class _ReloadingSubentryFlow(ConfigSubentryFlow):
 class GroupSubentryFlow(_ReloadingSubentryFlow):
     """A set of strings that can only be curtailed together."""
 
+    def __init__(self) -> None:
+        self._pending: dict[str, Any] = {}
+        self._reconfigure = False
+        self._existing: dict[str, Any] = {}
+
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
@@ -656,6 +782,7 @@ class GroupSubentryFlow(_ReloadingSubentryFlow):
         self, user_input: dict[str, Any] | None, reconfigure: bool
     ) -> SubentryFlowResult:
         errors: dict[str, str] = {}
+        self._reconfigure = reconfigure
         existing: dict[str, Any] = {}
         if reconfigure:
             subentry = self._get_reconfigure_subentry()
@@ -663,6 +790,7 @@ class GroupSubentryFlow(_ReloadingSubentryFlow):
             # to be seeded back in or the edit form comes up blank and submitting
             # it would wipe the name.
             existing = {**subentry.data, CONF_NAME: subentry.title}
+            self._existing = dict(subentry.data)
 
         if user_input is not None:
             data = _clean(user_input)
@@ -673,15 +801,15 @@ class GroupSubentryFlow(_ReloadingSubentryFlow):
                     # watts is useless for the binding test.
                     errors[CONF_INVERTER_MAX_AC] = "nameplate_required"
             if not errors:
-                title = data.pop(CONF_NAME)
-                if reconfigure:
-                    return self.async_update_and_abort(
-                        self._get_entry(),
-                        self._get_reconfigure_subentry(),
-                        title=title,
-                        data=data,
-                    )
-                return self._created(title, data)
+                self._pending = data
+                path = data.get(CONF_OUTPUT_PATH, OUTPUT_PATH_NONE)
+                if path != OUTPUT_PATH_NONE:
+                    return await self.async_step_conversion()
+                # Back to "none": stale conversion keys must not survive, or a
+                # later path switch would resurrect them.
+                for key in _DIRECT_KEYS + _STORAGE_KEYS:
+                    self._pending.pop(key, None)
+                return self._finish()
             existing = user_input
 
         return self.async_show_form(
@@ -689,6 +817,67 @@ class GroupSubentryFlow(_ReloadingSubentryFlow):
             data_schema=group_schema(existing),
             errors=errors,
         )
+
+    async def async_step_conversion(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        errors: dict[str, str] = {}
+        path = self._pending.get(CONF_OUTPUT_PATH, OUTPUT_PATH_NONE)
+        direct = path == OUTPUT_PATH_DIRECT
+        seed = {**self._existing}
+
+        if user_input is not None:
+            data = _clean(user_input)
+            if direct:
+                # The opposite path's keys go, structurally preventing the
+                # double-MPPT mistake (spec 3.2.1) instead of validating it.
+                for key in _STORAGE_KEYS:
+                    self._pending.pop(key, None)
+                model = data.get(CONF_INVERTER_MODEL, INVERTER_MODEL_NONE)
+                curve_text = str(user_input.get(CONF_CUSTOM_CURVE) or "")
+                data.pop(CONF_CUSTOM_CURVE, None)
+                if model == INVERTER_MODEL_CUSTOM:
+                    parsed = _parse_curve(curve_text)
+                    if parsed is None:
+                        errors[CONF_CUSTOM_CURVE] = "curve_invalid"
+                    else:
+                        data[CONF_CUSTOM_CURVE] = parsed
+                if model != INVERTER_MODEL_NONE or data.get(
+                    CONF_FORECAST_CLIPPING
+                ):
+                    # Load fraction and clip level both divide by the
+                    # nameplate; without it neither is computable.
+                    if not self._pending.get(CONF_INVERTER_MAX_AC):
+                        errors[CONF_INVERTER_MODEL] = (
+                            "nameplate_required_conversion"
+                        )
+                if model == INVERTER_MODEL_NONE:
+                    data.pop(CONF_INVERTER_MODEL, None)
+            else:
+                for key in _DIRECT_KEYS:
+                    self._pending.pop(key, None)
+            if not errors:
+                self._pending.update(data)
+                return self._finish()
+            seed = {**self._existing, **user_input}
+
+        return self.async_show_form(
+            step_id="conversion",
+            data_schema=conversion_schema(path, seed),
+            errors=errors,
+        )
+
+    def _finish(self) -> SubentryFlowResult:
+        data = dict(self._pending)
+        title = data.pop(CONF_NAME)
+        if self._reconfigure:
+            return self.async_update_and_abort(
+                self._get_entry(),
+                self._get_reconfigure_subentry(),
+                title=title,
+                data=data,
+            )
+        return self._created(title, data)
 
 
 class StringSubentryFlow(_ReloadingSubentryFlow):

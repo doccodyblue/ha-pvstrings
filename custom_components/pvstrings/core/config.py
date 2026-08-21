@@ -152,6 +152,27 @@ class CurtailmentGroup:
     fixed_limit_w: float | None = None
     battery_coupled: bool = False
     soc_limit_pct: float = 100.0
+    #: Conversion layer (upgrade.md).  "none" = no conversion, no new
+    #: entities -- the pre-conversion behaviour, and the default for every
+    #: existing installation.  Loading stays permissive: hard rules (nameplate
+    #: required for curves/clipping, no MPPT stage on direct) live in the
+    #: config flow so an old entry can never fail to load.
+    output_path: str = "none"
+    inverter_model: str | None = None
+    #: ((load_pct, efficiency), ...) support points for a user-supplied
+    #: curve.  Persisted as list-of-lists (HA stores entries as JSON);
+    #: build_plant_config normalises back to tuples.
+    custom_curve: tuple[tuple[float, float], ...] | None = None
+    forecast_clipping: bool = False
+    #: External charge controllers only (Victron etc.).  Micro-inverters have
+    #: MPPT losses inside their datasheet curve already -- a separate stage
+    #: there would subtract the same loss twice.
+    mppt_efficiency: float | None = None
+    charge_efficiency: float = 0.96
+    discharge_efficiency: float = 0.96
+    #: Measured AC output, config-only in tranche 1 (future learning target).
+    #: Deliberately NOT tracked or persisted yet.
+    ac_power_entity: str | None = None
 
     def __post_init__(self) -> None:
         if not self.group_id:

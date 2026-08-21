@@ -254,6 +254,28 @@ lever: the physics chain is deterministic, the irradiance input is not.
 
 ---
 
+## Output paths: DC, AC, or battery charge
+
+The forecast core is DC — what the panels deliver. Optionally, each
+curtailment group can declare an **output path** that converts its share:
+
+- **`direct`** (DC → inverter → grid/house): forecast of AC energy behind
+  the inverter, through a load-dependent datasheet efficiency curve, with
+  optional clipping at the inverter's rated AC power. The value is
+  *hardware potential*: it is never capped at commanded or legal feed-in
+  limits — a plant limited to 800 W by regulation but built bigger will
+  see more here than it may feed in.
+- **`storage`** (DC → external MPPT → battery): forecast of energy landing
+  in the battery. It deliberately ends at the battery terminal — when that
+  energy leaves the battery again is a control decision, not a forecast.
+  AC and battery-charge forecasts are different quantities and must not be
+  summed.
+
+With no path configured (the default) nothing changes: no new entities,
+DC-only, identical to every release before v1.20.
+
+---
+
 ## Curtailment
 
 A **commanded limit is not curtailment.** At a 1796 W limit with 600 W

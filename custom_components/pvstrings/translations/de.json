@@ -220,7 +220,8 @@
             "limit_abs_entity": "Limit-Entität absolut (W)",
             "fixed_limit_w": "Festes Limit in W (0 = keins)",
             "battery_coupled": "Speichergekoppelt",
-            "soc_limit": "Ladestand, ab dem nicht mehr geladen wird"
+            "soc_limit": "Ladestand, ab dem nicht mehr geladen wird",
+            "output_path": "Ausgabepfad"
           },
           "data_description": {
             "limit_entity": "Entität mit dem aktuell gesetzten Limit in Prozent, z. B. das relative Limit von OpenDTU. 100 % heißt Hardware-Maximum.",
@@ -228,7 +229,8 @@
             "limit_abs_entity": "Entität mit dem gesetzten Limit in Watt, z. B. das absolute Limit von OpenDTU. Hat Vorrang vor dem relativen Limit.",
             "fixed_limit_w": "Eine dauerhaft im Wechselrichter eingestellte Obergrenze, z. B. die gesetzlichen 800 W eines Balkonkraftwerks. Gilt zusätzlich zu den Limit-Entitäten — der niedrigere Wert zählt.",
             "battery_coupled": "Der Wechselrichter drosselt, sobald der Speicher voll ist. Nutzt den Batterie-Ladestand aus den Optionen.",
-            "soc_limit": "Oberhalb dieses Ladestands gilt der Speicher als voll; gedrosselte Leistung wird dann als Abregelung gewertet."
+            "soc_limit": "Oberhalb dieses Ladestands gilt der Speicher als voll; gedrosselte Leistung wird dann als Abregelung gewertet.",
+            "output_path": "Wohin die DC-Prognose dieser Gruppe umgerechnet wird. „Keine Umrechnung“ lässt alles exakt wie bisher."
           }
         },
         "reconfigure": {
@@ -240,7 +242,8 @@
             "limit_abs_entity": "Limit-Entität absolut (W)",
             "fixed_limit_w": "Festes Limit in W (0 = keins)",
             "battery_coupled": "Speichergekoppelt",
-            "soc_limit": "Ladestand, ab dem nicht mehr geladen wird"
+            "soc_limit": "Ladestand, ab dem nicht mehr geladen wird",
+            "output_path": "Ausgabepfad"
           },
           "data_description": {
             "limit_entity": "Entität mit dem aktuell gesetzten Limit in Prozent, z. B. das relative Limit von OpenDTU. 100 % heißt Hardware-Maximum.",
@@ -248,12 +251,37 @@
             "limit_abs_entity": "Entität mit dem gesetzten Limit in Watt, z. B. das absolute Limit von OpenDTU. Hat Vorrang vor dem relativen Limit.",
             "fixed_limit_w": "Eine dauerhaft im Wechselrichter eingestellte Obergrenze, z. B. die gesetzlichen 800 W eines Balkonkraftwerks. Gilt zusätzlich zu den Limit-Entitäten — der niedrigere Wert zählt.",
             "battery_coupled": "Der Wechselrichter drosselt, sobald der Speicher voll ist. Nutzt den Batterie-Ladestand aus den Optionen.",
-            "soc_limit": "Oberhalb dieses Ladestands gilt der Speicher als voll; gedrosselte Leistung wird dann als Abregelung gewertet."
+            "soc_limit": "Oberhalb dieses Ladestands gilt der Speicher als voll; gedrosselte Leistung wird dann als Abregelung gewertet.",
+            "output_path": "Wohin die DC-Prognose dieser Gruppe umgerechnet wird. „Keine Umrechnung“ lässt alles exakt wie bisher."
+          }
+        },
+        "conversion": {
+          "title": "Umrechnung",
+          "description": "Optionale Stufen zwischen Panel und dem, was wirklich ankommt. Vorgaben sind neutral bzw. Datenblattwerte; die Prognose selbst bleibt darunter DC-basiert.",
+          "data": {
+            "inverter_model": "Wechselrichter-Modell",
+            "custom_curve": "Eigene Kennlinie (Last%:Wirkungsgrad)",
+            "forecast_clipping": "Prognose am AC-Nennwert kappen",
+            "ac_power_entity": "Gemessene AC-Leistung (optional)",
+            "mppt_efficiency": "Wirkungsgrad externer MPPT",
+            "charge_efficiency": "Ladewirkungsgrad Akku",
+            "discharge_efficiency": "Entladewirkungsgrad Akku"
+          },
+          "data_description": {
+            "inverter_model": "Datenblatt-Kennlinie. „Keine Kennlinie“ reicht DC unverändert durch.",
+            "custom_curve": "Nur bei „Eigene Kennlinie“: Stützstellen mit Komma getrennt, z. B. 5:0.90, 20:0.955, 50:0.967, 100:0.962. Last in Prozent der AC-Nennleistung, Wirkungsgrad als Bruchteil.",
+            "forecast_clipping": "Deckelt die AC-Prognose am Hardware-Maximum des Wechselrichters. Wirkt auf Stundenmittel — kurze Spitzen innerhalb einer hellen Stunde werden unterschätzt.",
+            "ac_power_entity": "Der AC-Ausgangssensor des Wechselrichters. Wird für die kommende Lernstufe gespeichert; noch ungenutzt.",
+            "mppt_efficiency": "Nur für Laderegler vor dem Akku (z. B. Victron). 0 = keine eigene Stufe. Mikrowechselrichter haben die MPPT-Verluste schon in ihrer Kennlinie — nie beides konfigurieren.",
+            "charge_efficiency": "DC-Pfad in den Akku. Die Prognose endet an der Akku-Klemme.",
+            "discharge_efficiency": "Nur für Plausibilitätsprüfungen gespeichert; Entladen ist Regelung, keine Prognose."
           }
         }
       },
       "error": {
-        "nameplate_required": "Ein relatives Limit in Prozent braucht die Hardware-Maximalleistung, um in Watt umgerechnet werden zu können."
+        "nameplate_required": "Ein relatives Limit in Prozent braucht die Hardware-Maximalleistung, um in Watt umgerechnet werden zu können.",
+        "curve_invalid": "Die Kennlinie braucht mindestens zwei „Last:Wirkungsgrad“-Paare mit streng steigender Last (0–150 %) und Wirkungsgrad zwischen 0,5 und 1,0.",
+        "nameplate_required_conversion": "Kennlinie oder Kappung brauchen das Hardware-Maximum AC von der vorigen Seite — Last und Deckel teilen beide dadurch."
       }
     }
   },
@@ -303,6 +331,20 @@
         "now": "Ab jetzt",
         "from_date": "Ab einem bestimmten Datum",
         "correction": "War von Anfang an falsch (letzten Abschnitt korrigieren)"
+      }
+    },
+    "output_path": {
+      "options": {
+        "none": "Keine Umrechnung (nur DC)",
+        "direct": "Direkteinspeisung (DC → AC)",
+        "storage": "Speicher (DC → Akku)"
+      }
+    },
+    "inverter_model": {
+      "options": {
+        "none": "Keine Kennlinie (neutral: AC = DC)",
+        "hoymiles_hms1600_4t": "Hoymiles HMS-1600-4T",
+        "custom": "Eigene Kennlinie"
       }
     }
   },
@@ -406,6 +448,18 @@
       },
       "rain_probability_tomorrow": {
         "name": "Regenwahrscheinlichkeit morgen"
+      },
+      "group_forecast_ac": {
+        "name": "Restprognose AC heute"
+      },
+      "group_forecast_battery_charge": {
+        "name": "Restprognose Akkuladung heute"
+      },
+      "forecast_ac_today": {
+        "name": "Prognose AC heute"
+      },
+      "forecast_ac_tomorrow": {
+        "name": "Prognose AC morgen"
       }
     }
   },

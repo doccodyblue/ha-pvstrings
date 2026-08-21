@@ -41,7 +41,14 @@ from . import (
     plant_device_info,
     string_device_info,
 )
-from .const import SUBENTRY_GROUP, SUBENTRY_STRING
+from .const import (
+    CONF_OUTPUT_PATH,
+    OUTPUT_PATH_DIRECT,
+    OUTPUT_PATH_NONE,
+    OUTPUT_PATH_STORAGE,
+    SUBENTRY_GROUP,
+    SUBENTRY_STRING,
+)
 from .coordinator import PvStringsCoordinator, PvStringsData
 from .core.forecast import DAY_AHEAD_ISSUE_HOUR_LOCAL, floor_hour
 from .core import units
@@ -655,10 +662,20 @@ async def async_setup_entry(
 ) -> None:
     coordinator = entry.runtime_data
 
-    async_add_entities(
-        [PlantSensor(coordinator, entry, description) for description in PLANT_SENSORS]
-        + [PlantPowerSensor(coordinator, entry)]
-    )
+    plant_entities: list[SensorEntity] = [
+        PlantSensor(coordinator, entry, description) for description in PLANT_SENSORS
+    ]
+    plant_entities.append(PlantPowerSensor(coordinator, entry))
+    if any(
+        subentry.subentry_type == SUBENTRY_GROUP
+        and subentry.data.get(CONF_OUTPUT_PATH) == OUTPUT_PATH_DIRECT
+        for subentry in entry.subentries.values()
+    ):
+        plant_entities += [
+            PlantAcForecastSensor(coordinator, entry, "today"),
+            PlantAcForecastSensor(coordinator, entry, "tomorrow"),
+        ]
+    async_add_entities(plant_entities)
 
     for subentry_id, subentry in entry.subentries.items():
         if subentry.subentry_type == SUBENTRY_STRING:
@@ -674,10 +691,20 @@ async def async_setup_entry(
         elif subentry.subentry_type == SUBENTRY_GROUP:
             # One per configured group. A plant with no groups -- the common
             # case -- gets nothing here and is unchanged.
-            async_add_entities(
-                [GroupForecastSensor(coordinator, entry, subentry_id, subentry.title)],
-                config_subentry_id=subentry_id,
-            )
+            group_entities: list[SensorEntity] = [
+                GroupForecastSensor(coordinator, entry, subentry_id, subentry.title)
+            ]
+            path = subentry.data.get(CONF_OUTPUT_PATH, OUTPUT_PATH_NONE)
+            if path in (OUTPUT_PATH_DIRECT, OUTPUT_PATH_STORAGE):
+                # Additive: the DC sensor above stays untouched for every
+                # group; conversion output is its own entity with its own
+                # unique_id per path.
+                group_entities.append(
+                    GroupConversionSensor(
+                        coordinator, entry, subentry_id, subentry.title, path
+                    )
+                )
+            async_add_entities(group_entities, config_subentry_id=subentry_id)
 
 
 class PvStringsEntity(CoordinatorEntity[PvStringsCoordinator], SensorEntity):
@@ -780,6 +807,170 @@ class GroupForecastSensor(PvStringsEntity):
                 "Only the strings behind this inverter. Strings in no group are "
                 "in no such total, so the groups need not add up to the plant."
             ),
+        }
+
+
+_AC_SEMANTICS = (
+    "Hardware potential behind the inverter, capped at its rated AC power "
+    "only. Deliberately NOT capped at commanded or legal feed-in limits -- "
+    "a plant limited to 800 W by regulation but built bigger will see more "
+    "here than it may feed in."
+)
+_CLIP_NOTE = (
+    "Clipping is applied to hourly means; brief peaks inside a bright hour "
+    "can clip at the inverter even when the hourly mean stays below rated."
+)
+_STORAGE_SEMANTICS = (
+    "Energy expected to land in the battery (DC side, after MPPT and charge "
+    "losses). Not comparable to and not summable with AC forecasts: when "
+    "this energy leaves the battery again is a control decision, not a "
+    "forecast."
+)
+
+
+class GroupConversionSensor(PvStringsEntity):
+    """Converted forecast for one group: AC (direct) or battery charge."""
+
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_suggested_display_precision = 2
+
+    def __init__(
+        self,
+        coordinator: PvStringsCoordinator,
+        entry: ConfigEntry,
+        group_id: str,
+        name: str,
+        output_path: str,
+    ) -> None:
+        super().__init__(coordinator)
+        self._group_id = group_id
+        self._direct = output_path == OUTPUT_PATH_DIRECT
+        if self._direct:
+            key = "forecast_ac"
+            self._attr_translation_key = "group_forecast_ac"
+        else:
+            key = "forecast_battery_charge"
+            self._attr_translation_key = "group_forecast_battery_charge"
+        self._attr_unique_id = f"{entry.entry_id}_{group_id}_{key}"
+        self._attr_device_info = group_device_info(entry, group_id, name)
+
+    def _group(self) -> Any:
+        data = self.coordinator.data
+        return None if data is None else data.groups.get(self._group_id)
+
+    @property
+    def available(self) -> bool:
+        group = self._group()
+        return super().available and group is not None and group.converted is not None
+
+    @property
+    def native_value(self) -> Any:
+        group = self._group()
+        if group is None or group.converted is None:
+            return None
+        return round(
+            group.converted_sum_between(_now_ts(), self.coordinator.data.day_end), 3
+        )
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        group = self._group()
+        if group is None or group.converted is None:
+            return None
+        data = self.coordinator.data
+        out: dict[str, Any] = {
+            "output_path": group.output_path,
+            "today_kwh": round(
+                group.converted_sum_between(data.day_start, data.day_end), 3
+            ),
+            "tomorrow_kwh": round(
+                group.converted_sum_between(data.tomorrow_start, data.tomorrow_end),
+                3,
+            ),
+            "strings": group.members,
+            "forecast": _forecast_attribute(group.converted_pairs()),
+            "curve_source": group.converted.curve_source,
+            "stages": list(group.converted.stages),
+            "semantics": _AC_SEMANTICS if self._direct else _STORAGE_SEMANTICS,
+        }
+        if self._direct:
+            out["clipped_kwh"] = group.converted.clipped_kwh
+            if "clipping" in group.converted.stages:
+                out["note"] = _CLIP_NOTE
+        return out
+
+
+class PlantAcForecastSensor(PvStringsEntity):
+    """AC forecast summed over the direct-path groups: the externally
+    referenced figure (stable unique_id) a controller may consume."""
+
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_suggested_display_precision = 2
+
+    def __init__(
+        self,
+        coordinator: PvStringsCoordinator,
+        entry: ConfigEntry,
+        day: str,
+    ) -> None:
+        super().__init__(coordinator)
+        self._day = day
+        if day == "today":
+            self._attr_translation_key = "forecast_ac_today"
+        else:
+            self._attr_translation_key = "forecast_ac_tomorrow"
+        self._attr_unique_id = f"{entry.entry_id}_forecast_ac_{day}"
+        self._attr_device_info = plant_device_info(entry)
+
+    def _window(self) -> tuple[int, int] | None:
+        data = self.coordinator.data
+        if data is None or not data.has_direct_conversion:
+            return None
+        if self._day == "today":
+            return data.day_start, data.day_end
+        return data.tomorrow_start, data.tomorrow_end
+
+    @property
+    def available(self) -> bool:
+        return super().available and self._window() is not None
+
+    @property
+    def native_value(self) -> Any:
+        window = self._window()
+        if window is None:
+            return None
+        start, end = window
+        return round(
+            sum(
+                value
+                for ts, value in self.coordinator.data.ac_hourly
+                if start <= ts < end
+            ),
+            3,
+        )
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        window = self._window()
+        if window is None:
+            return None
+        data = self.coordinator.data
+        start, end = window
+        return {
+            "forecast": _forecast_attribute(
+                [(ts, value) for ts, value in data.ac_hourly if start <= ts < end]
+            ),
+            # A consumer treating this as "the whole plant" needs to see what
+            # it cannot: strings outside every direct-path group -- both the
+            # invisible ones and the ones forecast as battery charge instead.
+            "partial": bool(data.unconverted_strings or data.storage_strings),
+            "unconverted_strings": data.unconverted_strings,
+            "storage_strings": data.storage_strings,
+            "semantics": _AC_SEMANTICS,
         }
 
 

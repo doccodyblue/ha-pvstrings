@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased (v1.20)
+
+### Added
+
+- **Conversion layer & AC forecast (upgrade.md, tranche 1).** Per
+  curtailment group an optional `output_path`: `direct` converts the DC
+  forecast through an inverter efficiency curve (shipped datasheet JSON,
+  custom support points, or neutral) with optional clipping at the
+  hardware AC rating; `storage` converts to expected battery charge
+  (external MPPT × charge efficiency, forecast ends at the battery
+  terminal). New additive entities per configured group ("Remaining AC
+  forecast today" / "Remaining battery charge forecast today") and
+  plant-level "Forecast AC today/tomorrow" summing the direct groups
+  (stable unique_id `<entry>_forecast_ac_*`, with `partial` +
+  `unconverted_strings` attributes). Default `none` changes nothing:
+  no new entities, identical behaviour, DC sensors and scoring untouched.
+  AC values are hardware potential — never capped at commanded or legal
+  limits (`semantics` attribute says so). Config entry minor version 2
+  with `async_migrate_entry`; group flow gains a second, path-shaped
+  step. Two-step Codex review per upgrade.md §11.
+- **`reset_learning` accepts an optional `string_id`** — the surgical
+  repair after correcting one string's geometry: only that string's
+  shading observations and factors are discarded; plant scope, ghi_bias
+  and the sibling strings stay.
+
 ## 1.19.0
 
 ### Changed

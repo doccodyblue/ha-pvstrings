@@ -1,0 +1,16 @@
+{
+  "id": "hoymiles_hms1600_4t",
+  "name": "Hoymiles HMS-1600-4T",
+  "estimated": true,
+  "source": "CEC peak efficiency 96.7% as anchor; part-load shape is a generic transformer micro-inverter estimate, to be corrected by learning (upgrade.md 8.1)",
+  "points": [
+    [2, 0.86],
+    [5, 0.90],
+    [10, 0.935],
+    [20, 0.955],
+    [30, 0.962],
+    [50, 0.967],
+    [75, 0.965],
+    [100, 0.962]
+  ]
+}

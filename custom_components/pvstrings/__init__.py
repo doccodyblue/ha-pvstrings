@@ -28,7 +28,17 @@ from .const import (
     ATTR_STRING_ID,
     CONF_ALBEDO,
     CONF_AZIMUTH,
+    CONF_AC_POWER_ENTITY,
     CONF_BATTERY_COUPLED,
+    CONF_CHARGE_EFFICIENCY,
+    CONF_CUSTOM_CURVE,
+    CONF_DISCHARGE_EFFICIENCY,
+    CONF_FORECAST_CLIPPING,
+    CONF_INVERTER_MODEL,
+    CONF_MPPT_EFFICIENCY,
+    CONF_OUTPUT_PATH,
+    INVERTER_MODELS,
+    OUTPUT_PATH_NONE,
     CONF_BATTERY_POWER,
     CONF_BATTERY_SOC,
     CONF_COMMISSIONING,
@@ -170,6 +180,7 @@ def build_plant_config(hass: HomeAssistant, entry: ConfigEntry) -> PlantConfig:
     for subentry_id, subentry in entry.subentries.items():
         data = subentry.data
         if subentry.subentry_type == SUBENTRY_GROUP:
+            raw_curve = data.get(CONF_CUSTOM_CURVE)
             groups.append(
                 CurtailmentGroup(
                     group_id=subentry_id,
@@ -180,6 +191,25 @@ def build_plant_config(hass: HomeAssistant, entry: ConfigEntry) -> PlantConfig:
                     fixed_limit_w=data.get(CONF_FIXED_LIMIT) or None,
                     battery_coupled=bool(data.get(CONF_BATTERY_COUPLED, False)),
                     soc_limit_pct=float(data.get(CONF_SOC_LIMIT, 100.0)),
+                    output_path=data.get(CONF_OUTPUT_PATH, OUTPUT_PATH_NONE),
+                    inverter_model=data.get(CONF_INVERTER_MODEL) or None,
+                    # JSON round trip turns tuples into lists; normalise back.
+                    custom_curve=(
+                        tuple((float(p[0]), float(p[1])) for p in raw_curve)
+                        if raw_curve
+                        else None
+                    ),
+                    forecast_clipping=bool(
+                        data.get(CONF_FORECAST_CLIPPING, False)
+                    ),
+                    mppt_efficiency=data.get(CONF_MPPT_EFFICIENCY) or None,
+                    charge_efficiency=float(
+                        data.get(CONF_CHARGE_EFFICIENCY, 0.96)
+                    ),
+                    discharge_efficiency=float(
+                        data.get(CONF_DISCHARGE_EFFICIENCY, 0.96)
+                    ),
+                    ac_power_entity=data.get(CONF_AC_POWER_ENTITY) or None,
                 )
             )
 
@@ -319,6 +349,22 @@ def plant_device_info(entry: ConfigEntry) -> DeviceInfo:
 # --------------------------------------------------------------------------- #
 
 
+async def async_migrate_entry(
+    hass: HomeAssistant, entry: PvStringsConfigEntry
+) -> bool:
+    """Config generations are additive; only the minor version gets stamped.
+
+    Fields read via .get() with defaults need no rewrite, but without the
+    stamp HA calls this on every start.  Refusing a future major version is
+    the standard downgrade guard.
+    """
+    if entry.version > 1:
+        return False
+    if entry.minor_version < 2:
+        hass.config_entries.async_update_entry(entry, minor_version=2)
+    return True
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: PvStringsConfigEntry) -> bool:
     try:
         plant = build_plant_config(hass, entry)
@@ -339,6 +385,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: PvStringsConfigEntry) ->
         raise ConfigEntryNotReady(f"cannot open {db_path}: {err}") from err
 
     coordinator = PvStringsCoordinator(hass, entry, plant, store)
+    if any(group.output_path != OUTPUT_PATH_NONE for group in plant.groups):
+        from .core.inverter_curves import load_curves
+
+        coordinator.inverter_curves = await hass.async_add_executor_job(
+            load_curves, INVERTER_MODELS
+        )
     await coordinator.async_prepare(
         weather_entity=_merged(entry).get(CONF_WEATHER_ENTITY)
     )

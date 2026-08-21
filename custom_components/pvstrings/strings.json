@@ -220,7 +220,8 @@
             "limit_abs_entity": "Limit entity, absolute (W)",
             "fixed_limit_w": "Fixed limit in W (0 = none)",
             "battery_coupled": "Battery coupled",
-            "soc_limit": "State of charge at which charging stops"
+            "soc_limit": "State of charge at which charging stops",
+            "output_path": "Output path"
           },
           "data_description": {
             "limit_entity": "An entity reporting the currently commanded limit in percent, e.g. OpenDTU's relative limit. 100 % means the hardware maximum.",
@@ -228,7 +229,8 @@
             "limit_abs_entity": "An entity reporting the commanded limit in watts, e.g. OpenDTU's absolute limit. Takes precedence over the relative one.",
             "fixed_limit_w": "A cap configured permanently in the inverter, e.g. the legal 800 W of a balcony plant. Applies on top of the limit entities -- the lower value wins.",
             "battery_coupled": "The inverter throttles once the battery is full. Uses the plant-level battery state of charge from the options.",
-            "soc_limit": "Above this state of charge the battery counts as full, and throttled output is treated as curtailment."
+            "soc_limit": "Above this state of charge the battery counts as full, and throttled output is treated as curtailment.",
+            "output_path": "What this group's DC forecast should be converted into. 'No conversion' keeps everything exactly as before."
           }
         },
         "reconfigure": {
@@ -240,7 +242,8 @@
             "limit_abs_entity": "Limit entity, absolute (W)",
             "fixed_limit_w": "Fixed limit in W (0 = none)",
             "battery_coupled": "Battery coupled",
-            "soc_limit": "State of charge at which charging stops"
+            "soc_limit": "State of charge at which charging stops",
+            "output_path": "Output path"
           },
           "data_description": {
             "limit_entity": "An entity reporting the currently commanded limit in percent, e.g. OpenDTU's relative limit. 100 % means the hardware maximum.",
@@ -248,12 +251,37 @@
             "limit_abs_entity": "An entity reporting the commanded limit in watts, e.g. OpenDTU's absolute limit. Takes precedence over the relative one.",
             "fixed_limit_w": "A cap configured permanently in the inverter, e.g. the legal 800 W of a balcony plant. Applies on top of the limit entities -- the lower value wins.",
             "battery_coupled": "The inverter throttles once the battery is full. Uses the plant-level battery state of charge from the options.",
-            "soc_limit": "Above this state of charge the battery counts as full, and throttled output is treated as curtailment."
+            "soc_limit": "Above this state of charge the battery counts as full, and throttled output is treated as curtailment.",
+            "output_path": "What this group's DC forecast should be converted into. 'No conversion' keeps everything exactly as before."
+          }
+        },
+        "conversion": {
+          "title": "Conversion",
+          "description": "Optional stages between the panels and what you actually get. Defaults are neutral or datasheet values; the forecast itself stays DC-based underneath.",
+          "data": {
+            "inverter_model": "Inverter model",
+            "custom_curve": "Custom curve (load%:efficiency)",
+            "forecast_clipping": "Clip forecast at rated AC power",
+            "ac_power_entity": "Measured AC power (optional)",
+            "mppt_efficiency": "External MPPT efficiency",
+            "charge_efficiency": "Battery charge efficiency",
+            "discharge_efficiency": "Battery discharge efficiency"
+          },
+          "data_description": {
+            "inverter_model": "Datasheet efficiency curve. 'No curve' passes DC through unchanged.",
+            "custom_curve": "Only for 'Custom curve': comma-separated support points, e.g. 5:0.90, 20:0.955, 50:0.967, 100:0.962. Load in percent of the AC rating, efficiency as a fraction.",
+            "forecast_clipping": "Caps the AC forecast at the inverter hardware maximum. Applied to hourly means, so brief peaks inside a bright hour are understated.",
+            "ac_power_entity": "The inverter's AC output sensor. Stored for the upcoming learning stage; not used yet.",
+            "mppt_efficiency": "Only for charge controllers in front of the battery (e.g. Victron). 0 = no separate stage. Micro-inverters already include MPPT losses in their curve — never configure both.",
+            "charge_efficiency": "DC path into the battery. The forecast ends at the battery terminal.",
+            "discharge_efficiency": "Stored for plausibility checks only; discharge is a control decision, not a forecast."
           }
         }
       },
       "error": {
-        "nameplate_required": "A relative limit in percent needs the inverter hardware maximum to be converted into watts."
+        "nameplate_required": "A relative limit in percent needs the inverter hardware maximum to be converted into watts.",
+        "curve_invalid": "Curve needs at least two 'load:efficiency' pairs with strictly increasing load (0–150 %) and efficiency between 0.5 and 1.0.",
+        "nameplate_required_conversion": "A curve or clipping needs the inverter hardware maximum (AC) from the previous page — load and cap both divide by it."
       }
     }
   },
@@ -303,6 +331,20 @@
         "now": "From now on",
         "from_date": "From a specific date",
         "correction": "It was wrong from the start (correct the last period)"
+      }
+    },
+    "output_path": {
+      "options": {
+        "none": "No conversion (DC only)",
+        "direct": "Direct feed-in (DC → AC)",
+        "storage": "Battery storage (DC → battery)"
+      }
+    },
+    "inverter_model": {
+      "options": {
+        "none": "No curve (neutral: AC = DC)",
+        "hoymiles_hms1600_4t": "Hoymiles HMS-1600-4T",
+        "custom": "Custom curve"
       }
     }
   },
@@ -406,6 +448,18 @@
       },
       "rain_probability_tomorrow": {
         "name": "Rain probability tomorrow"
+      },
+      "group_forecast_ac": {
+        "name": "Remaining AC forecast today"
+      },
+      "group_forecast_battery_charge": {
+        "name": "Remaining battery charge forecast today"
+      },
+      "forecast_ac_today": {
+        "name": "Forecast AC today"
+      },
+      "forecast_ac_tomorrow": {
+        "name": "Forecast AC tomorrow"
       }
     }
   },

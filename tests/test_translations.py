@@ -29,13 +29,18 @@ def _used_translation_keys() -> set[str]:
         if isinstance(node, ast.keyword) and node.arg == "translation_key":
             if isinstance(node.value, ast.Constant):
                 keys.add(node.value.value)
-        # _attr_translation_key = "..."
+        # _attr_translation_key = "..."  (class level and self.-assignments)
         if isinstance(node, ast.Assign):
             for target in node.targets:
-                if (
-                    isinstance(target, ast.Name)
-                    and target.id == "_attr_translation_key"
-                    and isinstance(node.value, ast.Constant)
+                name = (
+                    target.id
+                    if isinstance(target, ast.Name)
+                    else target.attr
+                    if isinstance(target, ast.Attribute)
+                    else None
+                )
+                if name == "_attr_translation_key" and isinstance(
+                    node.value, ast.Constant
                 ):
                     keys.add(node.value.value)
     return keys

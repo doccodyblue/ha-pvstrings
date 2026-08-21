@@ -24,12 +24,16 @@ from .const import (
     DOMAIN,
     FORECAST_HOURS,
     FORECAST_INTERVAL,
+    OUTPUT_PATH_DIRECT,
+    OUTPUT_PATH_NONE,
+    OUTPUT_PATH_STORAGE,
     SCORE_WINDOWS,
     WEATHER_INTERVAL,
 )
 from .core import economics as econ
 from .core.aggregate import merge_hourly
 from .core.config import PlantConfig
+from .core.conversion import ConversionResult, convert_group
 from .core.forecast import HOUR, ForecastEngine, LearnStats, floor_hour
 from .core.health import Health, learn_summary
 from .core.physics import PhysicsEngine, clamp_to_daylight, to_index
@@ -89,9 +93,28 @@ class GroupForecast:
     name: str
     members: list[str] = field(default_factory=list)
     hourly: list[tuple[int, float]] = field(default_factory=list)
+    #: Conversion layer output (AC or battery charge), None for path "none".
+    #: ``hourly`` above stays the DC series -- the existing group sensor
+    #: reads it and must not move.
+    output_path: str = "none"
+    converted: ConversionResult | None = None
 
     def sum_between(self, start_ts: int, end_ts: int) -> float:
         return sum(value for ts, value in self.hourly if start_ts <= ts < end_ts)
+
+    def converted_pairs(self) -> list[tuple[int, float]]:
+        if self.converted is None:
+            return []
+        return sorted(self.converted.hourly_kwh.items())
+
+    def converted_sum_between(self, start_ts: int, end_ts: int) -> float:
+        if self.converted is None:
+            return 0.0
+        return sum(
+            value
+            for ts, value in self.converted.hourly_kwh.items()
+            if start_ts <= ts < end_ts
+        )
 
 
 @dataclass(slots=True)
@@ -117,6 +140,18 @@ class PvStringsData:
     #: Per curtailment group, keyed by group id.  Empty when the plant has no
     #: groups, which is the common case and must stay invisible.
     groups: dict[str, GroupForecast] = field(default_factory=dict)
+    #: Plant-wide AC series: sum over the direct-path groups only.  Empty
+    #: while no group has output_path "direct".  Storage groups are a
+    #: different quantity (battery charge) and are deliberately not in here.
+    ac_hourly: list[tuple[int, float]] = field(default_factory=list)
+    has_direct_conversion: bool = False
+    #: Strings the AC sum cannot see: ungrouped, or in a path-"none" group.
+    #: A consumer treating the AC sum as "the whole plant" needs the names,
+    #: not a count.
+    unconverted_strings: list[str] = field(default_factory=list)
+    #: Also outside the AC sum, but accounted for elsewhere: strings whose
+    #: group forecasts battery charge instead.
+    storage_strings: list[str] = field(default_factory=list)
     scores: dict[int, dict[str, Any]] = field(default_factory=dict)
     #: The same windows scored against the forecast as it stood the evening
     #: before, which is the question the plant is actually bought to answer.
@@ -216,6 +251,8 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         )
         self.plant = plant
         self.store = store
+        #: Datasheet efficiency curves, loaded in the executor during setup.
+        self.inverter_curves: dict[str, tuple[tuple[float, float], ...]] = {}
         self.physics = PhysicsEngine(
             latitude=plant.latitude,
             longitude=plant.longitude,
@@ -489,19 +526,42 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         # group are in none of these sums, which is why the groups need not add
         # up to the plant and no synthetic "ungrouped" bucket is invented.
         groups: dict[str, GroupForecast] = {}
+        ac_totals: dict[int, float] = {}
+        has_direct = False
         for group in self.plant.groups:
             members = self.plant.strings_in_group(group.group_id)
             if not members:
                 continue
+            hourly = merge_hourly(
+                strings[member.string_id].hourly
+                for member in members
+                if member.string_id in strings
+            )
+            # Downstream of everything learned: log_forecast, scoring and
+            # censoring all ran on the DC series above.  Static config only
+            # (executor context, no hass.states).
+            converted = convert_group(
+                dict(hourly),
+                output_path=group.output_path,
+                rated_ac_w=group.inverter_max_ac_w,
+                inverter_model=group.inverter_model,
+                custom_curve=group.custom_curve,
+                forecast_clipping=group.forecast_clipping,
+                mppt_efficiency=group.mppt_efficiency,
+                charge_efficiency=group.charge_efficiency,
+                curves=self.inverter_curves,
+            )
+            if group.output_path == OUTPUT_PATH_DIRECT and converted is not None:
+                has_direct = True
+                for ts, value in converted.hourly_kwh.items():
+                    ac_totals[ts] = ac_totals.get(ts, 0.0) + value
             groups[group.group_id] = GroupForecast(
                 group_id=group.group_id,
                 name=group.name,
                 members=[member.name for member in members],
-                hourly=merge_hourly(
-                    strings[member.string_id].hourly
-                    for member in members
-                    if member.string_id in strings
-                ),
+                hourly=hourly,
+                output_path=group.output_path,
+                converted=converted,
             )
 
         data = PvStringsData(
@@ -514,6 +574,22 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
             day_after_end=day_after_end,
             strings=strings,
             groups=groups,
+            ac_hourly=sorted(
+                (ts, round(value, 4)) for ts, value in ac_totals.items()
+            ),
+            has_direct_conversion=has_direct,
+            unconverted_strings=sorted(
+                string.name
+                for string in self.plant.strings
+                if (found := self.plant.group_of(string.string_id)) is None
+                or found.output_path == OUTPUT_PATH_NONE
+            ),
+            storage_strings=sorted(
+                string.name
+                for string in self.plant.strings
+                if (found := self.plant.group_of(string.string_id)) is not None
+                and found.output_path == OUTPUT_PATH_STORAGE
+            ),
             plant_hourly=sorted(
                 (ts, round(value, 4)) for ts, value in plant_hourly.items()
             ),

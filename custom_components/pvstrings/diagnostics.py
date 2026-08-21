@@ -105,6 +105,11 @@ async def async_get_config_entry_diagnostics(
                     "battery_coupled": group.battery_coupled,
                     "inverter_max_ac_w": group.inverter_max_ac_w,
                     "fixed_limit_w": group.fixed_limit_w,
+                    "output_path": group.output_path,
+                    "inverter_model": group.inverter_model,
+                    "forecast_clipping": group.forecast_clipping,
+                    "mppt_efficiency": group.mppt_efficiency,
+                    "charge_efficiency": group.charge_efficiency,
                 }
                 for group in plant.groups
             ],

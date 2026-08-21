@@ -18,10 +18,21 @@ def _schemas(hass):
         "entities": cf.entities_schema(),
         "string": cf.string_schema(hass, None),
         "group": cf.group_schema(),
+        "conversion_direct": cf.conversion_schema("direct"),
+        "conversion_storage": cf.conversion_schema("storage"),
     }
 
 
-ALL = ["plant", "economics", "advanced", "entities", "string", "group"]
+ALL = [
+    "plant",
+    "economics",
+    "advanced",
+    "entities",
+    "string",
+    "group",
+    "conversion_direct",
+    "conversion_storage",
+]
 
 
 @pytest.mark.parametrize("name", ALL)
