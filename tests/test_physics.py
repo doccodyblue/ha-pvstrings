@@ -208,6 +208,90 @@ class TestChain:
         assert shaded.dc_power_w.iloc[0] < clear.dc_power_w.iloc[0]
 
 
+class TestBeamScope:
+    """scope="beam": the shadow takes only the POA direct component."""
+
+    def _run(self, engine: PhysicsEngine, geometry: GeometrySegment, ts=SUMMER_NOON, **kw):
+        index = to_index([ts])
+        ghi, dni, dhi = _clear_conditions(engine, index)
+        return engine.run(index, geometry, ghi=ghi, dni=dni, dhi=dhi, **kw)
+
+    def test_diffuse_only_light_is_untouched(self, engine: PhysicsEngine):
+        # dni=0, ghi=dhi: an overcast moment.  A beam shadow costs nothing.
+        index = to_index([SUMMER_NOON])
+        _ghi, dni, dhi = _clear_conditions(engine, index)
+        geometry = GeometrySegment(0, 180, 30, 1.0)
+        clear = engine.run(
+            index, geometry, ghi=dhi, dni=dni * 0.0, dhi=dhi,
+            shading_scope="beam",
+        )
+        shaded = engine.run(
+            index, geometry, ghi=dhi, dni=dni * 0.0, dhi=dhi,
+            shading_factor=0.5, shading_scope="beam",
+        )
+        assert clear.dc_power_w.iloc[0] > 0
+        assert shaded.dc_power_w.iloc[0] == pytest.approx(
+            clear.dc_power_w.iloc[0], rel=1e-6
+        )
+
+    def test_total_darkness_still_leaves_the_diffuse_floor(self, engine: PhysicsEngine):
+        geometry = GeometrySegment(0, 180, 30, 1.0)
+        clear = self._run(engine, geometry, shading_scope="beam")
+        beam_black = self._run(
+            engine, geometry, shading_factor=0.0, shading_scope="beam"
+        )
+        total_black = self._run(engine, geometry, shading_factor=0.0)
+        assert total_black.dc_power_w.iloc[0] == pytest.approx(0.0)
+        assert 0.0 < beam_black.dc_power_w.iloc[0] < clear.dc_power_w.iloc[0]
+
+    def test_applied_ratio_recovers_the_unshaded_power(self, engine: PhysicsEngine):
+        geometry = GeometrySegment(0, 180, 30, 1.0)
+        clear = self._run(engine, geometry, shading_scope="beam")
+        shaded = self._run(
+            engine, geometry, shading_factor=0.4, shading_scope="beam"
+        )
+        applied = shaded.shading_applied.iloc[0]
+        assert 0.4 < applied < 1.0
+        assert shaded.dc_power_w.iloc[0] == pytest.approx(
+            clear.dc_power_w.iloc[0] * applied, rel=1e-6
+        )
+
+    def test_beam_share_is_bounded_and_dark_at_night(self, engine: PhysicsEngine):
+        noon = self._run(engine, GeometrySegment(0, 180, 30, 1.0))
+        assert 0.7 <= noon.beam_share.iloc[0] <= 1.0
+        night = self._run(
+            engine, GeometrySegment(0, 180, 30, 1.0), ts=SUMMER_NOON - 12 * 3600
+        )
+        assert night.beam_share.iloc[0] == pytest.approx(0.0)
+        assert night.shading_applied.iloc[0] == pytest.approx(1.0)
+
+    def test_an_east_panel_has_no_beam_to_lose_in_the_afternoon(self, engine: PhysicsEngine):
+        # The v1.18 failure case: horizontal beam share was high while the
+        # panel's own plane saw none.
+        afternoon = SUMMER_NOON + 5 * 3600
+        geometry = GeometrySegment(0, 90, 35, 1.0)
+        clear = self._run(engine, geometry, ts=afternoon, shading_scope="beam")
+        assert clear.beam_share.iloc[0] < 0.15
+        shaded = self._run(
+            engine, geometry, ts=afternoon, shading_factor=0.05,
+            shading_scope="beam",
+        )
+        assert shaded.dc_power_w.iloc[0] == pytest.approx(
+            clear.dc_power_w.iloc[0], rel=0.16
+        )
+
+    def test_total_scope_is_unchanged_default(self, engine: PhysicsEngine):
+        geometry = GeometrySegment(0, 180, 30, 1.0)
+        default = self._run(engine, geometry, shading_factor=0.3)
+        explicit = self._run(
+            engine, geometry, shading_factor=0.3, shading_scope="total"
+        )
+        assert default.dc_power_w.iloc[0] == pytest.approx(
+            explicit.dc_power_w.iloc[0]
+        )
+        assert default.shading_applied.iloc[0] == pytest.approx(0.3)
+
+
 class TestTiltError:
     """The scenario from the spec: 60 deg vs 70 deg on a south-facing string.
 

@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.19.0
+
+### Changed
+
+- **Differential shade is now applied to the POA direct component inside
+  the physics chain** (`physics.run(shading_scope="beam")`), replacing the
+  horizontal `(GHI − DHI)/GHI` blend from 1.18 — the documented
+  approximation is gone. Diffuse light survives a shadow; an east panel in
+  the afternoon has no beam to lose and loses nothing. `StringResult` gains
+  `beam_share` (POA direct fraction) and `shading_applied` (ratio actually
+  applied; the unshaded divide-back uses it, cap handling unchanged).
+  Absolute maps keep scope "total".
+- **Stored beam values are now the string's own POA share** from the raw
+  physics run, learn and apply on one measure. Schema v5 nulls all v4 beam
+  values on upgrade (they carried horizontal semantics); nulled rows take
+  the down-weighted, never-inverted legacy path.
+- `_interval_power` returns `(power, beam_share)` per string; all three
+  internal callers updated.
+
 ## 1.18.0
 
 ### Changed

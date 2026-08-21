@@ -52,7 +52,7 @@ from .plausibility import (
     judgement_floor,
     plant_ceiling_w,
 )
-from .shading import ShadingModel
+from .shading import METHOD_DIFFERENTIAL, ShadingModel
 from .quality import (
     QUALITY_NIGHT,
     VALUE_LOWER_BOUND,
@@ -532,6 +532,7 @@ class ForecastEngine:
                 sub_index = index[mask]
                 sub = conditions.loc[mask]
                 shading_factor: pd.Series | float = 1.0
+                shading_scope = "total"
                 if shading_position is not None:
                     sub_position = shading_position.loc[mask]
                     shading_factor = pd.Series(
@@ -540,10 +541,14 @@ class ForecastEngine:
                             sub_position["azimuth"].to_numpy(),
                             sub_position["apparent_elevation"].to_numpy(),
                             [value.timestamp() for value in sub_index],
-                            beam=self._beam_share(sub, sub_index, sub_position),
                         ),
                         index=sub_index,
                     )
+                    # Differential cells hold the clear-day loss; physics
+                    # applies it to the POA beam component only.  Absolute
+                    # envelopes already average the weather in.
+                    if self.shading.method_of(string.string_id) == METHOD_DIFFERENTIAL:
+                        shading_scope = "beam"
                 result = self.physics.run(
                     sub_index,
                     segment,
@@ -555,9 +560,10 @@ class ForecastEngine:
                     system_efficiency=self.plant.efficiency_of(string.string_id),
                     mount_type=string.mount_type,
                     shading_factor=shading_factor,
+                    shading_scope=shading_scope,
                 )
                 power = result.dc_power_w.to_numpy()
-                # The chain is exactly linear in the shading factor -- it
+                # The chain is exactly linear in the *applied* ratio -- it
                 # scales the effective irradiance, and the cell temperature is
                 # taken from the unscaled plane irradiance -- so dividing it
                 # back out recovers the unshaded power without a second pass.
@@ -566,7 +572,7 @@ class ForecastEngine:
                 # though it could have made 860 W, when without the shadow it
                 # would simply have sat on its ceiling.
                 if isinstance(shading_factor, pd.Series):
-                    divisor = shading_factor.to_numpy()
+                    divisor = result.shading_applied.to_numpy()
                     bare = np.divide(
                         power, divisor, out=power.copy(), where=divisor > 0.0
                     )
@@ -700,7 +706,7 @@ class ForecastEngine:
         if conditions is None:
             return 0
 
-        potentials = self._interval_power(index, conditions)
+        potentials, _beams = self._interval_power(index, conditions)
         rows: dict[str, dict[int, Any]] = {}
         for string in self.plant.strings:
             rows[string.string_id] = {
@@ -807,13 +813,14 @@ class ForecastEngine:
         index: pd.DatetimeIndex,
         conditions: pd.DataFrame,
         apply_shading: bool = True,
-    ) -> dict[str, dict[int, float]]:
-        """Physical DC power per string per interval, keyed by interval start.
+    ) -> tuple[dict[str, dict[int, float]], dict[str, dict[int, float]]]:
+        """DC power and POA beam share per string per interval (start-keyed).
 
-        ``apply_shading`` must be false wherever the result is the denominator
-        of a shading observation.  Measuring the map against physics that
-        already contains the map would drive every ratio to one and freeze the
-        thing at whatever it happened to learn first.
+        Returns ``(power, beam_share)``.  ``apply_shading`` must be false
+        wherever the power is the denominator of a shading observation --
+        measuring the map against physics that already contains the map would
+        freeze it.  The beam share is geometry-only and unaffected by the
+        flag.
         """
         shading_position = (
             self.physics.solar_position(index)
@@ -825,11 +832,13 @@ class ForecastEngine:
         unique_hours = sorted({int(hour) for hour in hour_keys})
 
         out: dict[str, dict[int, float]] = {}
+        beam_out: dict[str, dict[int, float]] = {}
         for string in self.plant.strings:
             grouped = self._geometry_segments(string.string_id, unique_hours)
             if not grouped:
                 continue
             values: dict[int, float] = {}
+            beams: dict[int, float] = {}
             for segment, hours_in_segment in grouped:
                 mask = np.isin(hour_keys, hours_in_segment)
                 if not mask.any():
@@ -837,6 +846,7 @@ class ForecastEngine:
                 sub_index = index[mask]
                 sub = conditions.loc[mask]
                 shading_factor: pd.Series | float = 1.0
+                shading_scope = "total"
                 if shading_position is not None:
                     sub_position = shading_position.loc[mask]
                     shading_factor = pd.Series(
@@ -845,10 +855,14 @@ class ForecastEngine:
                             sub_position["azimuth"].to_numpy(),
                             sub_position["apparent_elevation"].to_numpy(),
                             [value.timestamp() for value in sub_index],
-                            beam=self._beam_share(sub, sub_index, sub_position),
                         ),
                         index=sub_index,
                     )
+                    if (
+                        self.shading.method_of(string.string_id)
+                        == METHOD_DIFFERENTIAL
+                    ):
+                        shading_scope = "beam"
                 result = self.physics.run(
                     sub_index,
                     segment,
@@ -860,15 +874,22 @@ class ForecastEngine:
                     system_efficiency=self.plant.efficiency_of(string.string_id),
                     mount_type=string.mount_type,
                     shading_factor=shading_factor,
+                    shading_scope=shading_scope,
                 )
                 sub_epochs = [
                     int(value.timestamp()) - INTERVAL_SECONDS // 2
                     for value in sub_index
                 ]
-                for ts, power in zip(sub_epochs, result.dc_power_w.to_numpy()):
+                for ts, power, beam in zip(
+                    sub_epochs,
+                    result.dc_power_w.to_numpy(),
+                    result.beam_share.to_numpy(),
+                ):
                     values[int(ts)] = float(power)
+                    beams[int(ts)] = float(beam)
             out[string.string_id] = values
-        return out
+            beam_out[string.string_id] = beams
+        return out, beam_out
 
     def _actual_conditions(
         self, index: pd.DatetimeIndex, start_ts: int, end_ts: int
@@ -1174,15 +1195,17 @@ class ForecastEngine:
         # everything downstream is measured against physics that does.  Sharing
         # one pass between them would either blind the map to its own subject
         # or let the same shadow be subtracted twice.
-        raw_interval = self._interval_power(index, conditions, apply_shading=False)
-        per_interval = self._interval_power(index, conditions)
+        raw_interval, raw_beams = self._interval_power(
+            index, conditions, apply_shading=False
+        )
+        per_interval, _shaded_beams = self._interval_power(index, conditions)
         hourly_physics = self._fold_hourly(per_interval)
         actual = {
             (row.ts_utc, row.string_id): row
             for row in self.store.hourly_range(start_ts, end_ts)
         }
 
-        self._collect_shading(index, conditions, raw_interval, stats)
+        self._collect_shading(index, raw_interval, raw_beams, stats)
 
         for (hour, string_id), row in sorted(actual.items()):
             physics_kwh = hourly_physics.get(string_id, {}).get(hour)
@@ -1245,53 +1268,11 @@ class ForecastEngine:
             out[string_id] = folded
         return out
 
-    def _beam_share(
-        self,
-        conditions: pd.DataFrame,
-        index: pd.DatetimeIndex,
-        solar_position: pd.DataFrame,
-    ) -> np.ndarray:
-        """Beam share of each interval's global irradiance, NaN where unknowable.
-
-        Feeds the shading model's learn- and apply-time scaling: a shadow only
-        costs beam, so a learned clear-day loss must be scaled by how much of
-        the moment's light was beam at all.  A clearness index is not that
-        number -- bright haze reads 0.6 with no beam in it, and multiplying a
-        beam shadow into pure diffuse subtracts light no obstacle ever took.
-        ``ghi - dhi`` is the horizontal beam component; where the source
-        carried no split (a measured GHI replaces the forecast and its
-        components are dropped), Erbs fills it in -- the same decomposition
-        the physics itself would use.  NaN means "apply in full" downstream:
-        ignorance degrades to the old behaviour, never to optimism.
-
-        Known approximation: this is the *horizontal* beam share, not the
-        plane-of-array one, and for a panel facing away from the sun the two
-        diverge.  It is the same measure on the learn side and the apply
-        side, so the divergence largely cancels through the clear-day
-        inversion -- and a shadow can only be learned in cells where the
-        panel actually saw beam, which self-limits the residual error to
-        cells that barely matter.  The exact fix is scaling only the POA
-        beam component inside the physics chain; that is a physics.run
-        surgery, not a patch here.
-        """
-        ghi = pd.Series(conditions["ghi"].to_numpy(dtype=float), index=index)
-        dhi = pd.Series(conditions["dhi"].to_numpy(dtype=float), index=index)
-        if dhi.isna().any():
-            _dni, derived = self.physics.decompose(
-                ghi.fillna(0.0), solar_position, index
-            )
-            dhi = dhi.where(dhi.notna(), derived)
-        ghi_values = ghi.to_numpy()
-        dhi_values = dhi.to_numpy()
-        with np.errstate(divide="ignore", invalid="ignore"):
-            share = np.clip((ghi_values - dhi_values) / ghi_values, 0.0, 1.0)
-        return np.where(ghi_values > 5.0, share, np.nan)
-
     def _collect_shading(
         self,
         index: pd.DatetimeIndex,
-        conditions: pd.DataFrame,
         potentials: dict[str, dict[int, float]],
+        beams: dict[str, dict[int, float]],
         stats: LearnStats,
     ) -> None:
         """Store raw shading observations for the sky map to be fitted from.
@@ -1300,22 +1281,22 @@ class ForecastEngine:
         is a lossy commitment.  Raw azimuth/elevation pairs can be binned any
         way we like once there is a year of them.
 
-        Each row carries the physics watts and the beam share of its moment
-        for the joint fit's nuisance terms.  Recorded now rather than
-        recomputed at refit time, because the weather rows they come from are
-        pruned on a far shorter leash than the observations themselves.
+        Each row carries the physics watts and the string's POA beam share
+        (from the raw, unshaded run) for the joint fit's nuisance terms.
+        Recorded at collect time because the weather rows are pruned on a far
+        shorter leash than the observations.
         """
         solar_position = self.physics.solar_position(index)
         epochs = [
             int(value.timestamp()) - INTERVAL_SECONDS // 2 for value in index
         ]
-        beam_values = self._beam_share(conditions, index, solar_position)
 
         payload: list[tuple[Any, ...]] = []
         for string in self.plant.strings:
             series = potentials.get(string.string_id)
             if not series:
                 continue
+            beam_series = beams.get(string.string_id, {})
             rows = {
                 int(row["ts_utc"]): row
                 for row in self.store.fivemin_range(
@@ -1345,7 +1326,7 @@ class ForecastEngine:
                 # Truly broken sensors land orders of magnitude out, not here.
                 if not 0.0 <= ratio <= 5.0:
                     continue
-                beam = float(beam_values[position])
+                beam = beam_series.get(ts)
                 payload.append(
                     (
                         ts,
@@ -1355,7 +1336,7 @@ class ForecastEngine:
                         ratio,
                         float(row["coverage"]),
                         float(physics_w),
-                        beam if np.isfinite(beam) else None,
+                        beam if beam is not None and np.isfinite(beam) else None,
                     )
                 )
         self.store.add_shading_obs(payload)

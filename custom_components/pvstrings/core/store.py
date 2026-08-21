@@ -31,7 +31,7 @@ SHADING_THIN_DAYS = 120
 
 _LOGGER = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS string_geometry (
@@ -267,6 +267,19 @@ class Store:
         with self._lock:
             current = self._conn.execute("PRAGMA user_version").fetchone()[0]
             self._conn.executescript(_SCHEMA)
+            if current == 4:
+                # v4 wrote *horizontal* beam shares; v5 stores the POA share.
+                # Nulled rows take the beam_known=False path (down-weighted,
+                # never inverted).  Before the version stamp, so a crash
+                # cannot leave a db marked v5 with horizontal values inside.
+                # Column check first: a v4 stamp without the column exists
+                # when the v4 migration itself crashed mid-way.
+                columns = {
+                    row[1]
+                    for row in self._conn.execute("PRAGMA table_info(shading_obs)")
+                }
+                if "beam" in columns:
+                    self._conn.execute("UPDATE shading_obs SET beam = NULL")
             if current < SCHEMA_VERSION:
                 _LOGGER.debug(
                     "pvstrings schema %s -> %s at %s", current, SCHEMA_VERSION, self.path

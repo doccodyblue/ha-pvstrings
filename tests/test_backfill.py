@@ -156,6 +156,14 @@ class TestReconstruction:
         result = self._run(physics, self._unshaded(physics))
         assert {row[5] for row in result.rows} == {BACKFILL_WEIGHT}
 
+    def test_rows_carry_a_plausible_poa_beam_share(self, physics):
+        # Bright-day fixture on a south panel: mostly beam, never out of range.
+        result = self._run(physics, self._unshaded(physics))
+        beams = [row[7] for row in result.rows if row[7] is not None]
+        assert beams, "bright hours must carry a beam share"
+        assert all(0.0 <= beam <= 1.0 for beam in beams)
+        assert max(beams) > 0.6
+
     def test_rows_are_stamped_at_the_middle_of_the_hour(self, physics):
         """The mean over an hour belongs to the mean sun position in it."""
         result = self._run(physics, self._unshaded(physics))

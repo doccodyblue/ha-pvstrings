@@ -632,7 +632,9 @@ class TestTheFactorReachesThePhysics:
         engine.load_models()
         return engine
 
-    def _uniform_map(self, string_id: str, factor: float) -> ShadingModel:
+    def _uniform_map(
+        self, string_id: str, factor: float, differential: bool = False
+    ) -> ShadingModel:
         """A map built by hand, not fitted.
 
         Fitting a uniformly darkened sky quite correctly yields no correction
@@ -650,7 +652,13 @@ class TestTheFactorReachesThePhysics:
             for azimuth in range(36)
             for elevation in range(19)
         }
-        return ShadingModel(maps={string_id: ShadingMap(cells=cells, reference=0.0)})
+        return ShadingModel(
+            maps={
+                string_id: ShadingMap(
+                    cells=cells, reference=0.0, differential=differential
+                )
+            }
+        )
 
     def _conditions(self, engine, start, end):
         index = engine._midpoint_index(start, end)
@@ -666,9 +674,9 @@ class TestTheFactorReachesThePhysics:
         index, conditions = self._conditions(engine, start, end)
         assert conditions is not None
 
-        raw = engine._interval_power(index, conditions, apply_shading=False)
+        raw, _rb = engine._interval_power(index, conditions, apply_shading=False)
         engine.shading = self._uniform_map("s1", 0.5)
-        shaded = engine._interval_power(index, conditions, apply_shading=True)
+        shaded, _sb = engine._interval_power(index, conditions, apply_shading=True)
 
         raw_total = sum(raw["s1"].values())
         shaded_total = sum(shaded["s1"].values())
@@ -683,9 +691,9 @@ class TestTheFactorReachesThePhysics:
         end = start + fe.HOUR
         fe.clear_sky_forecast(engine, seeded_store, start - fe.HOUR, start, hours=2)
         index, conditions = self._conditions(engine, start, end)
-        raw = engine._interval_power(index, conditions, apply_shading=False)
+        raw, _rb = engine._interval_power(index, conditions, apply_shading=False)
         engine.shading = self._uniform_map("s1", 0.5)
-        shaded = engine._interval_power(index, conditions, apply_shading=True)
+        shaded, _sb = engine._interval_power(index, conditions, apply_shading=True)
         assert sum(shaded["s2"].values()) == pytest.approx(sum(raw["s2"].values()))
 
     def test_an_empty_map_changes_nothing(self, seeded_store, plant):
@@ -696,9 +704,25 @@ class TestTheFactorReachesThePhysics:
         end = start + fe.HOUR
         fe.clear_sky_forecast(engine, seeded_store, start - fe.HOUR, start, hours=2)
         index, conditions = self._conditions(engine, start, end)
-        raw = engine._interval_power(index, conditions, apply_shading=False)
-        shaded = engine._interval_power(index, conditions, apply_shading=True)
+        raw, _rb = engine._interval_power(index, conditions, apply_shading=False)
+        shaded, _sb = engine._interval_power(index, conditions, apply_shading=True)
         assert sum(shaded["s1"].values()) == pytest.approx(sum(raw["s1"].values()))
+
+    def test_a_differential_map_spares_the_diffuse(self, seeded_store, plant):
+        """Same factor, beam scope: the diffuse floor survives the shadow."""
+        import test_forecast_engine as fe
+
+        engine = self._engine(seeded_store, plant)
+        start = fe.DAY_START + 11 * fe.HOUR
+        end = start + fe.HOUR
+        fe.clear_sky_forecast(engine, seeded_store, start - fe.HOUR, start, hours=2)
+        index, conditions = self._conditions(engine, start, end)
+        raw, _rb = engine._interval_power(index, conditions, apply_shading=False)
+        engine.shading = self._uniform_map("s1", 0.5, differential=True)
+        shaded, _sb = engine._interval_power(index, conditions, apply_shading=True)
+        raw_total = sum(raw["s1"].values())
+        shaded_total = sum(shaded["s1"].values())
+        assert raw_total * 0.5 < shaded_total < raw_total * 0.98
 
 
 class TestTheUserSwitchIsHonoured:

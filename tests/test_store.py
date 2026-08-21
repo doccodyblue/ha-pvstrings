@@ -762,3 +762,67 @@ class TestMigrationToJointShadingColumns:
             assert (1_700_000_600.0, 182.0, 32.0, 0.9, 1.0, None, None) in rows
         finally:
             store.close()
+
+
+class TestMigrationToPoaBeam:
+    """v4 -> v5: the beam column switches meaning (horizontal -> POA share).
+
+    Old values must not be read under the new meaning, so the upgrade nulls
+    them; nulled rows take the beam_known=False path.  Nulling happens before
+    the version stamp, so a crash cannot leave a v5-stamped db with
+    horizontal values inside.
+    """
+
+    V4_TABLE = """
+    CREATE TABLE shading_obs (
+        ts_utc        INTEGER NOT NULL,
+        string_id     TEXT    NOT NULL,
+        azimuth_deg   REAL    NOT NULL,
+        elevation_deg REAL    NOT NULL,
+        ratio         REAL    NOT NULL,
+        weight        REAL    NOT NULL,
+        physics_w     REAL,
+        beam          REAL,
+        PRIMARY KEY (ts_utc, string_id)
+    );
+    """
+
+    def _v4_database(self, tmp_path):
+        import sqlite3
+
+        path = tmp_path / "v4.db"
+        conn = sqlite3.connect(path)
+        conn.executescript(self.V4_TABLE)
+        conn.execute(
+            "INSERT INTO shading_obs VALUES (?,?,?,?,?,?,?,?)",
+            (1_700_000_000, "s1", 180.0, 30.0, 0.8, 1.0, 500.0, 0.82),
+        )
+        conn.execute("PRAGMA user_version=4")
+        conn.commit()
+        conn.close()
+        return path
+
+    def test_v4_beam_values_are_nulled(self, tmp_path):
+        store = Store(self._v4_database(tmp_path))
+        store.connect()
+        try:
+            rows = store.shading_rows_by_string()["s1"]
+            assert rows == [(1_700_000_000.0, 180.0, 30.0, 0.8, 1.0, 500.0, None)]
+        finally:
+            store.close()
+
+    def test_new_poa_values_survive_the_next_connect(self, tmp_path):
+        path = self._v4_database(tmp_path)
+        store = Store(path)
+        store.connect()
+        store.add_shading_obs(
+            [(1_700_000_300, "s1", 181.0, 31.0, 0.7, 1.0, 450.0, 0.9)]
+        )
+        store.close()
+        store = Store(path)
+        store.connect()
+        try:
+            rows = store.shading_rows_by_string()["s1"]
+            assert (1_700_000_300.0, 181.0, 31.0, 0.7, 1.0, 450.0, 0.9) in rows
+        finally:
+            store.close()

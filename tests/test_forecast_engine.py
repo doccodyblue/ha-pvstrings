@@ -415,7 +415,7 @@ class TestLearningCycle:
         conditions = engine._actual_conditions(
             index, DAY_START, DAY_START + 24 * HOUR
         )
-        power = engine._interval_power(index, conditions)
+        power, _beams = engine._interval_power(index, conditions)
 
         rows = []
         for string_id, series in power.items():
@@ -836,7 +836,7 @@ class TestTrackerCeiling:
         clear_sky_forecast(engine, seeded_store, DAY_START - HOUR, DAY_START, 24)
         index = engine._midpoint_index(DAY_START, DAY_START + 24 * HOUR)
         conditions = engine._actual_conditions(index, DAY_START, DAY_START + 24 * HOUR)
-        power = engine._interval_power(index, conditions)
+        power, _beams = engine._interval_power(index, conditions)
 
         rows = []
         for ts, watts in power["s3"].items():
@@ -862,7 +862,7 @@ class TestLearningCursor:
         conditions = engine._actual_conditions(
             index, DAY_START, DAY_START + hours * HOUR
         )
-        power = engine._interval_power(index, conditions)
+        power, _beams = engine._interval_power(index, conditions)
         store.upsert_5min(
             [
                 (ts, sid, w * 0.85 * 300 / 3600, w * 0.85, 1.0, 10, None, None,

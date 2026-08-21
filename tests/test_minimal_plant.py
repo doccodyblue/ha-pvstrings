@@ -89,7 +89,7 @@ class TestLearningWithoutSensors:
     def _measure(self, engine: ForecastEngine, store: Store, ratio: float) -> None:
         index = engine._midpoint_index(DAY_START, DAY_START + 24 * HOUR)
         conditions = engine._actual_conditions(index, DAY_START, DAY_START + 24 * HOUR)
-        power = engine._interval_power(index, conditions)
+        power, _beams = engine._interval_power(index, conditions)
         rows = [
             (ts, sid, watts * ratio * 300 / 3600, watts * ratio, 1.0, 10, None, None,
              "measured")

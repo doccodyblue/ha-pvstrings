@@ -48,6 +48,14 @@ class StringResult:
     poa_global: pd.Series
     cell_temp_c: pd.Series
     aoi_deg: pd.Series
+    #: POA direct fraction of effective irradiance, [0, 1], 0 at night.
+    #: Always a Series on ``index``; computed from the unscaled components.
+    beam_share: pd.Series | None = None
+    #: Ratio actually applied to effective irradiance -- equals shading_factor
+    #: for scope "total", the beam-blended ratio for scope "beam".  The chain
+    #: is linear in this (before the nameplate cap), so dividing dc by it
+    #: recovers unshaded power.
+    shading_applied: pd.Series | None = None
 
     def energy_kwh(self, interval_seconds: int) -> float:
         return float(self.dc_power_w.sum()) * interval_seconds / 3600.0 / 1000.0
@@ -337,10 +345,14 @@ class PhysicsEngine:
         system_efficiency: float = 0.90,
         mount_type: str = "insulated_back",
         shading_factor: pd.Series | float = 1.0,
+        shading_scope: str = "total",
     ) -> StringResult:
         """Full chain for one string over one time index.
 
         ``index`` must already be the interval **midpoints**.
+        ``shading_scope``: "total" multiplies the whole effective irradiance
+        (absolute maps); "beam" shades only the POA direct component
+        (differential maps -- an obstacle cannot take diffuse light).
         """
         solar_position = self.solar_position(index)
         dni_ok, dhi_ok, plausible = self.ensure_components(
@@ -373,8 +385,25 @@ class PhysicsEngine:
         # Reflection losses matter most at large incidence angles -- precisely
         # the regime where a wrong tilt shows up, so it must not be swallowed.
         iam = pvlib.iam.ashrae(aoi).fillna(0.0)
-        effective = (poa["poa_direct"] * iam + poa["poa_diffuse"]).clip(lower=0.0)
-        effective = effective * shading_factor
+        direct = (poa["poa_direct"] * iam).clip(lower=0.0).fillna(0.0)
+        diffuse = poa["poa_diffuse"].clip(lower=0.0).fillna(0.0)
+        unscaled = direct + diffuse
+        beam_share = pd.Series(
+            np.where(unscaled > 0.0, direct / unscaled.where(unscaled > 0.0), 0.0),
+            index=index,
+        )
+        factor = pd.Series(shading_factor, index=index, dtype=float)
+        if shading_scope == "beam":
+            effective = direct * factor + diffuse
+            applied = pd.Series(
+                np.where(
+                    unscaled > 0.0, effective / unscaled.where(unscaled > 0.0), 1.0
+                ),
+                index=index,
+            )
+        else:
+            effective = unscaled * factor
+            applied = factor
 
         params = TEMPERATURE_MODEL_PARAMETERS["sapm"][
             MOUNT_TYPES.get(mount_type, MOUNT_TYPES["insulated_back"])
@@ -403,6 +432,8 @@ class PhysicsEngine:
             poa_global=poa["poa_global"].fillna(0.0),
             cell_temp_c=cell_temp,
             aoi_deg=aoi,
+            beam_share=beam_share.fillna(0.0),
+            shading_applied=applied.fillna(1.0),
         )
 
     # -- helpers used by the forecast orchestrator ------------------------- #
