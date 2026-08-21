@@ -13,3 +13,4 @@ SPEC.md
 # tokens, and none of that belongs in a public repository.
 _logs/
 AGENTS.md
+upgrade.md
