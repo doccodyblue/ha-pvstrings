@@ -31,7 +31,7 @@ SHADING_THIN_DAYS = 120
 
 _LOGGER = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS string_geometry (
@@ -138,6 +138,13 @@ CREATE TABLE IF NOT EXISTS shading_obs (
     elevation_deg REAL    NOT NULL,
     ratio         REAL    NOT NULL,
     weight        REAL    NOT NULL,
+    -- The two nuisance-term inputs of the joint fit: the denominator's watts
+    -- (so a bright string outweighs a sliver of dawn when the plant-wide
+    -- moment is estimated) and the beam share of the moment's irradiance (so
+    -- overcast rows cannot vote a beam shadow away).  NULL on rows written
+    -- before v4.
+    physics_w     REAL,
+    beam          REAL,
     PRIMARY KEY (ts_utc, string_id)
 );
 
@@ -266,6 +273,22 @@ class Store:
                 )
                 pending = current
                 self._conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+        # Unconditional, not gated on the version: the version stamp above is
+        # written before the ALTERs run, so a crash between the two would
+        # leave a database marked current with the columns missing -- and a
+        # version-gated check would then never look again.  A PRAGMA per
+        # connect is what the self-healing costs.
+        with self._lock:
+            columns = {
+                row[1]
+                for row in self._conn.execute("PRAGMA table_info(shading_obs)")
+            }
+            if "physics_w" not in columns:
+                self._conn.execute(
+                    "ALTER TABLE shading_obs ADD COLUMN physics_w REAL"
+                )
+            if "beam" not in columns:
+                self._conn.execute("ALTER TABLE shading_obs ADD COLUMN beam REAL")
         if pending is not None and pending < 3:
             # ``CREATE TABLE IF NOT EXISTS`` in _SCHEMA only shapes a *new*
             # database; an existing one keeps its old columns and every insert
@@ -992,38 +1015,47 @@ class Store:
     # -- shading ----------------------------------------------------------- #
 
     def add_shading_obs(self, rows: Iterable[tuple[Any, ...]]) -> None:
-        payload = list(rows)
+        # Rows written before the joint fit existed carry six fields; pad them
+        # so one INSERT serves both writers instead of forking the statement.
+        payload = [
+            tuple(row) + (None,) * (8 - len(row)) for row in rows
+        ]
         if not payload:
             return
         with self._tx() as conn:
             conn.executemany(
                 """
                 INSERT INTO shading_obs
-                    (ts_utc, string_id, azimuth_deg, elevation_deg, ratio, weight)
-                VALUES (?, ?, ?, ?, ?, ?)
+                    (ts_utc, string_id, azimuth_deg, elevation_deg, ratio,
+                     weight, physics_w, beam)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (ts_utc, string_id) DO UPDATE SET
                     azimuth_deg   = excluded.azimuth_deg,
                     elevation_deg = excluded.elevation_deg,
                     ratio         = excluded.ratio,
-                    weight        = excluded.weight
+                    weight        = excluded.weight,
+                    physics_w     = excluded.physics_w,
+                    beam          = excluded.beam
                 """,
                 payload,
             )
 
     def shading_rows_by_string(
         self,
-    ) -> dict[str, list[tuple[float, float, float, float, float]]]:
+    ) -> dict[str, list[tuple[Any, ...]]]:
         """Every usable observation, grouped by string, for a map refit.
 
         Returned as plain tuples rather than rows: the fitter is pure and must
-        stay testable without a database behind it.
+        stay testable without a database behind it.  The trailing two fields
+        are ``None`` on rows written before schema v4.
         """
         rows = self._query(
-            "SELECT ts_utc, string_id, azimuth_deg, elevation_deg, ratio, weight "
+            "SELECT ts_utc, string_id, azimuth_deg, elevation_deg, ratio, "
+            "weight, physics_w, beam "
             "FROM shading_obs ORDER BY string_id",
             (),
         )
-        grouped: dict[str, list[tuple[float, float, float, float, float]]] = {}
+        grouped: dict[str, list[tuple[Any, ...]]] = {}
         for row in rows:
             grouped.setdefault(row["string_id"], []).append(
                 (
@@ -1032,6 +1064,8 @@ class Store:
                     float(row["elevation_deg"]),
                     float(row["ratio"]),
                     float(row["weight"]),
+                    None if row["physics_w"] is None else float(row["physics_w"]),
+                    None if row["beam"] is None else float(row["beam"]),
                 )
             )
         return grouped

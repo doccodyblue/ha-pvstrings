@@ -701,3 +701,64 @@ class TestMigrationToRainProbability:
             assert len(store._query("SELECT * FROM weather_forecast", ())) == 1
         finally:
             store.close()
+
+
+class TestMigrationToJointShadingColumns:
+    """Schema v4: the shading table grows the joint fit's two nuisance inputs.
+
+    Same trap as the rain probability column: ``CREATE TABLE IF NOT EXISTS``
+    leaves an existing table alone, and the first eight-field insert after the
+    upgrade would fail on the arity -- on precisely the installations whose
+    observation history makes the joint fit worth having.
+    """
+
+    V3_TABLE = """
+    CREATE TABLE shading_obs (
+        ts_utc        INTEGER NOT NULL,
+        string_id     TEXT    NOT NULL,
+        azimuth_deg   REAL    NOT NULL,
+        elevation_deg REAL    NOT NULL,
+        ratio         REAL    NOT NULL,
+        weight        REAL    NOT NULL,
+        PRIMARY KEY (ts_utc, string_id)
+    );
+    """
+
+    def _v3_database(self, tmp_path):
+        import sqlite3
+
+        path = tmp_path / "v3.db"
+        conn = sqlite3.connect(path)
+        conn.executescript(self.V3_TABLE)
+        conn.execute(
+            "INSERT INTO shading_obs VALUES (?,?,?,?,?,?)",
+            (1_700_000_000, "s1", 180.0, 30.0, 0.8, 1.0),
+        )
+        conn.execute("PRAGMA user_version=3")
+        conn.commit()
+        conn.close()
+        return path
+
+    def test_old_rows_read_back_with_empty_trailing_fields(self, tmp_path):
+        store = Store(self._v3_database(tmp_path))
+        store.connect()
+        try:
+            rows = store.shading_rows_by_string()["s1"]
+            assert rows == [(1_700_000_000.0, 180.0, 30.0, 0.8, 1.0, None, None)]
+        finally:
+            store.close()
+
+    def test_new_rows_write_into_the_migrated_table(self, tmp_path):
+        store = Store(self._v3_database(tmp_path))
+        store.connect()
+        try:
+            store.add_shading_obs(
+                [(1_700_000_300, "s1", 181.0, 31.0, 0.7, 1.0, 450.0, 0.85)]
+            )
+            # A pre-v4 writer may still hand over six-field rows.
+            store.add_shading_obs([(1_700_000_600, "s1", 182.0, 32.0, 0.9, 1.0)])
+            rows = store.shading_rows_by_string()["s1"]
+            assert (1_700_000_300.0, 181.0, 31.0, 0.7, 1.0, 450.0, 0.85) in rows
+            assert (1_700_000_600.0, 182.0, 32.0, 0.9, 1.0, None, None) in rows
+        finally:
+            store.close()

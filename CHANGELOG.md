@@ -1,5 +1,88 @@
 # Changelog
 
+## 1.18.0
+
+### Changed
+
+- **The sky map is now fitted differentially against sibling strings.** On a
+  plant with two or more strings, every observation is decomposed as
+  `level(string) + moment(timestamp) + shade(cell)` in log space, over three
+  fixed alternating rounds. The moment term — cloud edges the irradiance
+  sensor missed, enhancement, physics running low across the whole site — is
+  common to all strings and cancels out; only the shade stays with the
+  string. This ends the known blind spot of the capped reference: a shadow on
+  a string whose every cell beats physics (true clear ratio above 1) was
+  invisible for up to `1 − 1/A` of its depth. Measured on the reference
+  installation: a string shaded until 13:00 delivered 46–61 % of its
+  kWp-normalised sibling all morning while the map deducted 15–25 %. The
+  level is estimated, reported, and *not* applied — it remains the log-ratio
+  layer's to learn, from its own comparison, as before. Single-string plants
+  keep the absolute fit with the capped reference unchanged.
+- **Within a cell, shade is the beam-weighted median of residuals, not the
+  80 % envelope — each residual first inverted to the clear-day loss it
+  implies.** A shadow only costs beam, so overcast observations — in which
+  the obstacle takes nothing — no longer vote a shadow away. This is what
+  let a heavily shaded cell read as 20 % loss: half its observations were
+  grey days on which the shadow could not bite, and the envelope read
+  exactly those as proof of clear view. The inversion (from the Codex
+  review) keeps partly-clear observations from being blended twice: a loss
+  seen at half beam is stored as the clear-day figure, so applying it back
+  at half beam returns what was measured. Rows that predate the beam column
+  are down-weighted by an agnostic default but never inverted by it — that
+  would double every shadow in the store for the first weeks after the
+  upgrade.
+- **The correction scales with the beam share of the forecast irradiance at
+  apply time** — `(ghi − dhi)/ghi`, with Erbs filling the split where a
+  measured GHI replaced the forecast components. Not a clearness index:
+  bright haze reads kt 0.6 with no beam in it, and multiplying a beam shadow
+  into pure diffuse subtracts light no obstacle ever took (Codex review).
+  Unknown share applies in full — ignorance degrades to the old behaviour,
+  never to optimism. Absolute (single-string) maps ignore it: their envelope
+  already averages the weather in.
+- **Only co-observed epochs count** (Codex review): observations with no
+  sibling at the same timestamp are excluded from level and shade fitting —
+  a lone observation cannot say what was moment and what was string — and a
+  plant whose strings share fewer than fifty five-minute epochs falls back
+  to the absolute fit entirely, instead of calling disjoint histories
+  "differential". The gate is per string: inside a differential plant, a
+  string the joint fit could not cross-check keeps the absolute map it
+  would have had on its own (an empty differential map would read "no
+  shade" on exactly that string), and beam scaling is decided per map so
+  that its mixed-weather envelope is never blended on top. The sky-map
+  sensor's `fit_method` reports the per-string answer.
+- **Known approximation, deliberately kept:** the beam share is the
+  *horizontal* one, not plane-of-array. Learn and apply use the same
+  measure, so the divergence largely cancels through the clear-day
+  inversion, and a shadow can only be learned where the panel actually saw
+  beam — the residual error is confined to cells that barely matter. The
+  exact fix (scaling only the POA beam component inside the physics chain)
+  is noted in `_beam_share` for a future release.
+- **Shading observations now record the physics watts and the beam share of
+  their moment** (store schema v4, additive migration; the column check is
+  unconditional on connect, so a crash mid-migration self-heals instead of
+  leaving a v4-stamped database without v4 columns — Codex review). Old rows
+  keep contributing with agnostic defaults; within two weeks of normal
+  collection the new columns dominate. The raw-ratio cap for new
+  observations widened from 2.0 to 5.0 — with a level of 1.5, genuine cloud
+  enhancement lands above 2.0 and clipping it biased the moment term low.
+- **The sky-map sensor's `reference_ratio` attribute is replaced by `level`
+  and `fit_method`.** The reference was 1.0 by construction after the cap and
+  said nothing; the level is the number that was missing — what the string
+  delivers, relative to physics, where nothing is in the way (`None` on
+  single-string plants). Model diagnostics nest per-string summaries under
+  `shading.strings`, next to `shading.method` and `shading.levels`. Every
+  grid cell — seasonal splits included, per half of the year — keeps its raw
+  measured-over-physics envelope next to the loss, so a differential map
+  stays readable the same way the absolute one was (Codex review).
+
+### Fixed
+
+- **Strang 2 Süd 60 mornings.** The concrete case this release exists for:
+  heavy shading until 13:00, confirmed on site and in the data, that the
+  capped absolute map structurally could not learn. The existing observation
+  store refits under the new estimator on the first restart — nothing needs
+  to be re-collected.
+
 ## 1.17.0
 
 ### Added

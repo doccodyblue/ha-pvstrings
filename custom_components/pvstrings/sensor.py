@@ -533,7 +533,12 @@ STRING_SENSORS: tuple[StringSensorDescription, ...] = (
         value_fn=lambda data, sid: len(data.sky_map.get(sid) or []),
         attrs_fn=lambda data, sid: {
             "cells": data.sky_map.get(sid) or [],
-            "reference_ratio": data.sky_reference.get(sid),
+            # What this string delivers relative to physics where nothing is
+            # in the way.  Only the differential fit can know it; on a
+            # single-string plant it is None and the map is an absolute
+            # envelope with a capped reference, as before.
+            "level": data.sky_level.get(sid),
+            "fit_method": data.sky_method.get(sid),
         },
     ),
     StringSensorDescription(

@@ -540,6 +540,7 @@ class ForecastEngine:
                             sub_position["azimuth"].to_numpy(),
                             sub_position["apparent_elevation"].to_numpy(),
                             [value.timestamp() for value in sub_index],
+                            beam=self._beam_share(sub, sub_index, sub_position),
                         ),
                         index=sub_index,
                     )
@@ -844,6 +845,7 @@ class ForecastEngine:
                             sub_position["azimuth"].to_numpy(),
                             sub_position["apparent_elevation"].to_numpy(),
                             [value.timestamp() for value in sub_index],
+                            beam=self._beam_share(sub, sub_index, sub_position),
                         ),
                         index=sub_index,
                     )
@@ -1180,7 +1182,7 @@ class ForecastEngine:
             for row in self.store.hourly_range(start_ts, end_ts)
         }
 
-        self._collect_shading(index, raw_interval, stats)
+        self._collect_shading(index, conditions, raw_interval, stats)
 
         for (hour, string_id), row in sorted(actual.items()):
             physics_kwh = hourly_physics.get(string_id, {}).get(hour)
@@ -1243,9 +1245,52 @@ class ForecastEngine:
             out[string_id] = folded
         return out
 
+    def _beam_share(
+        self,
+        conditions: pd.DataFrame,
+        index: pd.DatetimeIndex,
+        solar_position: pd.DataFrame,
+    ) -> np.ndarray:
+        """Beam share of each interval's global irradiance, NaN where unknowable.
+
+        Feeds the shading model's learn- and apply-time scaling: a shadow only
+        costs beam, so a learned clear-day loss must be scaled by how much of
+        the moment's light was beam at all.  A clearness index is not that
+        number -- bright haze reads 0.6 with no beam in it, and multiplying a
+        beam shadow into pure diffuse subtracts light no obstacle ever took.
+        ``ghi - dhi`` is the horizontal beam component; where the source
+        carried no split (a measured GHI replaces the forecast and its
+        components are dropped), Erbs fills it in -- the same decomposition
+        the physics itself would use.  NaN means "apply in full" downstream:
+        ignorance degrades to the old behaviour, never to optimism.
+
+        Known approximation: this is the *horizontal* beam share, not the
+        plane-of-array one, and for a panel facing away from the sun the two
+        diverge.  It is the same measure on the learn side and the apply
+        side, so the divergence largely cancels through the clear-day
+        inversion -- and a shadow can only be learned in cells where the
+        panel actually saw beam, which self-limits the residual error to
+        cells that barely matter.  The exact fix is scaling only the POA
+        beam component inside the physics chain; that is a physics.run
+        surgery, not a patch here.
+        """
+        ghi = pd.Series(conditions["ghi"].to_numpy(dtype=float), index=index)
+        dhi = pd.Series(conditions["dhi"].to_numpy(dtype=float), index=index)
+        if dhi.isna().any():
+            _dni, derived = self.physics.decompose(
+                ghi.fillna(0.0), solar_position, index
+            )
+            dhi = dhi.where(dhi.notna(), derived)
+        ghi_values = ghi.to_numpy()
+        dhi_values = dhi.to_numpy()
+        with np.errstate(divide="ignore", invalid="ignore"):
+            share = np.clip((ghi_values - dhi_values) / ghi_values, 0.0, 1.0)
+        return np.where(ghi_values > 5.0, share, np.nan)
+
     def _collect_shading(
         self,
         index: pd.DatetimeIndex,
+        conditions: pd.DataFrame,
         potentials: dict[str, dict[int, float]],
         stats: LearnStats,
     ) -> None:
@@ -1254,11 +1299,17 @@ class ForecastEngine:
         Deliberately not rasterised on write: a fixed grid built from thin data
         is a lossy commitment.  Raw azimuth/elevation pairs can be binned any
         way we like once there is a year of them.
+
+        Each row carries the physics watts and the beam share of its moment
+        for the joint fit's nuisance terms.  Recorded now rather than
+        recomputed at refit time, because the weather rows they come from are
+        pruned on a far shorter leash than the observations themselves.
         """
         solar_position = self.physics.solar_position(index)
         epochs = [
             int(value.timestamp()) - INTERVAL_SECONDS // 2 for value in index
         ]
+        beam_values = self._beam_share(conditions, index, solar_position)
 
         payload: list[tuple[Any, ...]] = []
         for string in self.plant.strings:
@@ -1288,8 +1339,13 @@ class ForecastEngine:
                 if not physics_w or physics_w <= 0:
                     continue
                 ratio = float(row["power_mean_w"]) / physics_w
-                if not 0.0 <= ratio <= 2.0:
+                # Five, not two: a string whose physics runs at two thirds
+                # meets genuine cloud enhancement well above 2.0, and clipping
+                # those moments would bias the joint fit's moment term low.
+                # Truly broken sensors land orders of magnitude out, not here.
+                if not 0.0 <= ratio <= 5.0:
                     continue
+                beam = float(beam_values[position])
                 payload.append(
                     (
                         ts,
@@ -1298,6 +1354,8 @@ class ForecastEngine:
                         elevation,
                         ratio,
                         float(row["coverage"]),
+                        float(physics_w),
+                        beam if np.isfinite(beam) else None,
                     )
                 )
         self.store.add_shading_obs(payload)

@@ -200,6 +200,8 @@ def _rows_for_string(
         physics_w = result.dc_power_w.to_numpy()
         elevation = position["apparent_elevation"].to_numpy()
         azimuth = position["azimuth"].to_numpy()
+        ghi_values = ghi.to_numpy(dtype=float)
+        dhi_values = dhi.to_numpy(dtype=float)
 
         for offset, hour in enumerate(segment_hours):
             if elevation[offset] < MIN_ELEVATION_DEG:
@@ -214,6 +216,18 @@ def _rows_for_string(
             if not MIN_RATIO <= ratio <= MAX_RATIO:
                 rejected += 1
                 continue
+            # Beam share of the hour's global irradiance, for the joint fit's
+            # weighting -- None when the archive carried no split, and the
+            # fit falls back to its agnostic default.
+            hour_ghi = float(ghi_values[offset])
+            hour_dhi = float(dhi_values[offset])
+            beam = (
+                max(0.0, min(1.0, (hour_ghi - hour_dhi) / hour_ghi))
+                if math.isfinite(hour_ghi)
+                and math.isfinite(hour_dhi)
+                and hour_ghi > 5.0
+                else None
+            )
             rows.append(
                 (
                     int(hour + MIDPOINT_OFFSET_S),
@@ -222,6 +236,8 @@ def _rows_for_string(
                     float(elevation[offset]),
                     ratio,
                     BACKFILL_WEIGHT,
+                    expected,
+                    beam,
                 )
             )
     if rejected and rejected > len(rows):

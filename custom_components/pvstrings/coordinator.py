@@ -131,9 +131,15 @@ class PvStringsData:
     #: changes only on a refit, and the recorder can then reuse one stored
     #: attribute blob instead of writing the map out on every update.
     sky_map: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
-    #: Per string, the ratio the map treats as "nothing in the way".  A flat
-    #: map only means something next to it.
-    sky_reference: dict[str, float | None] = field(default_factory=dict)
+    #: Per string, what it delivers relative to physics where nothing is in
+    #: the way -- the joint fit's level term.  A flat map only means something
+    #: next to it; ``None`` on a single-string plant, whose absolute fit
+    #: cannot know its own level.
+    sky_level: dict[str, float | None] = field(default_factory=dict)
+    #: Per string: "differential" when fitted against siblings, "absolute"
+    #: otherwise.  Per string because one plant can hold both -- a string
+    #: with no epochs in common with its siblings keeps an absolute map.
+    sky_method: dict[str, str] = field(default_factory=dict)
     #: What the sky is expected to do today and tomorrow, from the same
     #: forecast rows that drive the yield prediction.
     outlook: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -553,14 +559,27 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
             string.string_id: self.engine.shading.grid(string.string_id)
             for string in self.plant.strings
         }
-        data.sky_reference = {
-            string.string_id: self.engine.shading.reference_ratio(string.string_id)
+        data.sky_level = {
+            string.string_id: self.engine.shading.level(string.string_id)
+            for string in self.plant.strings
+        }
+        data.sky_method = {
+            string.string_id: self.engine.shading.method_of(string.string_id)
             for string in self.plant.strings
         }
         data.model_summary = {
             "log_ratio": self.engine.model.summary(),
             "ghi_bias": self.engine.ghi_bias.summary(),
-            "shading": self.engine.shading.summary(),
+            "shading": {
+                "method": self.engine.shading.method,
+                "levels": {
+                    string_id: round(value, 3)
+                    for string_id, value in sorted(
+                        self.engine.shading.levels.items()
+                    )
+                },
+                "strings": self.engine.shading.summary(),
+            },
             "observations": self.engine.model.observations_seen,
         }
         return data

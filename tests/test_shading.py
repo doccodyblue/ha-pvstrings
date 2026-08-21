@@ -848,3 +848,296 @@ class TestTheGridShowsTheShape:
     def test_an_unsplit_map_reports_only_pooled_cells(self):
         sky = ShadingMap.fit(full_sky(1.0))
         assert {c["season"] for c in sky.grid()} == {None}
+
+
+def joint_sky(
+    specs: dict,
+    days: int = 30,
+    beam=1.0,
+    moment=None,
+    epoch0: float = SUMMER,
+) -> dict[str, list[tuple]]:
+    """Physically consistent rows for several strings watching one sun.
+
+    One sweep across the southern sky per day; at every epoch all strings
+    observe at once, which is what the joint fit's moment term feeds on.
+    ``specs`` maps a string id to its ``level`` and an optional ``shade`` of
+    ``{(azimuth, elevation): clear-day transmission}``.  The shadow costs beam
+    only: at beam share ``b`` the measured ratio is
+    ``level * moment * (1 - b * (1 - transmission))``, which is also the
+    model the forecast applies -- the fixture and the fit share one physics.
+    """
+    positions = [
+        (float(azimuth), elevation)
+        for azimuth in range(90, 271, 10)
+        for elevation in (15.0, 25.0, 35.0, 45.0)
+    ]
+    rows: dict[str, list[tuple]] = {string_id: [] for string_id in specs}
+    for day in range(days):
+        for offset, (azimuth, elevation) in enumerate(positions):
+            ts = epoch0 + day * DAY + offset * 300
+            common = moment(ts) if moment else 1.0
+            clearness = beam(ts) if callable(beam) else beam
+            for string_id, spec in specs.items():
+                transmission = spec.get("shade", {}).get((azimuth, elevation), 1.0)
+                biting = 1.0 - clearness * (1.0 - transmission)
+                rows[string_id].append(
+                    (
+                        ts,
+                        azimuth,
+                        elevation,
+                        spec["level"] * common * biting,
+                        1.0,
+                        100.0 * spec["level"],
+                        clearness,
+                    )
+                )
+    return rows
+
+
+class TestDifferential:
+    """Shade as a difference between siblings.
+
+    These pin the property the absolute fit could not have: a shadow on a
+    string whose physics runs low everywhere.  Where a shared shadow splits
+    across siblings, three fixed rounds leave a geometric remnant -- the
+    assertions below expect the improvement, not perfection.
+    """
+
+    def test_a_shadow_survives_a_level_above_parity(self):
+        """The S2 case: every cell beats physics, the morning is still dark."""
+        rows = joint_sky(
+            {
+                "victron": {"level": 1.5, "shade": {(110.0, 35.0): 0.5}},
+                "garden": {"level": 1.3},
+            }
+        )
+        model = ShadingModel.fit(rows)
+        assert model.method == "differential"
+        assert model.factor("victron", 110.0, 36.0) < 0.65
+        assert model.factor("victron", 200.0, 36.0) == pytest.approx(1.0, abs=0.05)
+        assert model.factor("garden", 110.0, 36.0) == pytest.approx(1.0, abs=0.05)
+        # The absolute fit sees the same rows and understates the same shadow:
+        # 1.5 x 0.5 = 0.75 against a reference capped at parity reads as a
+        # quarter lost, not half.
+        assert ShadingMap.fit(rows["victron"]).factor(110.0, 36.0) > 0.7
+
+    def test_cloud_moments_cancel_between_siblings(self):
+        moment = lambda ts: (0.7, 1.0, 1.3)[int(ts // 300) % 3]  # noqa: E731
+        model = ShadingModel.fit(
+            joint_sky(
+                {
+                    "a": {"level": 1.0, "shade": {(110.0, 35.0): 0.5}},
+                    "b": {"level": 1.0},
+                },
+                moment=moment,
+            )
+        )
+        assert model.factor("a", 110.0, 36.0) < 0.68
+        assert model.factor("a", 200.0, 36.0) == pytest.approx(1.0, abs=0.05)
+        for azimuth in (90.0, 150.0, 200.0, 260.0):
+            assert model.factor("b", azimuth, 36.0) == pytest.approx(1.0, abs=0.05)
+
+    def test_overcast_days_cannot_vote_the_shadow_away(self):
+        """Half the days are grey and the obstacle takes nothing on them.
+
+        The envelope read exactly those days as proof of clear view; the
+        clearness weight makes them bystanders instead of voters.
+        """
+        clearness = lambda ts: 1.0 if int(ts // DAY) % 2 == 0 else 0.05  # noqa: E731
+        rows = joint_sky(
+            {
+                "a": {"level": 1.0, "shade": {(110.0, 35.0): 0.4}},
+                "b": {"level": 1.0},
+            },
+            days=40,
+            beam=clearness,
+        )
+        model = ShadingModel.fit(rows)
+        assert model.factor("a", 110.0, 36.0) < 0.6
+        assert ShadingMap.fit(rows["a"]).factor(110.0, 36.0) > 0.9
+
+    def test_two_strings_sharing_one_shadow_both_keep_it(self):
+        model = ShadingModel.fit(
+            joint_sky(
+                {
+                    "a": {"level": 1.4, "shade": {(110.0, 35.0): 0.4}},
+                    "b": {"level": 1.2, "shade": {(110.0, 35.0): 0.6}},
+                    "c": {"level": 1.0},
+                }
+            )
+        )
+        assert model.factor("a", 110.0, 36.0) < 0.65
+        assert model.factor("b", 110.0, 36.0) < 0.95
+        assert model.factor("a", 110.0, 36.0) < model.factor("b", 110.0, 36.0)
+        assert model.factor("c", 110.0, 36.0) == pytest.approx(1.0, abs=0.05)
+
+    def test_a_single_string_keeps_the_absolute_fit(self):
+        model = ShadingModel.fit({"only": full_sky(ratio=0.7)})
+        assert model.method == "absolute"
+        assert model.level("only") is None
+        assert model.factor("only", 180.0, 30.0) == 1.0
+
+    def test_the_level_is_reported_not_applied(self):
+        model = ShadingModel.fit(
+            joint_sky({"hot": {"level": 1.5}, "cool": {"level": 0.9}})
+        )
+        assert model.level("hot") == pytest.approx(1.5, rel=0.1)
+        assert model.level("cool") == pytest.approx(0.9, rel=0.1)
+        assert model.factor("hot", 180.0, 35.0) == pytest.approx(1.0, abs=0.05)
+        assert model.factor("cool", 180.0, 35.0) == pytest.approx(1.0, abs=0.05)
+
+    def test_clearness_scales_the_applied_correction(self):
+        model = ShadingModel.fit(
+            joint_sky(
+                {
+                    "a": {"level": 1.0, "shade": {(110.0, 35.0): 0.5}},
+                    "b": {"level": 1.0},
+                }
+            )
+        )
+        geometric = model.factor("a", 110.0, 36.0)
+        assert geometric < 0.65
+        assert model.factor("a", 110.0, 36.0, beam=0.0) == pytest.approx(1.0)
+        assert model.factor("a", 110.0, 36.0, beam=1.0) == pytest.approx(geometric)
+        assert model.factor("a", 110.0, 36.0, beam=0.5) == pytest.approx(
+            1.0 - 0.5 * (1.0 - geometric)
+        )
+        # Unknown clearness applies in full -- ignorance degrades to the old
+        # behaviour, never to optimism.
+        vector = model.factors("a", [110.0], [36.0], beam=[float("nan")])
+        assert vector[0] == pytest.approx(geometric)
+
+    def test_an_absolute_map_ignores_clearness(self):
+        model = ShadingModel.fit({"only": shade(full_sky(1.0), 110.0, 15.0, 0.2)})
+        geometric = model.factor("only", 110.0, 16.0)
+        assert geometric < 0.5
+        assert model.factor("only", 110.0, 16.0, beam=0.0) == pytest.approx(geometric)
+
+    def test_a_loss_seen_at_half_beam_is_stored_as_the_clear_day_loss(self):
+        """The inversion: partial-beam residuals must not be double-blended.
+
+        Sixty days of half-beam sky observe the shaded cell at 0.75.  Stored
+        as-is, apply-time blending would scale that by the beam share *again*
+        and predict 0.875 for the very weather it was measured in.  Inverted
+        to the clear-day 0.5 first, the round trip returns 0.75.
+        """
+        model = ShadingModel.fit(
+            joint_sky(
+                {
+                    "a": {"level": 1.0, "shade": {(110.0, 35.0): 0.5}},
+                    "b": {"level": 1.0},
+                },
+                days=60,
+                beam=0.5,
+            )
+        )
+        # Clear-day figure, held back only by the shrinkage.
+        assert model.factor("a", 110.0, 36.0) < 0.65
+        # The round trip: applied at the beam share it was learned at, the
+        # prediction lands on what was actually measured there.
+        assert model.factor("a", 110.0, 36.0, beam=0.5) == pytest.approx(
+            0.75, abs=0.06
+        )
+
+    def test_disjoint_histories_cannot_pretend_to_difference(self):
+        """Two strings that never observed together have no common moments.
+
+        "Differential" over disjoint data would read one string's private
+        weather as shade; without enough shared epochs the fit must say so
+        and fall back to the absolute per-string maps.
+        """
+        first = joint_sky({"a": {"level": 1.0}}, days=10)
+        second = joint_sky(
+            {"b": {"level": 1.0}}, days=10, epoch0=SUMMER + 100 * DAY
+        )
+        model = ShadingModel.fit({"a": first["a"], "b": second["b"]})
+        assert model.method == "absolute"
+        assert model.level("a") is None
+
+    def test_a_string_nobody_could_cross_check_keeps_its_absolute_map(self):
+        """Mixed overlap: two siblings difference, the third stands alone.
+
+        The lone string must get the absolute map it would have had on its
+        own -- an empty differential map would read "no shade" on exactly
+        the string with the un-cross-checkable history.  And because its
+        envelope already averages the weather in, no beam blending on top.
+        """
+        joint = joint_sky(
+            {
+                "a": {"level": 1.0, "shade": {(110.0, 35.0): 0.5}},
+                "b": {"level": 1.0},
+            }
+        )
+        alone = joint_sky(
+            {"c": {"level": 1.0, "shade": {(110.0, 35.0): 0.3}}},
+            days=40,
+            epoch0=SUMMER + 200 * DAY,
+        )
+        model = ShadingModel.fit(
+            {"a": joint["a"], "b": joint["b"], "c": alone["c"]},
+            now_ts=SUMMER + 241 * DAY,
+        )
+        assert model.method == "differential"
+        assert model.method_of("a") == "differential"
+        assert model.method_of("c") == "absolute"
+        assert model.level("c") is None
+        # The lone shadow survives via the absolute path...
+        shaded_c = model.factor("c", 110.0, 36.0)
+        assert shaded_c < 0.5
+        # ...and is not beam-blended: the envelope already holds the weather.
+        assert model.factor("c", 110.0, 36.0, beam=0.3) == pytest.approx(shaded_c)
+        # The differencing pair is untouched by the bystander.
+        assert model.factor("a", 110.0, 36.0) < 0.65
+        assert model.factor("b", 110.0, 36.0) == pytest.approx(1.0, abs=0.05)
+
+    def test_legacy_five_field_rows_still_fit_jointly(self):
+        """Rows written before v4 carry no watts and no beam share.
+
+        They are down-weighted by the agnostic default but never *inverted*
+        by it -- dividing a clear-day residual by an assumed half beam would
+        double every shadow in the store for the first weeks after an
+        upgrade.
+        """
+        rows = joint_sky(
+            {
+                "shaded": {"level": 1.0, "shade": {(110.0, 35.0): 0.4}},
+                "clear": {"level": 1.0},
+            },
+            days=60,
+        )
+        legacy = {
+            string_id: [row[:5] for row in string_rows]
+            for string_id, string_rows in rows.items()
+        }
+        model = ShadingModel.fit(legacy)
+        assert model.method == "differential"
+        shaded = model.factor("shaded", 110.0, 36.0)
+        # Legacy ignorance understates: with the beam unknown, part of the
+        # shadow leaks into the moment term and the observed 0.4 surfaces as
+        # roughly 0.6.  The bound to hold is the *other* side -- the naive
+        # inversion would have doubled it to ~0.16, and that must not happen.
+        assert 0.3 < shaded < 0.7
+        assert model.factor("clear", 110.0, 36.0) == pytest.approx(1.0, abs=0.05)
+
+    def test_the_grid_keeps_the_raw_ratio_next_to_the_loss(self):
+        """A residual alone cannot say what the string actually did there."""
+        model = ShadingModel.fit(
+            joint_sky(
+                {
+                    "victron": {"level": 1.5, "shade": {(110.0, 35.0): 0.5}},
+                    "garden": {"level": 1.3},
+                }
+            )
+        )
+        cells = {
+            (cell["az"], cell["el"]): cell
+            for cell in model.grid("victron")
+            if cell["season"] is None
+        }
+        shaded = cells[(110.0, 35.0)]
+        open_sky = cells[(200.0, 35.0)]
+        assert shaded["ratio"] == pytest.approx(0.75, abs=0.05)
+        assert open_sky["ratio"] == pytest.approx(1.5, abs=0.1)
+        assert shaded["loss"] > 30.0
+        assert open_sky["loss"] == pytest.approx(0.0, abs=2.0)
