@@ -95,6 +95,7 @@ CONF_MPPT_EFFICIENCY: Final = "mppt_efficiency"
 CONF_CHARGE_EFFICIENCY: Final = "charge_efficiency"
 CONF_DISCHARGE_EFFICIENCY: Final = "discharge_efficiency"
 CONF_AC_POWER_ENTITY: Final = "ac_power_entity"
+CONF_MPPT_OUTPUT: Final = "mppt_output_entity"
 
 OUTPUT_PATH_NONE: Final = "none"
 OUTPUT_PATH_DIRECT: Final = "direct"

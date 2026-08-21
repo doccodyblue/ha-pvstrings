@@ -20,6 +20,28 @@
   limits (`semantics` attribute says so). Config entry minor version 2
   with `async_migrate_entry`; group flow gains a second, path-shaped
   step. Two-step Codex review per upgrade.md §11.
+- **Conversion stages are now measured, not just asserted.** Where both
+  sides of a stage exist as entities, the collector records the pair every
+  five minutes into `conversion_5min` (store schema v6): the inverter stage
+  from a group's `ac_power_entity` against its members' DC sum, the MPPT
+  stage from a string's new `mppt_output_entity` against its panel power.
+  Rows are self-contained so they outlive the compaction of the telemetry
+  they came from, and the learn pass stamps each one censored or clean once
+  physics has judged the interval — a pair from a curtailed interval
+  measures the limit, not the stage. Nothing reads the data yet: this is
+  the training set for fitting the efficiency curves, and every day not
+  collected is a day lost. Evidence counts appear in diagnostics under
+  `conversion_evidence`.
+
+### Fixed
+
+- **Storage-path forecasts no longer report `curve_source: neutral`.** The
+  path has no curve, but its flat factors are applied — "neutral" claimed
+  battery charge equalled the DC forecast while it was 7 % below it. Now
+  `fixed_factors`, with the applied multiplier as `conversion_factor`.
+
+### Added
+
 - **`reset_learning` accepts an optional `string_id`** — the surgical
   repair after correcting one string's geometry: only that string's
   shading observations and factors are discarded; plant scope, ghi_bias

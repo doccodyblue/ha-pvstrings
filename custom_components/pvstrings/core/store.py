@@ -17,7 +17,7 @@ import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Sequence
+from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 from .config import INTERVAL_SECONDS, GeometrySegment
 
@@ -31,7 +31,7 @@ SHADING_THIN_DAYS = 120
 
 _LOGGER = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS string_geometry (
@@ -58,6 +58,32 @@ CREATE TABLE IF NOT EXISTS string_5min (
     PRIMARY KEY (ts_utc, string_id)
 );
 CREATE INDEX IF NOT EXISTS ix_string_5min_string ON string_5min (string_id, ts_utc);
+
+-- Measured pairs across one conversion stage, for learning its efficiency
+-- curve later.  Self-contained on purpose: string_5min is raw telemetry and
+-- is compacted away, these are training data and outlive it.
+--
+-- ``members`` records which strings fed the input *at measuring time* --
+-- group membership is editable, and re-deriving it later would censor a
+-- pair against strings that were not in it.  ``curtailable`` records
+-- whether anything could have held this scope back, which is what makes an
+-- unjudged interval readable: no limit and no battery means nothing could
+-- bind, otherwise a NULL verdict is unknown and the pair is unusable.
+-- ``censored`` stays NULL until physics has judged, same as limit_binding.
+CREATE TABLE IF NOT EXISTS conversion_5min (
+    ts_utc      INTEGER NOT NULL,
+    scope_id    TEXT    NOT NULL,  -- group_id (inverter) / string_id (mppt)
+    stage       TEXT    NOT NULL,  -- 'inverter' | 'mppt'
+    in_w        REAL,
+    out_w       REAL,
+    coverage    REAL    NOT NULL,
+    members     TEXT    NOT NULL,  -- comma-separated string ids
+    curtailable INTEGER NOT NULL,
+    censored    INTEGER,
+    PRIMARY KEY (ts_utc, scope_id, stage)
+);
+CREATE INDEX IF NOT EXISTS ix_conversion_scope
+    ON conversion_5min (scope_id, stage, ts_utc);
 
 CREATE TABLE IF NOT EXISTS weather_actual_5min (
     ts_utc       INTEGER PRIMARY KEY,
@@ -1130,6 +1156,132 @@ class Store:
             )
         }
 
+    # -- conversion stages --------------------------------------------------- #
+
+    def upsert_conversion(self, rows: Iterable[tuple[Any, ...]]) -> None:
+        """``(ts, scope_id, stage, in_w, out_w, coverage, members, curtailable)``.
+
+        ``censored`` is left alone on conflict: physics stamps it later and a
+        re-flush of the same interval must not undo that verdict.
+        """
+        payload = list(rows)
+        if not payload:
+            return
+        with self._tx() as conn:
+            conn.executemany(
+                """
+                INSERT INTO conversion_5min
+                    (ts_utc, scope_id, stage, in_w, out_w, coverage,
+                     members, curtailable)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (ts_utc, scope_id, stage) DO UPDATE SET
+                    in_w        = excluded.in_w,
+                    out_w       = excluded.out_w,
+                    coverage    = excluded.coverage,
+                    members     = excluded.members,
+                    curtailable = excluded.curtailable
+                """,
+                payload,
+            )
+
+    def mark_conversion_censored(self, start_ts: int, end_ts: int) -> int:
+        """Carry the physics verdict over onto the conversion pairs.
+
+        An interval in which any contributing string was held back says
+        nothing about conversion efficiency -- the output followed a limit,
+        not the input.  Judged after the fact because the collector cannot
+        know it at write time.
+
+        Membership comes from the row's own ``members``, not from current
+        configuration: a group edited between measuring and learning would
+        otherwise be censored against strings that never fed it.
+
+        A pair is unusable unless every contributing string is a clean,
+        judged measurement.  ``limit_binding IS NULL`` means physics has not
+        decided, which is only harmless where nothing could bind anyway --
+        hence the ``curtailable`` test rather than treating NULL as "free".
+        """
+        with self._tx() as conn:
+            cur = conn.execute(
+                """
+                UPDATE conversion_5min SET censored = COALESCE((
+                    SELECT CASE
+                        -- Every contributing string must be present and
+                        -- clean; a missing row is missing evidence, and a
+                        -- partial input against a full output would read as
+                        -- an efficiency the stage never had.
+                        WHEN COUNT(*) < (
+                            length(conversion_5min.members)
+                            - length(replace(conversion_5min.members, ',', ''))
+                            + 1
+                        ) THEN 1
+                        ELSE MAX(CASE
+                            WHEN s.value_kind <> 'measured' THEN 1
+                            WHEN s.limit_binding = 1 THEN 1
+                            WHEN s.limit_binding IS NULL
+                                 AND (conversion_5min.curtailable = 1
+                                      OR s.limit_commanded_w IS NOT NULL) THEN 1
+                            ELSE 0 END)
+                    END
+                      FROM string_5min s
+                     WHERE s.ts_utc = conversion_5min.ts_utc
+                       AND instr(
+                           ',' || conversion_5min.members || ',',
+                           ',' || s.string_id || ','
+                       ) > 0
+                ), 1)
+                WHERE ts_utc >= ? AND ts_utc < ?
+                """,
+                (start_ts, end_ts),
+            )
+            return cur.rowcount
+
+    def conversion_rows(
+        self, scope_id: str | None = None, uncensored_only: bool = True
+    ) -> list[tuple[Any, ...]]:
+        """Training pairs, newest last.  The fit consumes these (phase 4b)."""
+        # in_w > 0 belt-and-braces: the collector already refuses loadless
+        # intervals, but a fit dividing by this must never see a zero.
+        sql = (
+            "SELECT ts_utc, scope_id, stage, in_w, out_w, coverage, censored "
+            "FROM conversion_5min "
+            "WHERE in_w > 0 AND out_w IS NOT NULL AND out_w >= 0"
+        )
+        params: list[Any] = []
+        if uncensored_only:
+            sql += " AND COALESCE(censored, 1) = 0"
+        if scope_id:
+            sql += " AND scope_id = ?"
+            params.append(scope_id)
+        sql += " ORDER BY ts_utc"
+        return [
+            (
+                int(r["ts_utc"]),
+                r["scope_id"],
+                r["stage"],
+                float(r["in_w"]),
+                float(r["out_w"]),
+                float(r["coverage"]),
+                r["censored"],
+            )
+            for r in self._query(sql, params)
+        ]
+
+    def conversion_counts(self) -> dict[str, dict[str, int]]:
+        """Per scope: how much usable evidence has accumulated so far."""
+        out: dict[str, dict[str, int]] = {}
+        for row in self._query(
+            "SELECT scope_id, stage, COUNT(*) AS n, "
+            "SUM(CASE WHEN COALESCE(censored, 1) = 0 THEN 1 ELSE 0 END) AS usable "
+            "FROM conversion_5min GROUP BY scope_id, stage",
+            (),
+        ):
+            out[f"{row['scope_id']}|{row['stage']}"] = {
+                "rows": int(row["n"]),
+                "usable": int(row["usable"] or 0),
+            }
+        return out
+
     def shading_count(self, string_id: str | None = None) -> int:
         sql = "SELECT COUNT(*) AS n FROM shading_obs"
         params: list[Any] = []
@@ -1350,6 +1502,16 @@ class Store:
                 (now_ts - SHADING_THIN_DAYS * 86400,),
             )
             deleted["shading_obs"] = cur.rowcount + cur2.rowcount
+
+            # Conversion pairs are training data, not telemetry: they follow
+            # the shading horizon, not the raw one, and are never dropped
+            # just because string_5min was compacted -- they are complete on
+            # their own precisely so that can happen.
+            cur = conn.execute(
+                "DELETE FROM conversion_5min WHERE ts_utc < ?",
+                (now_ts - shading_days * 86400,),
+            )
+            deleted["conversion_5min"] = cur.rowcount
 
             # Backstop: nothing may outlive every rule above.  The condensing
             # rules keep one row per target hour indefinitely, which is the

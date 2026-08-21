@@ -53,6 +53,20 @@ _LOGGER = logging.getLogger(__name__)
 BUFFER_RETENTION_S = INTERVAL_SECONDS * 2
 
 
+def _usable_pair(in_w: float | None, out_w: float | None) -> bool:
+    """Is this interval an efficiency observation at all?
+
+    Needs load on the input: a night interval reads 0 in and 0 out, which is
+    not a measurement of anything and would divide by zero in a fit.  A
+    negative output is a sign-convention mismatch on the sensor, never a
+    conversion.  Zero output *under* load is kept -- that is the inverter's
+    start threshold, which is real behaviour at the bottom of the curve.
+    """
+    if in_w is None or out_w is None:
+        return False
+    return in_w > 0.0 and out_w >= 0.0
+
+
 def _numeric(state: Any) -> float | None:
     """Parse a state object into a float, or ``None`` if it carries no value.
 
@@ -255,9 +269,12 @@ class Collector:
             string_rows = self._build_string_rows(window_start, window_end)
             plant_row = self._build_plant_row(window_start, window_end)
             weather_row = self._build_weather_row(window_start, window_end)
+            conversion_rows = self._build_conversion_rows(
+                window_start, window_end, string_rows
+            )
 
             await self.hass.async_add_executor_job(
-                self._write, string_rows, plant_row, weather_row
+                self._write, string_rows, plant_row, weather_row, conversion_rows
             )
         except Exception as err:  # noqa: BLE001 - a bad interval must not kill the loop
             self.stats.write_errors += 1
@@ -277,12 +294,15 @@ class Collector:
         string_rows: list[tuple[Any, ...]],
         plant_row: tuple[Any, ...] | None,
         weather_row: tuple[Any, ...] | None,
+        conversion_rows: list[tuple[Any, ...]] | None = None,
     ) -> None:
         self.store.upsert_5min(string_rows)
         if plant_row is not None:
             self.store.upsert_plant_state([plant_row])
         if weather_row is not None:
             self.store.upsert_weather_actual([weather_row])
+        if conversion_rows:
+            self.store.upsert_conversion(conversion_rows)
 
     # ------------------------------------------------------------------ #
     # row construction
@@ -389,6 +409,118 @@ class Collector:
             )
             self.stats.coverage_last[string.string_id] = round(coverage, 3)
         return rows
+
+    def _build_conversion_rows(
+        self, start: int, end: int, string_rows: list[tuple[Any, ...]]
+    ) -> list[tuple[Any, ...]]:
+        """Measured pairs across a conversion stage, where both sides exist.
+
+        The input side is already in ``string_rows`` -- panel power for an
+        MPPT, the members' DC sum for an inverter -- so only the far side is
+        read here.  Rows are written whole so they survive the compaction of
+        the telemetry they came from; censoring is stamped later, by physics.
+
+        Nothing downstream reads these yet: they are the training set the
+        efficiency curves will be fitted to instead of asserted from a
+        datasheet.
+        """
+        # power_mean_w sits at index 3 of the string row tuple, coverage at 4.
+        power_by_string = {row[1]: row[3] for row in string_rows}
+        coverage_by_string = {row[1]: row[4] for row in string_rows}
+        rows: list[tuple[Any, ...]] = []
+
+        for string in self.plant.strings:
+            if not string.mppt_output_entity:
+                continue
+            in_w = power_by_string.get(string.string_id)
+            out_w, out_coverage = self._integrated_power(
+                string.mppt_output_entity, start, end
+            )
+            if not _usable_pair(in_w, out_w):
+                continue
+            group = (
+                self.plant.group(string.curtailment_group_id)
+                if string.curtailment_group_id
+                else None
+            )
+            rows.append(
+                (
+                    start,
+                    string.string_id,
+                    "mppt",
+                    float(in_w),
+                    float(out_w),
+                    # Both sides, because a pair is only as good as its
+                    # thinner half.
+                    min(float(coverage_by_string.get(string.string_id) or 0.0),
+                        out_coverage),
+                    string.string_id,
+                    # A tracker cap binds without any group limit, so it
+                    # counts here too: this flag decides whether an unjudged
+                    # interval may be read as free.
+                    int(
+                        bool(string.max_power_w)
+                        or bool(group and (group.has_limit or group.battery_coupled))
+                    ),
+                )
+            )
+
+        for group in self.plant.groups:
+            if not group.ac_power_entity:
+                continue
+            members = self.plant.strings_in_group(group.group_id)
+            values = [
+                power_by_string.get(member.string_id) for member in members
+            ]
+            if not members or any(value is None for value in values):
+                # A partial DC sum against a full AC reading would look like
+                # an efficiency above one and poison the fit.
+                continue
+            out_w, out_coverage = self._integrated_power(
+                group.ac_power_entity, start, end
+            )
+            if not _usable_pair(sum(values), out_w):
+                continue
+            coverages = [
+                coverage_by_string.get(member.string_id) or 0.0
+                for member in members
+            ] + [out_coverage]
+            rows.append(
+                (
+                    start,
+                    group.group_id,
+                    "inverter",
+                    float(sum(values)),
+                    float(out_w),
+                    float(min(coverages)),
+                    ",".join(member.string_id for member in members),
+                    int(
+                        group.has_limit
+                        or group.battery_coupled
+                        or any(member.max_power_w for member in members)
+                    ),
+                )
+            )
+        return rows
+
+    def _integrated_power(
+        self, entity_id: str, start: int, end: int
+    ) -> tuple[float | None, float]:
+        """Time-weighted mean power and its coverage, in watts.
+
+        The same integration the string side gets: a plain sample mean would
+        pair a fully covered input against an output seen for one minute and
+        call the result a measurement.
+        """
+        buffer = self._buffers.get(entity_id)
+        if buffer is None:
+            return None, 0.0
+        _wh, power_mean, coverage, _count, _peak = integrate(
+            buffer.window(start, end), start, end, self.plant.watchdog_seconds
+        )
+        if power_mean is None:
+            return None, coverage
+        return power_mean * self._power_scale(entity_id), coverage
 
     def _mean_entity(
         self,

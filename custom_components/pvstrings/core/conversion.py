@@ -18,6 +18,10 @@ from typing import Mapping, Sequence
 CURVE_DATASHEET = "datasheet"
 CURVE_CUSTOM = "custom"
 CURVE_NEUTRAL = "neutral"
+#: The storage path has no curve at all -- its stages are flat configured
+#: factors.  Reporting "neutral" there claimed the output equalled the input
+#: while the factors were in fact applied.
+CURVE_FIXED = "fixed_factors"
 
 #: (load_pct_of_rated, efficiency) support points, sorted by load.
 Curve = Sequence[tuple[float, float]]
@@ -31,6 +35,9 @@ class ConversionResult:
     clipped_kwh: float
     curve_source: str
     stages: tuple[str, ...]
+    #: Flat multiplier, for paths whose stages are constants rather than a
+    #: load-dependent curve.  ``None`` where efficiency varies per hour.
+    factor: float | None = None
 
 
 def interpolate(curve: Curve, load_fraction: float) -> float:
@@ -118,8 +125,9 @@ def convert_storage(
             hour: max(0.0, value) * factor for hour, value in hourly_kwh.items()
         },
         clipped_kwh=0.0,
-        curve_source=CURVE_NEUTRAL,
+        curve_source=CURVE_FIXED,
         stages=stages,
+        factor=round(factor, 4),
     )
 
 

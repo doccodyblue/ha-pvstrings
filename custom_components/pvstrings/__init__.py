@@ -36,6 +36,7 @@ from .const import (
     CONF_FORECAST_CLIPPING,
     CONF_INVERTER_MODEL,
     CONF_MPPT_EFFICIENCY,
+    CONF_MPPT_OUTPUT,
     CONF_OUTPUT_PATH,
     INVERTER_MODELS,
     OUTPUT_PATH_NONE,
@@ -233,6 +234,7 @@ def build_plant_config(hass: HomeAssistant, entry: ConfigEntry) -> PlantConfig:
                 mount_type=data.get(CONF_MOUNT_TYPE, "insulated_back"),
                 max_power_w=data.get(CONF_MAX_POWER) or None,
                 charger_state_entity=data.get(CONF_CHARGER_STATE) or None,
+                mppt_output_entity=data.get(CONF_MPPT_OUTPUT) or None,
             )
         )
 

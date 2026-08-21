@@ -46,6 +46,11 @@ async def async_get_config_entry_diagnostics(
                 string.string_id: coordinator.store.shading_count(string.string_id)
                 for string in plant.strings
             },
+            # How much measured evidence has accumulated per conversion
+            # stage -- the readiness signal for fitting curves instead of
+            # asserting them.  Grouped in the executor: this table is
+            # long-lived training data, not a handful of rows.
+            "conversion_evidence": coordinator.store.conversion_counts(),
             # The last day of folded hours, verbatim.  Every question about
             # why the model is not learning ends here -- coverage, quality and
             # value kind per hour per string -- and without them the diagnosis

@@ -150,7 +150,8 @@
             "energy_entity": "Energiesensor (nur Gegenprüfung)",
             "string_efficiency": "Abweichender Strang-Wirkungsgrad (0 = Anlagenwert)",
             "max_power_w": "Obergrenze des MPPT-Eingangs in W (0 = keine)",
-            "charger_state_entity": "Reglerzustand (optional, z. B. Victron)"
+            "charger_state_entity": "Reglerzustand (optional, z. B. Victron)",
+            "mppt_output_entity": "Ausgang des Ladereglers (optional)"
           },
           "data_description": {
             "kwp": "Summe der Datenblatt-Nennleistungen (STC) der Module an diesem Eingang. DC-Modulleistung — nicht die AC-Leistung des Wechselrichters.",
@@ -158,7 +159,8 @@
             "energy_entity": "Nur Gegenprüfung; fließt nie in die Prognose ein.",
             "string_efficiency": "Bruch zwischen 0.5 und 1.0, z. B. 0.85. Bei 0 gilt der Anlagenwert.",
             "max_power_w": "Hardware-Grenze dieses einzelnen Tracker-Eingangs, z. B. 430 W je Kanal bei vielen Mikrowechselrichtern. Deckelt die Prognose und markiert Messwerte an der Grenze als zensiert.",
-            "charger_state_entity": "Text-Zustand wie Victrons bulk/absorption/float. In absorption oder float gilt die gemessene Leistung als wirksames Limit."
+            "charger_state_entity": "Text-Zustand wie Victrons bulk/absorption/float. In absorption oder float gilt die gemessene Leistung als wirksames Limit.",
+            "mppt_output_entity": "Batterieseitige Leistung des MPPT-Ladereglers dieses Strangs. Zusammen mit der Panel-Leistung oben ergibt das ein Messpaar — damit lässt sich der MPPT-Wirkungsgrad später lernen statt annehmen. Wird nur aufgezeichnet, noch nicht genutzt."
           }
         },
         "reconfigure": {
@@ -176,7 +178,8 @@
             "energy_entity": "Energiesensor (nur Gegenprüfung)",
             "string_efficiency": "Abweichender Strang-Wirkungsgrad (0 = Anlagenwert)",
             "max_power_w": "Obergrenze des MPPT-Eingangs in W (0 = keine)",
-            "charger_state_entity": "Reglerzustand (optional, z. B. Victron)"
+            "charger_state_entity": "Reglerzustand (optional, z. B. Victron)",
+            "mppt_output_entity": "Ausgang des Ladereglers (optional)"
           },
           "data_description": {
             "kwp": "Summe der Datenblatt-Nennleistungen (STC) der Module an diesem Eingang. DC-Modulleistung — nicht die AC-Leistung des Wechselrichters.",
@@ -184,7 +187,8 @@
             "energy_entity": "Nur Gegenprüfung; fließt nie in die Prognose ein.",
             "string_efficiency": "Bruch zwischen 0.5 und 1.0, z. B. 0.85. Bei 0 gilt der Anlagenwert.",
             "max_power_w": "Hardware-Grenze dieses einzelnen Tracker-Eingangs, z. B. 430 W je Kanal bei vielen Mikrowechselrichtern. Deckelt die Prognose und markiert Messwerte an der Grenze als zensiert.",
-            "charger_state_entity": "Text-Zustand wie Victrons bulk/absorption/float. In absorption oder float gilt die gemessene Leistung als wirksames Limit."
+            "charger_state_entity": "Text-Zustand wie Victrons bulk/absorption/float. In absorption oder float gilt die gemessene Leistung als wirksames Limit.",
+            "mppt_output_entity": "Batterieseitige Leistung des MPPT-Ladereglers dieses Strangs. Zusammen mit der Panel-Leistung oben ergibt das ein Messpaar — damit lässt sich der MPPT-Wirkungsgrad später lernen statt annehmen. Wird nur aufgezeichnet, noch nicht genutzt."
           }
         },
         "geometry": {
@@ -193,7 +197,11 @@
           "data": {
             "geometry_mode": "Gültigkeit",
             "valid_from": "Gültig ab",
-            "note": "Notiz (z. B. „Halter Winterstellung“)"
+            "note": "Notiz (z. B. „Halter Winterstellung“)",
+            "mppt_output_entity": "Ausgang des Ladereglers (optional)"
+          },
+          "data_description": {
+            "mppt_output_entity": "Batterieseitige Leistung des MPPT-Ladereglers dieses Strangs. Zusammen mit der Panel-Leistung oben ergibt das ein Messpaar — damit lässt sich der MPPT-Wirkungsgrad später lernen statt annehmen. Wird nur aufgezeichnet, noch nicht genutzt."
           }
         }
       },

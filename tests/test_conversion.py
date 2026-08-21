@@ -14,6 +14,7 @@ import pytest
 from core.conversion import (
     CURVE_CUSTOM,
     CURVE_DATASHEET,
+    CURVE_FIXED,
     CURVE_NEUTRAL,
     convert_direct,
     convert_group,
@@ -81,6 +82,18 @@ class TestStorage:
         out = convert_storage({0: 1.0}, 0.97, 0.96)
         assert out.hourly_kwh[0] == pytest.approx(0.97 * 0.96)
         assert out.stages == ("mppt_efficiency", "charge_efficiency")
+
+    def test_it_does_not_claim_to_be_neutral(self):
+        """Regression: "neutral" says output equals input, and it does not.
+
+        The storage path has no curve, but its flat factors are very much
+        applied -- reporting CURVE_NEUTRAL made a dashboard state that the
+        battery charge equalled the DC forecast while it was 7 % below it.
+        """
+        out = convert_storage({0: 1.0}, 0.97, 0.96)
+        assert out.curve_source == CURVE_FIXED
+        assert out.factor == pytest.approx(0.9312)
+        assert out.hourly_kwh[0] < 1.0
 
     def test_without_external_mppt_only_charge_applies(self):
         out = convert_storage({0: 1.0}, None, 0.96)

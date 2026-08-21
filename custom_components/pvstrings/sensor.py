@@ -895,6 +895,10 @@ class GroupConversionSensor(PvStringsEntity):
             "stages": list(group.converted.stages),
             "semantics": _AC_SEMANTICS if self._direct else _STORAGE_SEMANTICS,
         }
+        if group.converted.factor is not None:
+            # Flat-factor paths: the number that was actually applied, so a
+            # card need not infer it from the ratio of two rounded totals.
+            out["conversion_factor"] = group.converted.factor
         if self._direct:
             out["clipped_kwh"] = group.converted.clipped_kwh
             if "clipping" in group.converted.stages:

@@ -150,7 +150,8 @@
             "energy_entity": "Energy sensor (cross-check only)",
             "string_efficiency": "String efficiency override (0 = use plant value)",
             "max_power_w": "MPPT input ceiling in W (0 = none)",
-            "charger_state_entity": "Charger state (optional, e.g. Victron)"
+            "charger_state_entity": "Charger state (optional, e.g. Victron)",
+            "mppt_output_entity": "Charge controller output (optional)"
           },
           "data_description": {
             "kwp": "Sum of the module datasheet ratings (STC) on this input. This is DC module power -- not the inverter's AC rating.",
@@ -158,7 +159,8 @@
             "energy_entity": "Cross-check only; it never feeds the forecast.",
             "string_efficiency": "Fraction between 0.5 and 1.0, e.g. 0.85. Leave at 0 to inherit the plant value.",
             "max_power_w": "Hardware cap of this single tracker input, e.g. 430 W per channel on many micro-inverters. Caps the forecast and marks measurements at the cap as censored.",
-            "charger_state_entity": "A text state such as Victron's bulk/absorption/float. In absorption or float the measured power is treated as the effective limit."
+            "charger_state_entity": "A text state such as Victron's bulk/absorption/float. In absorption or float the measured power is treated as the effective limit.",
+            "mppt_output_entity": "Battery-side power of this string's MPPT charge controller. With the panel power above it forms a measured pair, which lets the MPPT efficiency be learned instead of assumed. Collected only; nothing uses it yet."
           }
         },
         "reconfigure": {
@@ -176,7 +178,8 @@
             "energy_entity": "Energy sensor (cross-check only)",
             "string_efficiency": "String efficiency override (0 = use plant value)",
             "max_power_w": "MPPT input ceiling in W (0 = none)",
-            "charger_state_entity": "Charger state (optional, e.g. Victron)"
+            "charger_state_entity": "Charger state (optional, e.g. Victron)",
+            "mppt_output_entity": "Charge controller output (optional)"
           },
           "data_description": {
             "kwp": "Sum of the module datasheet ratings (STC) on this input. This is DC module power -- not the inverter's AC rating.",
@@ -184,7 +187,8 @@
             "energy_entity": "Cross-check only; it never feeds the forecast.",
             "string_efficiency": "Fraction between 0.5 and 1.0, e.g. 0.85. Leave at 0 to inherit the plant value.",
             "max_power_w": "Hardware cap of this single tracker input, e.g. 430 W per channel on many micro-inverters. Caps the forecast and marks measurements at the cap as censored.",
-            "charger_state_entity": "A text state such as Victron's bulk/absorption/float. In absorption or float the measured power is treated as the effective limit."
+            "charger_state_entity": "A text state such as Victron's bulk/absorption/float. In absorption or float the measured power is treated as the effective limit.",
+            "mppt_output_entity": "Battery-side power of this string's MPPT charge controller. With the panel power above it forms a measured pair, which lets the MPPT efficiency be learned instead of assumed. Collected only; nothing uses it yet."
           }
         },
         "geometry": {
@@ -193,7 +197,11 @@
           "data": {
             "geometry_mode": "Validity",
             "valid_from": "Valid from",
-            "note": "Note (e.g. \"winter setting\")"
+            "note": "Note (e.g. \"winter setting\")",
+            "mppt_output_entity": "Charge controller output (optional)"
+          },
+          "data_description": {
+            "mppt_output_entity": "Battery-side power of this string's MPPT charge controller. With the panel power above it forms a measured pair, which lets the MPPT efficiency be learned instead of assumed. Collected only; nothing uses it yet."
           }
         }
       },

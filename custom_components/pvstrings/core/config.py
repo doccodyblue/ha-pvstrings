@@ -265,10 +265,19 @@ class StringConfig:
     charger_state_entity: str | None = None
     #: Cell temperature model parameter set, see physics.py.
     mount_type: str = "insulated_back"
+    #: Battery-side output of this string's charge controller, if measured.
+    #: With ``power_entity`` as the panel side this is the far end of the
+    #: MPPT stage, which makes that stage's efficiency learnable instead of
+    #: assumed.  Collected only; nothing reads it yet.
+    mppt_output_entity: str | None = None
 
     def __post_init__(self) -> None:
         if not self.string_id:
             raise ConfigError("string needs an id")
+        if "," in self.string_id:
+            # conversion_5min stores contributing ids comma-separated; a
+            # comma inside one would split it into phantom members.
+            raise ConfigError(f"string {self.string_id}: id may not contain a comma")
         if not self.power_entity:
             raise ConfigError(f"string {self.string_id}: power_entity is required")
         if self.system_efficiency is not None and not 0.1 < self.system_efficiency <= 1.0:
@@ -427,10 +436,18 @@ class PlantConfig:
             out.append(string.power_entity)
             if string.energy_entity:
                 out.append(string.energy_entity)
+            if string.mppt_output_entity:
+                out.append(string.mppt_output_entity)
         for group in self.groups:
             out.extend(
                 e
-                for e in (group.limit_entity, group.limit_abs_entity)
+                for e in (
+                    group.limit_entity,
+                    group.limit_abs_entity,
+                    # Measured AC: collected as the far side of the inverter
+                    # stage.  Not read by the forecast.
+                    group.ac_power_entity,
+                )
                 if e
             )
         state = self.plant_state

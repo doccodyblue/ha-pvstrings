@@ -55,6 +55,7 @@ from .const import (
     CONF_FORECAST_CLIPPING,
     CONF_INVERTER_MODEL,
     CONF_MPPT_EFFICIENCY,
+    CONF_MPPT_OUTPUT,
     CONF_OUTPUT_PATH,
     INVERTER_MODEL_CUSTOM,
     INVERTER_MODEL_NONE,
@@ -433,6 +434,9 @@ def string_schema(
             _optional(
                 CONF_CHARGER_STATE, values.get(CONF_CHARGER_STATE)
             ): EntitySelector(EntitySelectorConfig(domain=["sensor"])),
+            _optional(
+                CONF_MPPT_OUTPUT, values.get(CONF_MPPT_OUTPUT)
+            ): _power_entity_selector(),
         }
     )
 

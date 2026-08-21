@@ -1165,6 +1165,10 @@ class ForecastEngine:
         end = min(last_closed + HOUR, start + max_hours * HOUR)
 
         self.evaluate_curtailment(start, end)
+        # Right after the verdicts exist and while the raw rows are certain
+        # to be there: a conversion pair from a curtailed interval measures
+        # the limit, not the stage.
+        self.store.mark_conversion_censored(start, end)
         stats.hours_materialised = self.materialise_hourly(start, end)
         # Must exist before compaction is allowed to drop the raw rows.
         self.store.materialise_plant_hourly(start, end)

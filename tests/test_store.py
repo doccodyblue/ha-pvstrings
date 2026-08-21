@@ -794,6 +794,151 @@ class TestMigrationToJointShadingColumns:
             store.close()
 
 
+class TestConversionPairs:
+    """Measured both sides of a conversion stage: the training set for the
+    efficiency curves, kept whole so it outlives the telemetry it came from.
+    """
+
+    def _string_row(self, ts, sid="s1", binding=0, kind="measured", limit=1000.0):
+        return (ts, sid, 50.0, 600.0, 1.0, 10, limit, binding, kind)
+
+    def test_pairs_round_trip(self, store: Store):
+        store.upsert_conversion([(300, "g1", "inverter", 600.0, 570.0, 1.0, "s1,s2", 1)])
+        rows = store.conversion_rows(uncensored_only=False)
+        assert rows == [(300, "g1", "inverter", 600.0, 570.0, 1.0, None)]
+
+    def test_unjudged_pairs_are_not_training_data(self, store: Store):
+        """NULL means "physics has not looked yet", which is not "clean"."""
+        store.upsert_conversion([(300, "g1", "inverter", 600.0, 570.0, 1.0, "s1,s2", 1)])
+        assert store.conversion_rows() == []
+
+    def test_censoring_follows_the_contributing_strings(self, store: Store):
+        store.upsert_5min(
+            [self._string_row(300, "s1"), self._string_row(300, "s2", binding=1)]
+        )
+        store.upsert_conversion(
+            [
+                (300, "g1", "inverter", 600.0, 570.0, 1.0, "s1,s2", 1),
+                (300, "s1", "mppt", 600.0, 585.0, 1.0, "s1", 1),
+            ]
+        )
+        store.mark_conversion_censored(0, 1000)
+        usable = {row[1] for row in store.conversion_rows()}
+        # The group contains the curtailed s2, so its pair is out; the s1
+        # mppt pair is untouched by its sibling.
+        assert usable == {"s1"}
+
+    def test_an_unjudged_interval_is_not_clean(self, store: Store):
+        """``limit_binding IS NULL`` means physics never decided.
+
+        SQL makes that easy to get wrong: ``limit_binding = 1`` is not true
+        for NULL, so a naive CASE files an unjudged interval under "free"
+        and a curtailed hour with no physics behind it becomes training
+        data.
+        """
+        store.upsert_5min([self._string_row(300, "s1", binding=None)])
+        store.upsert_conversion([(300, "s1", "mppt", 600.0, 585.0, 1.0, "s1", 1)])
+        store.mark_conversion_censored(0, 1000)
+        assert store.conversion_rows() == []
+
+    def test_a_scope_that_cannot_be_curtailed_reads_an_unjudged_interval(
+        self, store: Store
+    ):
+        """Without a limit or a battery nothing can bind, so there is no
+        verdict to wait for -- and demanding one would starve exactly the
+        simple installations of training data."""
+        store.upsert_5min(
+            [self._string_row(300, "s1", binding=None, limit=None)]
+        )
+        store.upsert_conversion([(300, "s1", "mppt", 600.0, 585.0, 1.0, "s1", 0)])
+        store.mark_conversion_censored(0, 1000)
+        assert len(store.conversion_rows()) == 1
+
+    def test_a_missing_member_row_is_missing_evidence(self, store: Store):
+        """s2 has no row at all: the input sum cannot be vouched for."""
+        store.upsert_5min([self._string_row(300, "s1")])
+        store.upsert_conversion(
+            [(300, "g1", "inverter", 600.0, 570.0, 1.0, "s1,s2", 1)]
+        )
+        store.mark_conversion_censored(0, 1000)
+        assert store.conversion_rows() == []
+
+    def test_membership_is_read_from_the_row_not_from_config(self, store: Store):
+        """The pair was measured over s1+s2; regrouping later must not make
+        s2's curtailment invisible to it."""
+        store.upsert_5min(
+            [self._string_row(300, "s1"), self._string_row(300, "s2", binding=1)]
+        )
+        store.upsert_conversion(
+            [(300, "g1", "inverter", 600.0, 570.0, 1.0, "s1,s2", 1)]
+        )
+        store.mark_conversion_censored(0, 1000)
+        assert store.conversion_rows() == []
+
+    def test_one_groups_curtailment_cannot_censor_another(self, store: Store):
+        store.upsert_5min(
+            [self._string_row(300, "s1"), self._string_row(300, "s2", binding=1)]
+        )
+        store.upsert_conversion(
+            [
+                (300, "gA", "inverter", 600.0, 570.0, 1.0, "s1", 1),
+                (300, "gB", "inverter", 600.0, 570.0, 1.0, "s2", 1),
+            ]
+        )
+        store.mark_conversion_censored(0, 1000)
+        assert {row[1] for row in store.conversion_rows()} == {"gA"}
+
+    def test_a_reconstructed_interval_is_not_a_measurement(self, store: Store):
+        store.upsert_5min([self._string_row(300, "s1", kind="lower_bound")])
+        store.upsert_conversion([(300, "s1", "mppt", 600.0, 585.0, 1.0, "s1", 1)])
+        store.mark_conversion_censored(0, 1000)
+        assert store.conversion_rows() == []
+
+    def test_a_reflush_does_not_undo_the_verdict(self, store: Store):
+        store.upsert_5min([self._string_row(300, "s1")])
+        store.upsert_conversion([(300, "s1", "mppt", 600.0, 585.0, 1.0, "s1", 1)])
+        store.mark_conversion_censored(0, 1000)
+        store.upsert_conversion([(300, "s1", "mppt", 610.0, 590.0, 1.0, "s1", 1)])
+        rows = store.conversion_rows()
+        assert len(rows) == 1 and rows[0][3] == 610.0
+
+    def test_a_loadless_interval_is_not_evidence(self, store: Store):
+        """Night reads 0 in, 0 out. That is not an efficiency of anything,
+        and a fit dividing by the input would divide by zero."""
+        store.upsert_5min([self._string_row(300, "s1")])
+        store.upsert_conversion([(300, "s1", "mppt", 0.0, 0.0, 1.0, "s1", 0)])
+        store.mark_conversion_censored(0, 1000)
+        assert store.conversion_rows() == []
+
+    def test_a_negative_output_is_a_sign_error_not_a_conversion(self, store: Store):
+        store.upsert_5min([self._string_row(300, "s1")])
+        store.upsert_conversion([(300, "s1", "mppt", 600.0, -20.0, 1.0, "s1", 0)])
+        store.mark_conversion_censored(0, 1000)
+        assert store.conversion_rows() == []
+
+    def test_counts_report_evidence_per_scope(self, store: Store):
+        store.upsert_5min([self._string_row(300, "s1")])
+        store.upsert_conversion(
+            [
+                (300, "s1", "mppt", 600.0, 585.0, 1.0, "s1", 1),
+                (600, "s1", "mppt", 600.0, 585.0, 1.0, "s1", 1),
+            ]
+        )
+        store.mark_conversion_censored(0, 500)
+        counts = store.conversion_counts()
+        assert counts["s1|mppt"] == {"rows": 2, "usable": 1}
+
+    def test_pairs_outlive_the_telemetry_they_came_from(self, store: Store):
+        """Compaction drops raw 5-minute rows; training data must survive."""
+        now = 1_800_000_000
+        old = now - 200 * 86400
+        store.upsert_5min([self._string_row(old, "s1")])
+        store.upsert_conversion([(old, "s1", "mppt", 600.0, 585.0, 1.0, "s1", 1)])
+        store.mark_conversion_censored(old - 1, old + 1)
+        store.compact(now, raw_days=90)
+        assert len(store.conversion_rows()) == 1
+
+
 class TestMigrationToPoaBeam:
     """v4 -> v5: the beam column switches meaning (horizontal -> POA share).
 
