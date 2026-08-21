@@ -1267,9 +1267,19 @@ class Store:
             for r in self._query(sql, params)
         ]
 
-    def conversion_counts(self) -> dict[str, dict[str, int]]:
-        """Per scope: how much usable evidence has accumulated so far."""
-        out: dict[str, dict[str, int]] = {}
+    def conversion_counts(
+        self, expected: Iterable[str] = ()
+    ) -> dict[str, dict[str, int]]:
+        """Per scope: how much usable evidence has accumulated so far.
+
+        ``expected`` seeds the configured scopes at zero so a stage that is
+        set up but collecting nothing is visible.  Without it an absent key
+        is indistinguishable from a stage nobody configured -- and a silent
+        gap in training data is the one failure this table exists to avoid.
+        """
+        out: dict[str, dict[str, int]] = {
+            key: {"rows": 0, "usable": 0} for key in expected
+        }
         for row in self._query(
             "SELECT scope_id, stage, COUNT(*) AS n, "
             "SUM(CASE WHEN COALESCE(censored, 1) = 0 THEN 1 ELSE 0 END) AS usable "

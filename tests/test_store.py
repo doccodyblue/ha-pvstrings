@@ -916,6 +916,19 @@ class TestConversionPairs:
         store.mark_conversion_censored(0, 1000)
         assert store.conversion_rows() == []
 
+    def test_a_configured_scope_collecting_nothing_stays_visible(
+        self, store: Store
+    ):
+        """A stale runtime config can leave a configured stage unsubscribed.
+
+        That happened once, silently: two subentry reconfigures seconds
+        apart, the second reload swallowed, and one pair simply never
+        collected. An absent key looked exactly like "nobody configured
+        this", so seed the configured scopes at zero.
+        """
+        counts = store.conversion_counts(["s9|mppt"])
+        assert counts["s9|mppt"] == {"rows": 0, "usable": 0}
+
     def test_counts_report_evidence_per_scope(self, store: Store):
         store.upsert_5min([self._string_row(300, "s1")])
         store.upsert_conversion(

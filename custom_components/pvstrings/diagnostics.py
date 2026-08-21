@@ -50,7 +50,18 @@ async def async_get_config_entry_diagnostics(
             # stage -- the readiness signal for fitting curves instead of
             # asserting them.  Grouped in the executor: this table is
             # long-lived training data, not a handful of rows.
-            "conversion_evidence": coordinator.store.conversion_counts(),
+            "conversion_evidence": coordinator.store.conversion_counts(
+                [
+                    f"{string.string_id}|mppt"
+                    for string in plant.strings
+                    if string.mppt_output_entity
+                ]
+                + [
+                    f"{group.group_id}|inverter"
+                    for group in plant.groups
+                    if group.ac_power_entity
+                ]
+            ),
             # The last day of folded hours, verbatim.  Every question about
             # why the model is not learning ends here -- coverage, quality and
             # value kind per hour per string -- and without them the diagnosis
