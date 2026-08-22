@@ -182,10 +182,16 @@ und soll das auch nicht, sonst wäre die Trefferquote wertlos.
 
 ## Release
 
-Freeze aktiv seit 21.08. — committen und zu Andy deployen ja, taggen
-nein. v1.20.0 wird gebündelt, wenn das S2-Kriterium bestanden und die
-7-Tage-wMAPE etwa zwei Wochen stabil ist. Hotfix-Pfad: Branch vom
-letzten Release-Tag, nur den Fix taggen.
+**v1.20.0 getaggt am 22.08.** — Andys Entscheidung, den Freeze dafür
+zu beenden. Enthalten: Conversion Layer, gelernte Kennlinien mit
+Wächter, per-Strang-`reset_learning`, Quellwechsel-Erkennung, Nowcast.
 
-Im Sammelkorb (unreleased auf `main`): per-Strang-`reset_learning`,
-Conversion Layer, Messpaar-Sammlung, Sichtbarkeit konfigurierter Stufen.
+Der Freeze war an das S2-Kriterium und zwei Wochen stabile wMAPE
+gebunden; beides war beim Taggen **nicht erfüllt** — S2 mangels klarem
+Vormittag ungeprüft, der Nowcast keine Stunde live. Das ist bewusst so
+entschieden und hier nur festgehalten, damit die Herkunft eines
+etwaigen Feldproblems nachvollziehbar bleibt.
+
+Ab jetzt wieder Freeze bis zur Bewährung von v1.20.0: committen und zu
+Andy deployen ja, taggen nein. Hotfix-Pfad: Branch vom letzten
+Release-Tag, nur den Fix taggen.
