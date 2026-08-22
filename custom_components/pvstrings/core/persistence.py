@@ -52,11 +52,17 @@ KT_MAX = 1.1
 #: Fewer usable intervals than this is not a measurement, it is a sample.
 MIN_INTERVALS = 3
 
-#: Bias-model evidence at which the nowcast reaches full weight.  Until the
+#: Bias-model evidence at which the nowcast is believed by half.  Until the
 #: bias buckets have converged, the forecast term and the measured term are
 #: anchored to different scales (a lux sensor reads its own units), and blending
 #: them hard produces a step across the horizon rather than a correction.
-BIAS_EVIDENCE_K = 20.0
+#:
+#: Scaled to what ``n_eff`` actually reaches: it is an irradiance-weighted,
+#: decaying count, not a sample tally, and on a mature plant it saturates
+#: around 10-16 at midday and 1-2 near the edges of the day.  A larger constant
+#: throttles the feature permanently rather than only while it is young -- at
+#: 20 even the best-evidenced hour would have stayed below half weight.
+BIAS_EVIDENCE_K = 3.0
 
 REASON_NO_SOURCE = "no_source"
 REASON_NO_MEASUREMENT = "no_measurement"
