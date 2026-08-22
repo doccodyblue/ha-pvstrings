@@ -14,7 +14,7 @@ class TestSkyState:
         clearsky = np.array([800.0, 840.0, 820.0])
         forecast = np.array([400.0, 420.0, 410.0])
 
-        state = persistence.sky_state(measured, forecast, clearsky, 1000.0)
+        state, _ = persistence.sky_state(measured, forecast, clearsky, 1000.0)
 
         assert state is not None
         assert state.kt == pytest.approx(0.5, abs=0.01)
@@ -26,7 +26,7 @@ class TestSkyState:
         clearsky = np.full(5, 800.0)
         forecast = np.full(5, 600.0)
 
-        state = persistence.sky_state(measured, forecast, clearsky, 1000.0)
+        state, _ = persistence.sky_state(measured, forecast, clearsky, 1000.0)
 
         assert state is not None
         assert state.kt == pytest.approx(0.75, abs=0.02)
@@ -35,19 +35,38 @@ class TestSkyState:
         measured = np.array([2.0, 1.0, 0.0])
         clearsky = np.array([10.0, 8.0, 4.0])
 
-        assert persistence.sky_state(measured, clearsky, clearsky) is None
+        assert persistence.sky_state(measured, clearsky, clearsky)[0] is None
 
     def test_too_few_intervals_yields_nothing(self):
         measured = np.array([400.0, np.nan, np.nan])
         clearsky = np.full(3, 800.0)
 
-        assert persistence.sky_state(measured, measured, clearsky) is None
+        assert persistence.sky_state(measured, measured, clearsky)[0] is None
+
+    def test_a_thin_window_is_not_reported_as_darkness(self):
+        """Two answers that must not be confused.
+
+        The collector's buffers are empty for a few minutes after a restart,
+        so a bright afternoon can genuinely have no rows yet.  Calling that
+        "too dark" at 190 W/m2 sends whoever reads the diagnostics hunting a
+        broken sensor.
+        """
+        clearsky = np.full(4, 800.0)
+        no_rows = np.full(4, np.nan)
+        night = np.zeros(4)
+
+        assert persistence.sky_state(no_rows, no_rows, clearsky)[1] == (
+            persistence.REASON_THIN
+        )
+        assert persistence.sky_state(night, night, np.full(4, 10.0))[1] == (
+            persistence.REASON_TOO_DARK
+        )
 
     def test_cloud_enhancement_is_capped(self):
         measured = np.full(4, 1000.0)
         clearsky = np.full(4, 800.0)
 
-        state = persistence.sky_state(measured, measured, clearsky, 1000.0)
+        state, _ = persistence.sky_state(measured, measured, clearsky, 1000.0)
 
         assert state is not None
         assert state.kt == persistence.KT_MAX
@@ -55,8 +74,8 @@ class TestSkyState:
     def test_a_calm_sky_carries_further_than_a_broken_one(self):
         clearsky = np.full(6, 800.0)
         measured = np.full(6, 600.0)
-        calm = persistence.sky_state(measured, measured, clearsky, 1000.0)
-        broken = persistence.sky_state(
+        calm, _ = persistence.sky_state(measured, measured, clearsky, 1000.0)
+        broken, _ = persistence.sky_state(
             measured,
             np.array([200.0, 900.0, 250.0, 880.0, 210.0, 870.0]),
             clearsky,
@@ -150,7 +169,7 @@ class TestUnknownRegime:
         measured = np.array([600.0, 610.0, 605.0, 600.0])
         clearsky = np.full(4, 800.0)
 
-        state = persistence.sky_state(
+        state, _ = persistence.sky_state(
             measured, np.full(4, np.nan), clearsky, 1000.0
         )
 

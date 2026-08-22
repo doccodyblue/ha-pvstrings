@@ -145,27 +145,31 @@ def sky_state(
     forecast: np.ndarray,
     clearsky: np.ndarray,
     bias_evidence: float = 0.0,
-) -> SkyState | None:
+) -> tuple[SkyState | None, str]:
     """Read the clearness index and the sky's restlessness off the window.
 
     ``forecast`` is only used for the spread -- the regime signal is the
     *disagreement* between source and sensor, which is what actually predicts
     how long the current state will hold.  ``kt`` itself never touches it, so a
     weak forecast cannot drag the level around.
+
+    Returns the reason alongside, and darkness and a thin window are separate
+    answers: after a restart the collector's buffers are empty for a few
+    minutes, and reporting that as "too dark" at 190 W/m2 sends whoever reads
+    it looking for a broken sensor.
     """
-    usable = (
-        np.isfinite(measured)
-        & np.isfinite(clearsky)
-        & (clearsky > CS_FLOOR_WM2)
-        & (measured >= 0.0)
-    )
+    lit = np.isfinite(clearsky) & (clearsky > CS_FLOOR_WM2)
+    if int(lit.sum()) < MIN_INTERVALS:
+        return None, REASON_TOO_DARK
+
+    usable = lit & np.isfinite(measured) & (measured >= 0.0)
     if int(usable.sum()) < MIN_INTERVALS:
-        return None
+        return None, REASON_THIN
 
     kt_all = measured[usable] / clearsky[usable]
     kt = float(np.median(kt_all))
     if not math.isfinite(kt) or kt <= 0.0:
-        return None
+        return None, REASON_TOO_DARK
 
     spread: float | None = None
     fc_ok = usable & np.isfinite(forecast) & (forecast > 5.0)
@@ -175,12 +179,15 @@ def sky_state(
         if ratio.size >= MIN_INTERVALS:
             spread = float(np.std(np.log(ratio)))
 
-    return SkyState(
-        kt=min(kt, KT_MAX),
-        spread=spread,
-        intervals=int(usable.sum()),
-        halflife_s=halflife_for(spread),
-        trust=bias_trust(bias_evidence),
+    return (
+        SkyState(
+            kt=min(kt, KT_MAX),
+            spread=spread,
+            intervals=int(usable.sum()),
+            halflife_s=halflife_for(spread),
+            trust=bias_trust(bias_evidence),
+        ),
+        "",
     )
 
 

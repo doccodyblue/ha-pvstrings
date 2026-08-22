@@ -632,12 +632,9 @@ class ForecastEngine:
         if persistence.looks_frozen(aligned):
             return None, persistence.REASON_FROZEN
 
-        state = persistence.sky_state(
+        return persistence.sky_state(
             aligned, forecast, clearsky, bias_evidence=self._bias_evidence(now_ts)
         )
-        if state is None:
-            return None, persistence.REASON_TOO_DARK
-        return state, ""
 
     def _bias_evidence(self, now_ts: int) -> float:
         """How much the bias model knows about the horizon the nowcast covers.
