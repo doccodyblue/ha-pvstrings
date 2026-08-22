@@ -177,6 +177,14 @@ und soll das auch nicht, sonst wäre die Trefferquote wertlos.
   Anlagen-AC-Sensor als `unconverted_strings` ausgewiesen.
 - **Datenformat additiv migrieren**, nie „drop and recreate";
   Trainingsdaten überleben Updates.
+- **Kein Pull Request an `home-assistant/brands`, solange Beta.**
+  Entschieden 22.08. Die Assets liegen fertig in `brands/` (SVG als
+  Quelle, PNG 256 und 512) und im README — es fehlt bewusst nur der
+  PR. Grund ist nicht Aufwand, sondern Sichtbarkeit: ein brands-PR wird
+  im Home-Assistant-Repo öffentlich reviewt und macht auf ein Projekt
+  aufmerksam, das auf zwei Installationen läuft. Bis dahin bleibt das
+  graue HACS-Platzhalter-Icon der gewollte Zustand, kein Mangel.
+  Wieder aufmachen, wenn die Beta-Warnung aus dem README verschwindet.
 
 ---
 
