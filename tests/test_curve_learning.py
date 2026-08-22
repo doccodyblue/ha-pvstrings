@@ -220,6 +220,18 @@ class TestImplausibleEvidence:
             assert b.eta == pytest.approx(b.prior)
 
 
+class TestSourceChange:
+    """Pairs answer a question about one particular sensor."""
+
+    def test_a_fingerprint_is_stable_and_distinguishes_entities(self):
+        import zlib
+
+        a = zlib.crc32(b"sensor.gartenhaus_power")
+        b = zlib.crc32(b"sensor.tasmota_drainage_energy_power")
+        assert a == zlib.crc32(b"sensor.gartenhaus_power")  # not salted
+        assert a != b
+
+
 class TestPersistence:
     def test_only_measured_points_are_stored(self):
         """Storing the prior too would freeze today's datasheet into the

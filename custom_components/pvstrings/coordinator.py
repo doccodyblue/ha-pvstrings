@@ -278,6 +278,18 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
 
     async def async_prepare(self, weather_entity: str | None = None) -> None:
         self._weather_entity = weather_entity
+        # Before loading: a group pointed at a different meter has pairs
+        # that answer a question about the old one.
+        dropped = await self.hass.async_add_executor_job(
+            self.engine.invalidate_changed_conversion_sources,
+            int(dt_util.utcnow().timestamp()),
+        )
+        for group_id in dropped:
+            _LOGGER.info(
+                "pvstrings: measured AC source changed for group %s, "
+                "discarding its conversion pairs and learned curve",
+                group_id,
+            )
         await self.hass.async_add_executor_job(self.engine.load_models)
         await self.collector.async_start()
 

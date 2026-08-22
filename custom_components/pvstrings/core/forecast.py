@@ -23,6 +23,7 @@ cannot both chase the same signal:
 from __future__ import annotations
 
 import logging
+import zlib
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping, Sequence
@@ -39,6 +40,7 @@ from .aggregate import hourly_from_5min, interval_mid
 from .config import INTERVAL_SECONDS, GeometrySegment, PlantConfig
 from .learning import (
     SCOPE_CONVERSION_CURVE,
+    SCOPE_CONVERSION_SOURCE,
     SCOPE_PLANT,
     SCOPE_STRING,
     SCOPE_STRING_DAYPART,
@@ -267,6 +269,39 @@ class ForecastEngine:
             },
         )
         self.fit_shading(force=True)
+
+    def invalidate_changed_conversion_sources(self, now_ts: int) -> list[str]:
+        """Drop pairs that were measured against a different entity.
+
+        Point a group at another AC meter and its stored pairs stop being
+        comparable -- they answer a question about the old sensor.  Mixed
+        into a fit they would drag every support point towards whatever
+        that sensor said, permanently, since evidence ages over a year.
+
+        Returns the groups whose history was discarded.
+        """
+        stored = self.store.load_effects(SCOPE_CONVERSION_SOURCE)
+        current: dict[str, tuple[float, float]] = {}
+        dropped: list[str] = []
+        for group in self.plant.groups:
+            if not group.ac_power_entity:
+                continue
+            fingerprint = float(
+                zlib.crc32(group.ac_power_entity.encode("utf-8"))
+            )
+            current[group.group_id] = (fingerprint, 0.0)
+            known = stored.get(group.group_id)
+            if known is not None and known[0] != fingerprint:
+                self.store.clear_conversion_obs(group.group_id)
+                self.store.clear_effects_with_prefix(
+                    SCOPE_CONVERSION_CURVE, [f"{group.group_id}|"]
+                )
+                dropped.append(group.group_id)
+        if current != stored:
+            self.store.replace_effects(
+                SCOPE_CONVERSION_SOURCE, current, now_ts
+            )
+        return dropped
 
     def _curve_priors(self) -> dict[str, tuple[tuple[float, float], ...]]:
         """The configured curve per learnable scope, before any learning.

@@ -35,6 +35,9 @@ SCOPE_STRING_DAYPART = "string_daypart"
 #: Learned conversion curve support points.  Shares the effects table --
 #: same shape, same persistence, same reset path.
 SCOPE_CONVERSION_CURVE = "conversion_curve"
+#: Fingerprint of the entity each group's pairs were measured against, so
+#: swapping that entity can invalidate what it produced.
+SCOPE_CONVERSION_SOURCE = "conversion_source"
 
 #: Half-life of the rolling mean, counted in effective observations.
 HALFLIFE = 15.0
