@@ -1,6 +1,6 @@
 # TODO
 
-Offene Arbeit an PVStrings. Stand 21.08.2026.
+Offene Arbeit an PVStrings. Stand 22.08.2026.
 Erledigtes wandert raus, nicht ins Archiv — dafür gibt es den Changelog.
 
 ---
@@ -59,6 +59,71 @@ umzubauen. Lohnt sich erst, wenn die Residuen es rechtfertigen.
 und Anwenden benutzen dasselbe Maß), im Docstring dokumentiert. Exakter
 Fix wäre, nur die POA-Beam-Komponente innerhalb der Physikkette zu
 skalieren — Chirurgie an `physics.run`, kein Patch.
+
+### 4. Nowcast: die eigene Einstrahlungsmessung vorwärts nutzen
+
+Beobachtet am 22.08. Die Tagesprognose stand um 11:08 bei 9,96 kWh,
+während der GW2000A bereits mehr Einstrahlung sah als die Vorhersage
+(um 16:31 noch immer 261 gegen 169 W/m² prognostiziert). Nach oben
+korrigiert wurde erst um 13:02, als der Wetteranbieter nachzog — die
+12-Uhr-Stunde war da vorbei und bleibt mit 1,87 statt 2,38 kWh stehen.
+Tagesbilanz: 12,37 kWh prognostiziert, 13,80 kWh geerntet.
+
+Der Messwert wird bereits gelesen (`_measured_ghi`), fließt aber nur
+ins Langzeit-Bias (`_learn_ghi_bias`, gebuckettet nach Stunde und
+Horizont) und in die Verschattungskarte — nicht vorwärts in denselben
+Tag. Vorschlag: Persistenz auf dem Klarheitsindex, also gemessenes kt
+der letzten 15–30 min über die nächsten ein bis zwei Stunden
+einblenden und exponentiell zur Prognose zurückführen. Setzt dort an,
+wo `_downscale` kt ohnehin schon als Erhaltungsgröße behandelt.
+
+Zu klären beim Bauen:
+
+- Blendfenster und Halbwertszeit — an Andys und Wagners Historie
+  kalibrierbar, beide haben einen Einstrahlungssensor.
+- Wolkenlücken: kt springt zwischen zwei Messungen um Faktoren. Ein
+  Median über mehrere Intervalle statt des letzten Werts.
+- **Nur die Restprognose darf sich bewegen.** Vergangene Stunden
+  bleiben eingefroren, sonst rechnet sich das Scoring die Trefferquote
+  schön. `log_forecast` läuft heute vor der Gruppenaggregation, der
+  Pfad ist sauber getrennt — beim Umbau muss er es bleiben.
+- Anlagen ohne Sensor: unverändertes Verhalten. Kein Fallback über die
+  gemessene Leistung, die ist verschattungs- und drosselungsbehaftet.
+
+### 5. Restprognose zählt die angebrochene Stunde ganz mit
+
+`ForecastData.remaining_kwh` (`coordinator.py:214`) summiert ab
+`floor_hour(now)`. Um 16:31 steckten die vollen 0,654 kWh der
+16-Uhr-Stunde im ausgewiesenen Rest, obwohl gut die Hälfte davon
+bereits erzeugt war — rund ein Drittel des Werts zu hoch. Betrifft
+Anlagen-, Gruppen- und Strangsensoren gleichermaßen und trifft jeden,
+der daran eine Lastentscheidung aufhängt.
+
+Linear anteilig zu rechnen wäre der billige Fix, ist aber nahe
+Sonnenauf- und -untergang genau der Fehler, den `_downscale` für die
+Prognose schon vermeidet. Sauberer: die Fünf-Minuten-Serie bis zur
+Rest-Berechnung durchreichen, statt vorher auf Stunden zu falten.
+
+### 6. Prognose und Restprognose sehen aus wie zwei Summanden
+
+Andy und Wagner haben unabhängig voneinander dieselbe Kachel so
+gelesen, dass beide Zahlen addiert die Tageserwartung ergeben.
+Tatsächlich ist der Rest eine Teilmenge der Tagessumme. Zwei
+Fehlleser aus zwei Installationen sind kein Zufall, sondern eine
+Aussage über die Benennung.
+
+- Integration: Attribut auf `forecast_remaining`, das die Beziehung
+  ausspricht (Teilmenge von `forecast_today`, dazu der verstrichene
+  Anteil) — im Stil des `semantics`-Attributs der AC-Sensoren.
+  Umbenennen wäre ein Bruch für bestehende Dashboards und
+  Automationen, kommt im Freeze nicht in Frage.
+- Dashboard: Beschriftung „davon noch offen" statt „Restprognose
+  heute". Gehört ins Nachbarprojekt, per `handover.md`.
+
+Mit aufschreiben, weil es beim Erklären gebraucht wurde: „Prognose
+heute" ist kein Tagesendwert, sondern vergangene Stunden eingefroren
+plus lebende Restprognose. Sie holt die Realität nie rückwirkend ein —
+und soll das auch nicht, sonst wäre die Trefferquote wertlos.
 
 ---
 
