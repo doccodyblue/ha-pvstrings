@@ -1154,6 +1154,27 @@ class Store:
                     ],
                 )
 
+    def clear_effects_with_prefix(self, scope: str, prefixes: Sequence[str]) -> int:
+        """Drop the learned points belonging to given scopes.
+
+        Curve keys are ``scope_id|stage|load``, so a prefix identifies
+        everything learned about one group or string.  Needed because
+        discarding a string's training pairs without discarding what was
+        already fitted from them leaves the poisoned curve in place until
+        some later learn pass happens to overwrite it.
+        """
+        if not prefixes:
+            return 0
+        removed = 0
+        with self._tx() as conn:
+            for prefix in prefixes:
+                cur = conn.execute(
+                    "DELETE FROM model_effects WHERE scope = ? AND key LIKE ? || '%'",
+                    (scope, prefix),
+                )
+                removed += cur.rowcount
+        return removed
+
     def clear_conversion_obs(self, string_id: str | None = None) -> int:
         """Discard conversion training pairs.
 

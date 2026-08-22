@@ -291,6 +291,10 @@ class ForecastEngine:
         stage: the MPPT pairs keep accumulating, but that stage still runs
         on a flat factor and turning it into a curve is its own change.
         """
+        if not self.plant.learning_enabled:
+            # Leave both memory and storage as they are: switching the
+            # correction off is not a reset.
+            return 0
         priors = self._curve_priors()
         if not priors:
             self.curves = {}
@@ -374,10 +378,13 @@ class ForecastEngine:
         )
         # Replace, not merge: a point that fell back below its evidence
         # threshold must disappear from the database too, or it returns as
-        # "learned" after the next restart.
-        self.store.replace_effects(
-            SCOPE_CONVERSION_CURVE, curve_learning.to_rows(self.curves), now_ts
-        )
+        # "learned" after the next restart.  Skipped entirely while learning
+        # is switched off -- that switch is for comparing against bare
+        # physics, and it must not quietly destroy what was learned before.
+        if self.plant.learning_enabled:
+            self.store.replace_effects(
+                SCOPE_CONVERSION_CURVE, curve_learning.to_rows(self.curves), now_ts
+            )
 
     # ------------------------------------------------------------------ #
     # geometry

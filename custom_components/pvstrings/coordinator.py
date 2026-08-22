@@ -34,6 +34,7 @@ from .core import economics as econ
 from .core.aggregate import merge_hourly
 from .core.config import PlantConfig
 from .core.conversion import ConversionResult, convert_group
+from .core.learning import SCOPE_CONVERSION_CURVE
 from .core.forecast import HOUR, ForecastEngine, LearnStats, floor_hour
 from .core.health import Health, learn_summary
 from .core.physics import PhysicsEngine, clamp_to_daylight, to_index
@@ -999,6 +1000,15 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
             )
             await self.hass.async_add_executor_job(
                 self.store.clear_conversion_obs, string_id
+            )
+            # The pairs are gone; the curve already fitted from them has to
+            # go with them, or the next reload brings the poisoned version
+            # straight back. Its own scope and its group's.
+            group = self.plant.group_of(string_id)
+            await self.hass.async_add_executor_job(
+                self.store.clear_effects_with_prefix,
+                SCOPE_CONVERSION_CURVE,
+                [f"{string_id}|"] + ([f"{group.group_id}|"] if group else []),
             )
         else:
             await self.hass.async_add_executor_job(self.store.clear_effects, None)

@@ -955,6 +955,25 @@ class TestConversionPairs:
         store.replace_effects("conversion_curve", {}, 1_700_000_100)
         assert store.load_effects("conversion_curve") == {}
 
+    def test_clearing_a_scopes_learned_points_by_prefix(self, store: Store):
+        """Discarding a string's pairs without discarding what was already
+        fitted from them leaves the poisoned curve in place."""
+        store.replace_effects(
+            "conversion_curve",
+            {
+                "g1|inverter|50": (0.94, 200.0),
+                "g1|inverter|20": (0.95, 90.0),
+                "g2|inverter|50": (0.93, 150.0),
+                "s1|mppt|50": (0.97, 120.0),
+            },
+            1_700_000_000,
+        )
+        removed = store.clear_effects_with_prefix(
+            "conversion_curve", ["s1|", "g1|"]
+        )
+        assert removed == 3
+        assert list(store.load_effects("conversion_curve")) == ["g2|inverter|50"]
+
     def test_replace_effects_leaves_other_scopes_alone(self, store: Store):
         store.save_effects("string", {"s1": (0.2, 10.0)}, 1_700_000_000)
         store.replace_effects("conversion_curve", {}, 1_700_000_100)
