@@ -32,20 +32,18 @@ Zu entscheiden beim Bauen:
   5–7 %. Neu durchrechnen (Rohdaten bleiben unangetastet, nur die
   Interpretation ändert sich).
 
-### 2. Kennlinien-Lernen: Feinschliff an den Konstanten
+### 2. Kennlinien-Lernen: eine Konstante ist noch geraten
 
-Stufe B ist gebaut (22.08.) und läuft mit Leitplanken aus der Spec.
-Zwei Konstanten sind noch geraten und gehören nachgezogen, sobald ein
-paar klare Tage in `conversion_5min` liegen:
+Stufe B ist gebaut (22.08.). Die Bucket-Frage hat sich erledigt — nicht
+durch Nachjustieren, sondern strukturell: Schrumpfung nach Evidenz
+statt harter Schwelle lässt unerreichte Stützstellen exakt auf dem
+Datenblatt und macht den Übergang stufenlos, für jede Anlagengröße
+ohne Konfiguration.
 
-- **`LOAD_BUCKETS`** (2/5/10/20/35/50/75/100 %): sitzen die Stützstellen
-  dort, wo die Paare tatsächlich landen? Im Code als vorläufig markiert.
-- **`STANDBY_FLOOR_PCT`** (1 %): der Eigenverbrauch des Wechselrichters
-  ist messbar, sobald genug Schwachlast-Paare da sind — dann die
-  Schwelle aus den Daten setzen statt aus dem Bauch.
-
-Reine Konstantenpflege, kein Umbau. Prüfen über
-`conversion_curves` in der Diagnose (gelernt vs. Datenblatt je Bucket).
+Offen bleibt **`STANDBY_FLOOR_PCT`** (1 %): der Eigenverbrauch des
+Wechselrichters ist messbar, sobald genug Schwachlast-Paare da sind —
+dann die Schwelle aus den Daten setzen statt aus dem Bauch. Ablesbar an
+`spread` und `measured` der untersten Buckets in `conversion_curves`.
 
 ### 2b. MPPT-Stufe lernt noch nicht
 

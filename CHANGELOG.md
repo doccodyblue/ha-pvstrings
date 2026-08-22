@@ -22,16 +22,27 @@
   step. Two-step Codex review per upgrade.md §11.
 - **The inverter curve corrects itself from measurements** (stage B).
   With `curve_learning` switched on for a direct-path group, the
-  datasheet curve becomes a prior: support points across the load axis
-  move towards the measured efficiency, bounded by a cap around the
-  datasheet (default ±5 pp), and only once a point has enough evidence
-  (default 50 weighted pairs) — below that the datasheet stands, so the
-  curve is never half-learned. Clipped intervals, the standby floor and
+  datasheet curve becomes a prior: each support point across the load
+  axis moves towards the measured efficiency in proportion to the
+  evidence behind it — `n_eff/(n_eff + min_samples)` — and is capped at
+  ±5 pp around the datasheet. A point nobody measured stays exactly on
+  the datasheet, so a plant whose array cannot load its inverter past
+  60 % keeps the datasheet at the top of the curve and needs no
+  configuration to say so. Shrinking rather than switching at a
+  threshold is what makes that safe: a hard switch put a step between a
+  learned point and its unlearned neighbour, a kink in the interpolated
+  curve that no inverter has. Clipped intervals, the standby floor and
   everything the censoring marked stay out of the fit. Learned points
   persist through the existing effects table and reset with
   `reset_learning`; the sensor reports `curve_source: learned` with
-  `curve_prior` and a `conversion_learning` block (per-bucket eta, n_eff,
-  prior, coverage) so learned and datasheet can be compared. Off by
+  `curve_prior` and a `conversion_learning` block so learned and
+  datasheet can be compared. Each support point carries its applied
+  value, the raw measurement behind it, its spread and whether the plant
+  can reach that load at all — readiness is measured against the
+  reachable points, so an array that cannot load its inverter fully is
+  not reported as permanently unfinished. The block travels whenever
+  learning is on, so "collecting" is distinguishable from "not
+  configured". Off by
   default: learning changes forecast numbers, and that is the owner's
   decision. The MPPT stage keeps its flat factor for now — its pairs
   keep accumulating.

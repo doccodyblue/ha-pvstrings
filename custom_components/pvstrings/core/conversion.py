@@ -176,14 +176,26 @@ def convert_group(
         )
         curve, source = prior, prior_source
         learning = None
-        if learned is not None and prior is not None and learned.any_learned:
-            curve, source = learned.points(), CURVE_LEARNED
+        if learned is not None and prior is not None:
+            # The block travels whenever learning is switched on, evidence
+            # or not: "collecting" and "not configured" have to be
+            # distinguishable, and the label alone cannot do that.
             learning = learned.as_dict()
+            if learned.any_evidence:
+                curve = learned.points()
+            # Named "learned" only once a point is materially
+            # evidence-driven.  Below that the curve is nudged, by design
+            # -- shrinkage has no threshold to hide behind -- but calling
+            # three samples a learned curve would overclaim.
+            if learned.any_learned:
+                source = CURVE_LEARNED
         result = convert_direct(
             hourly_kwh, rated_ac_w, curve, source, forecast_clipping
         )
-        if source == CURVE_LEARNED and result.curve_source == CURVE_LEARNED:
-            return replace(result, curve_prior=prior_source, learning=learning)
+        if learning is not None and result.curve_source != CURVE_NEUTRAL:
+            return replace(
+                result, curve_prior=prior_source, learning=learning
+            )
         return result
     if output_path == "storage":
         return convert_storage(hourly_kwh, mppt_efficiency, charge_efficiency)

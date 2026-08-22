@@ -261,6 +261,10 @@ class ForecastEngine:
                 f"{group.group_id}|inverter": group.curve_max_deviation_pp
                 for group in self.plant.groups
             },
+            min_samples={
+                f"{group.group_id}|inverter": group.curve_min_samples
+                for group in self.plant.groups
+            },
         )
         self.fit_shading(force=True)
 

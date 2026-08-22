@@ -169,7 +169,10 @@ class TestLearnedCurveReachesTheForecast:
             learned=empty,
         )
         assert out.curve_source == CURVE_CUSTOM
-        assert out.learning is None
+        # The block still travels: "switched on, collecting" must be
+        # distinguishable from "not configured", and the label cannot say it.
+        assert out.learning is not None
+        assert out.learning["coverage"] == 0.0
 
     def test_learning_carries_its_evidence_along(self):
         prior, learned = self._learned(0.92)

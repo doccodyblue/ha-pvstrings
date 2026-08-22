@@ -181,7 +181,9 @@ class CurtailmentGroup:
     #: percentage points.  The guard against a bad sensor day rewriting the
     #: curve; the datasheet is wrong by tolerances, not by tens of percent.
     curve_max_deviation_pp: float = 5.0
-    #: Evidence a support point needs before it overrides the datasheet.
+    #: Evidence at which a support point is half measurement, half datasheet.
+    #: Not a gate: points move gradually, so no step forms between a
+    #: measured point and an unmeasured neighbour.
     curve_min_samples: float = 50.0
 
     def __post_init__(self) -> None:

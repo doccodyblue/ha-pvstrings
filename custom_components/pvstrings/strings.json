@@ -288,7 +288,7 @@
             "discharge_efficiency": "Stored for plausibility checks only; discharge is a control decision, not a forecast.",
             "curve_learning": "Corrects the datasheet curve with measured DC/AC pairs. Needs the measured AC power above. Off by default: learning changes forecast numbers. The datasheet stays the starting point and the fallback.",
             "curve_max_deviation_pp": "How far a learned point may sit from the datasheet, in percentage points. The guard against one bad sensor day rewriting the curve.",
-            "curve_min_samples": "Weighted five-minute pairs a load point needs before the learned value replaces the datasheet. Points below it keep the datasheet, so the curve is never half-learned."
+            "curve_min_samples": "Weighted five-minute pairs at which a load point is half measurement, half datasheet. Points move gradually with the evidence behind them, so there is no step where an unmeasured neighbour meets a measured one; a point nobody measured stays exactly on the datasheet."
           }
         }
       },

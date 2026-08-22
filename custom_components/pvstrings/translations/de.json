@@ -288,7 +288,7 @@
             "discharge_efficiency": "Nur für Plausibilitätsprüfungen gespeichert; Entladen ist Regelung, keine Prognose.",
             "curve_learning": "Korrigiert die Datenblatt-Kennlinie mit gemessenen DC/AC-Paaren. Braucht die gemessene AC-Leistung oben. Standardmäßig aus: Lernen verändert Prognosewerte. Das Datenblatt bleibt Ausgangspunkt und Rückfallebene.",
             "curve_max_deviation_pp": "Wie weit ein gelernter Punkt vom Datenblatt abweichen darf, in Prozentpunkten. Die Sicherung dagegen, dass ein Tag mit kaputtem Sensor die Kennlinie umschreibt.",
-            "curve_min_samples": "Gewichtete Fünf-Minuten-Paare, die eine Laststelle braucht, bevor der gelernte Wert das Datenblatt ersetzt. Darunter gilt das Datenblatt — die Kennlinie ist nie halb gelernt."
+            "curve_min_samples": "Gewichtete Fünf-Minuten-Paare, bei denen eine Laststelle je zur Hälfte Messung und Datenblatt ist. Die Punkte wandern allmählich mit ihrer Evidenz — so entsteht keine Stufe, wo ein ungemessener Nachbar auf einen gemessenen trifft; eine nie gemessene Stelle bleibt exakt auf dem Datenblatt."
           }
         }
       },
