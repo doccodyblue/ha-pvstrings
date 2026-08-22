@@ -35,6 +35,7 @@ import pandas as pd
 from . import conversion
 from . import curtailment as curt
 from . import curve_learning
+from . import persistence
 from .curve_learning import LearnedCurve
 from .aggregate import hourly_from_5min, interval_mid
 from .config import INTERVAL_SECONDS, GeometrySegment, PlantConfig
@@ -49,6 +50,7 @@ from .learning import (
     LogRatioModel,
     Observation,
     daypart,
+    horizon_bucket,
     weather_class,
 )
 from .physics import PhysicsEngine, to_index
@@ -242,6 +244,10 @@ class ForecastEngine:
         self.inverter_curves: dict[str, tuple[tuple[float, float], ...]] = {}
         #: Learned conversion curves, keyed ``scope_id|stage``.
         self.curves: dict[str, LearnedCurve] = {}
+        #: What the last forecast run read off the irradiance sensor, and why
+        #: it read nothing when it did not.  Diagnostics only.
+        self.last_nowcast: persistence.SkyState | None = None
+        self.last_nowcast_reason: str = persistence.REASON_NO_SOURCE
 
     # ------------------------------------------------------------------ #
     # model state
@@ -566,6 +572,136 @@ class ForecastEngine:
         out["elevation"] = solar_position["apparent_elevation"].to_numpy()
         return out
 
+    # ------------------------------------------------------------------ #
+    # nowcast
+    # ------------------------------------------------------------------ #
+
+    def _sky_now(self, now_ts: int) -> tuple[persistence.SkyState | None, str]:
+        """Read the last quarter hour off the sensor, or say why we cannot.
+
+        Returns the reason alongside, because a neutral nowcast and a nowcast
+        that never ran look identical from the outside, and the difference is
+        the first thing anyone asks about.
+        """
+        sources = self.plant.weather_sources
+        if not (sources.ghi_entity or sources.illuminance_entity):
+            return None, persistence.REASON_NO_SOURCE
+        if not self.plant.learning_enabled:
+            return None, persistence.REASON_LEARNING_OFF
+
+        end = (int(now_ts) // INTERVAL_SECONDS) * INTERVAL_SECONDS
+        start = end - persistence.WINDOW_SECONDS
+        if start >= end:
+            return None, persistence.REASON_THIN
+
+        measured = self._measured_ghi(start, end)
+        if measured is None or measured.empty:
+            return None, persistence.REASON_NO_MEASUREMENT
+        # A sensor that fell over must not leave its last factor standing.
+        if int(measured.index.max()) < end - persistence.WINDOW_SECONDS:
+            return None, persistence.REASON_STALE
+
+        # Hourly weather rows are keyed on the hour, and ``_downscale`` looks
+        # them up by hour key -- asking from 16:01 would miss the 16:00 row and
+        # leave the nowcast silently inert rather than broken.
+        rows = self.store.latest_forecast(
+            floor_hour(start), floor_hour(end) + HOUR, self.plant.forecast_source
+        )
+        index = self._midpoint_index(start, end)
+        if len(index) == 0:
+            return None, persistence.REASON_THIN
+        hourly = self._hourly_frame(rows)
+        if hourly.empty:
+            forecast = np.full(len(index), np.nan)
+            clearsky = self.physics.clearsky(index)["ghi"].to_numpy()
+        else:
+            conditions = self._downscale(
+                index, hourly, apply_bias=True, issued_at_utc=now_ts
+            )
+            forecast = conditions["ghi"].to_numpy()
+            clearsky = conditions["cs_ghi"].to_numpy()
+
+        epochs = np.array(
+            [int(value.timestamp()) - INTERVAL_SECONDS // 2 for value in index]
+        )
+        aligned = measured.reindex(epochs).to_numpy(dtype=float)
+
+        # Fresh rows are not the same as a live sensor: the collector's
+        # watchdog stamps every sample with the moment it looked, so an entity
+        # that stopped updating still fills the window with a dead value.
+        if persistence.looks_frozen(aligned):
+            return None, persistence.REASON_FROZEN
+
+        state = persistence.sky_state(
+            aligned, forecast, clearsky, bias_evidence=self._bias_evidence(now_ts)
+        )
+        if state is None:
+            return None, persistence.REASON_TOO_DARK
+        return state, ""
+
+    def _bias_evidence(self, now_ts: int) -> float:
+        """How much the bias model knows about the horizon the nowcast covers.
+
+        The nowcast reaches at most two hours, so it always lands in the same
+        bucket the bias model calls ``0-6h``.  Until that bucket has evidence,
+        the forecast term and the measured term sit on different scales and the
+        blend would step rather than correct.
+        """
+        hour_local = datetime.fromtimestamp(now_ts, tz=self._tz).hour
+        effect = self.ghi_bias.buckets.get((hour_local, horizon_bucket(0.0)))
+        return float(effect.n_eff) if effect else 0.0
+
+    def _apply_nowcast(
+        self,
+        index: pd.DatetimeIndex,
+        conditions: pd.DataFrame,
+        state: persistence.SkyState,
+        now_ts: int,
+    ) -> pd.DataFrame:
+        """Blend the measured clearness index into the coming intervals."""
+        starts = np.array(
+            [int(value.timestamp()) - INTERVAL_SECONDS // 2 for value in index],
+            dtype=float,
+        )
+        weights = np.array(
+            [state.weight(start - float(now_ts)) for start in starts]
+        )
+        touched = weights > 0.0
+        if not touched.any():
+            return conditions
+
+        ghi = conditions["ghi"].to_numpy().copy()
+        cs = conditions["cs_ghi"].to_numpy()
+        blended = persistence.blend(ghi, cs, weights, state.kt)
+        # Only where the source actually delivered: an hour it never covered is
+        # unknown, not dark, and inventing one from a measurement of now is a
+        # stronger claim than persistence supports.
+        covered = conditions["covered"].to_numpy()
+        touched = touched & covered
+        ghi[touched] = blended[touched]
+        conditions = conditions.copy()
+        conditions["ghi"] = ghi
+
+        # Re-derive the components rather than blanking them.  ``physics.run``
+        # collapses per-interval plausibility into a single flag and switches
+        # the whole transposition model on it, so one NaN here would change
+        # yesterday and the day after tomorrow as well.
+        sub_index = index[touched]
+        if len(sub_index) > 0:
+            position = self.physics.solar_position(sub_index)
+            dni, dhi = self.physics.decompose(
+                pd.Series(ghi[touched], index=sub_index), position, sub_index
+            )
+            dni_all = conditions["dni"].to_numpy().copy()
+            dhi_all = conditions["dhi"].to_numpy().copy()
+            dni_all[touched] = dni.to_numpy()
+            dhi_all[touched] = dhi.to_numpy()
+            conditions["dni"] = dni_all
+            conditions["dhi"] = dhi_all
+
+        conditions["nowcast_weight"] = np.where(touched, weights, 0.0)
+        return conditions
+
     def _bias_factor(self, hour_ts: int, issued_at_utc: int) -> float:
         hour_local = datetime.fromtimestamp(hour_ts, tz=self._tz).hour
         horizon_h = max(0.0, (hour_ts - issued_at_utc) / HOUR)
@@ -583,6 +719,11 @@ class ForecastEngine:
         start_ts: int | None = None,
     ) -> list[HourForecast]:
         """Per-string hourly potential over the horizon."""
+        # Cleared first, and before any early return: a run that produced
+        # nothing must not leave the previous run's nowcast on display.
+        self.last_nowcast = None
+        self.last_nowcast_reason = persistence.REASON_LEARNING_OFF
+
         start = floor_hour(start_ts if start_ts is not None else now_ts)
         end = start + hours * HOUR
         rows = self.store.latest_forecast(start, end, self.plant.forecast_source)
@@ -595,6 +736,15 @@ class ForecastEngine:
         conditions = self._downscale(
             index, hourly, apply_bias=apply_learning, issued_at_utc=now_ts
         )
+        # The nowcast is a learned correction like any other and answers to the
+        # same gate: callers asking for bare physics (the accuracy baseline)
+        # must keep getting it.
+        if apply_learning:
+            state, reason = self._sky_now(now_ts)
+            self.last_nowcast = state
+            self.last_nowcast_reason = reason
+            if state is not None:
+                conditions = self._apply_nowcast(index, conditions, state, now_ts)
         return self._evaluate(
             index, conditions, apply_learning=apply_learning, is_forecast=True
         )

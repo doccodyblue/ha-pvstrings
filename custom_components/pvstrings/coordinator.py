@@ -31,6 +31,7 @@ from .const import (
     WEATHER_INTERVAL,
 )
 from .core import economics as econ
+from .core import persistence
 from .core.aggregate import merge_hourly
 from .core.config import PlantConfig
 from .core.conversion import ConversionResult, convert_group
@@ -849,7 +850,10 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
             # Which yardstick the bias model is actually learning against.
             # Without a pyranometer it can only compare the source with its own
             # short-horizon run, which is a weaker claim and should say so.
+            # Predates the nowcast feature and means something else entirely --
+            # see ``nowcast_*`` below for that.
             "truth_source": "measured" if has_sensor and measured is not None else "nowcast",
+            **self._nowcast_attributes(),
             "ghi_entity": sources.ghi_entity,
             "illuminance_entity": sources.illuminance_entity,
             # Reported rather than guessed: Home Assistant never exposes entry
@@ -872,6 +876,47 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
                 )
                 if entity
             },
+        }
+
+    def _nowcast_attributes(self) -> dict[str, Any]:
+        """What the sensor contributed to the remaining forecast, or why nothing.
+
+        A factor of 1.00 and "never ran" look identical from the outside, so the
+        reason travels with it.  Kept on this one plant-level sensor and rounded
+        on purpose: the forecast sensors now change every cycle rather than only
+        when the source updates, and per-interval diagnostics in their large
+        ``forecast`` attribute lists would multiply recorder writes.
+        """
+        state = self.engine.last_nowcast
+        if state is None:
+            return {
+                "nowcast_active": False,
+                "nowcast_reason": self.engine.last_nowcast_reason or None,
+            }
+        return {
+            "nowcast_active": True,
+            "nowcast_reason": None,
+            # Measured clearness index the coming intervals are faded towards.
+            "nowcast_kt": round(state.kt, 3),
+            # Weight at the very next interval; decays to zero over the reach.
+            "nowcast_weight_now": round(state.weight(300.0), 3),
+            "nowcast_halflife_min": round(state.halflife_s / 60.0),
+            # "calm" carries roughly twice as far as "broken"; an unknown
+            # regime is treated as broken rather than guessed generously.
+            "nowcast_sky": (
+                "unknown"
+                if state.spread is None
+                else "calm"
+                if state.spread <= persistence.SPREAD_SPLIT
+                else "broken"
+            ),
+            "nowcast_spread": (
+                None if state.spread is None else round(state.spread, 3)
+            ),
+            "nowcast_intervals": state.intervals,
+            # Damping while the bias model is still thin: below 1.0 the
+            # measurement is believed only in part.
+            "nowcast_trust": round(state.trust, 3),
         }
 
     def _logged_forecast_sum(self, start_ts: int, end_ts: int) -> float | None:

@@ -4,6 +4,39 @@
 
 ### Added
 
+- **The remaining forecast now reacts to the plant's own irradiance
+  sensor.** Until now a running day was only corrected when the weather
+  source published its next run. On 2026-08-22 the sensor saw the sun
+  break through at 11:00 and the forecast followed at 13:02 — by which
+  time the best hour had passed and stood recorded 0.5 kWh short. With
+  a GHI (or illuminance) sensor configured, the measured clearness
+  index of the last 15 minutes is now blended into the coming
+  intervals and fades back to the source's forecast as the horizon
+  grows: `w(H) = 0.5^(H/halflife)`, cut at 120 minutes.
+  The half-life follows the sky rather than the calendar — 70 minutes
+  when the recent error is steady, 31 when it is broken — so winter
+  stratus and summer cumulus sort themselves out with no setting to
+  maintain. Constants calibrated against 11 days of five-minute data,
+  not chosen by feel: clearness-index persistence beat carrying the
+  forecast ratio forward at every horizon (irradiance MAE −38 % at
+  15 min, −27 % at 30, −11 % at 60), while the ratio variant turned
+  *worse than doing nothing* beyond 45 minutes.
+  Deliberately narrow: only intervals still ahead are touched, so
+  elapsed hours stay bit-identical and the accuracy scoring never
+  grades a hindcast; day-ahead figures are untouched because the
+  weight is long gone by the evening cutoff. Bias learning reads the
+  raw provider rows and is unaffected. Off without a sensor, off with
+  learning disabled, off for the bare-physics baseline, and damped
+  while the bias model is still thin. A sensor that stops updating but
+  keeps reporting its last value is detected and ignored — the
+  collector's watchdog cannot tell that apart on its own. Diagnostics
+  on the plant irradiance sensor (`nowcast_active`, `nowcast_kt`,
+  `nowcast_sky`, `nowcast_halflife_min`, `nowcast_reason`, …). Note
+  that the pre-existing `truth_source: "nowcast"` on that same sensor
+  means something else entirely and is unchanged. Two-round Codex
+  review; its finding that blanking the irradiance components would
+  flip the transposition model for the whole 48-hour run — rewriting
+  the past and the day after tomorrow — is pinned by a test.
 - **Conversion layer & AC forecast (upgrade.md, tranche 1).** Per
   curtailment group an optional `output_path`: `direct` converts the DC
   forecast through an inverter efficiency curve (shipped datasheet JSON,

@@ -60,7 +60,21 @@ und Anwenden benutzen dasselbe Maß), im Docstring dokumentiert. Exakter
 Fix wäre, nur die POA-Beam-Komponente innerhalb der Physikkette zu
 skalieren — Chirurgie an `physics.run`, kein Patch.
 
-### 4. Nowcast: die eigene Einstrahlungsmessung vorwärts nutzen
+### 4. ~~Nowcast~~ — gebaut am 22.08., in Beobachtung
+
+Umgesetzt als kt-Persistenz (`core/persistence.py`), nicht als
+Verhältnis-Persistenz wie zuerst geplant: die Kalibrierung über 11 Tage
+hat die ursprüngliche Entscheidung widerlegt. Halbwertszeit 70 min bei
+ruhigem, 31 min bei aufgerissenem Himmel, Schnitt bei 120 min.
+
+Offen geblieben und beim ersten Winter zu prüfen: die Konstanten
+stammen aus Hochsommerdaten. Die Regime-Trennung sollte das auffangen
+(Hochnebel ist per Konstruktion „ruhig"), belegt ist es nicht.
+Ablesbar an `nowcast_sky` und `nowcast_halflife_min` am
+Einstrahlungssensor.
+
+<details>
+<summary>Ursprüngliche Analyse</summary>
 
 Beobachtet am 22.08. Die Tagesprognose stand um 11:08 bei 9,96 kWh,
 während der GW2000A bereits mehr Einstrahlung sah als die Vorhersage
@@ -89,6 +103,8 @@ Zu klären beim Bauen:
   Pfad ist sauber getrennt — beim Umbau muss er es bleiben.
 - Anlagen ohne Sensor: unverändertes Verhalten. Kein Fallback über die
   gemessene Leistung, die ist verschattungs- und drosselungsbehaftet.
+
+</details>
 
 ### 5. Restprognose zählt die angebrochene Stunde ganz mit
 
