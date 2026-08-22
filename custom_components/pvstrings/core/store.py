@@ -1129,6 +1129,55 @@ class Store:
                 cur = conn.execute("DELETE FROM shading_obs")
             return cur.rowcount
 
+    def replace_effects(
+        self, scope: str, effects: dict[str, tuple[float, float]], updated_at: int
+    ) -> None:
+        """Make the stored scope exactly ``effects``, in one transaction.
+
+        ``save_effects`` only upserts, so a key that stops qualifying --
+        a curve point that fell back below its evidence threshold -- would
+        survive in the database and come back as "learned" on the next
+        restart.  Scopes that are re-derived in full need replacement, not
+        merging.
+        """
+        with self._tx() as conn:
+            conn.execute("DELETE FROM model_effects WHERE scope = ?", (scope,))
+            if effects:
+                conn.executemany(
+                    """
+                    INSERT INTO model_effects (scope, key, value, n_eff, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (scope, key, value, n_eff, updated_at)
+                        for key, (value, n_eff) in effects.items()
+                    ],
+                )
+
+    def clear_conversion_obs(self, string_id: str | None = None) -> int:
+        """Discard conversion training pairs.
+
+        Part of resetting the model, not maintenance: the curves are refitted
+        from these on every learn pass, so clearing the fitted points while
+        leaving the pairs in place resets nothing -- the next hour rebuilds
+        the same curve.  It is also the only way back from a mis-scaled
+        output sensor.
+
+        Per string, the string's own mppt pairs go *and* every group pair it
+        contributed to: its power was part of that input sum, so a bad
+        reading poisoned those too.
+        """
+        with self._tx() as conn:
+            if string_id:
+                cur = conn.execute(
+                    "DELETE FROM conversion_5min WHERE scope_id = ? "
+                    "OR instr(',' || members || ',', ',' || ? || ',') > 0",
+                    (string_id, string_id),
+                )
+            else:
+                cur = conn.execute("DELETE FROM conversion_5min")
+            return cur.rowcount
+
     def clear_effects_for_string(self, string_id: str) -> None:
         """One string's learned factors; plant scope and ghi_bias stay.
 

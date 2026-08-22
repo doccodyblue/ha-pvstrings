@@ -916,6 +916,50 @@ class TestConversionPairs:
         store.mark_conversion_censored(0, 1000)
         assert store.conversion_rows() == []
 
+    def test_clearing_takes_the_pairs_a_string_contributed_to(self, store: Store):
+        """A per-string reset must reach the group pairs too: that string's
+        power was part of their input sum, so a bad reading poisoned them."""
+        store.upsert_conversion(
+            [
+                (300, "s1", "mppt", 600.0, 585.0, 1.0, "s1", 0),
+                (300, "g1", "inverter", 900.0, 860.0, 1.0, "s1,s2", 0),
+                (300, "s2", "mppt", 300.0, 290.0, 1.0, "s2", 0),
+            ]
+        )
+        assert store.clear_conversion_obs("s1") == 2
+        remaining = {row[1] for row in store.conversion_rows(uncensored_only=False)}
+        assert remaining == {"s2"}
+
+    def test_a_full_clear_leaves_no_pairs(self, store: Store):
+        store.upsert_conversion([(300, "s1", "mppt", 600.0, 585.0, 1.0, "s1", 0)])
+        assert store.clear_conversion_obs() == 1
+        assert store.conversion_rows(uncensored_only=False) == []
+
+    def test_replace_effects_drops_keys_that_stopped_qualifying(
+        self, store: Store
+    ):
+        """A curve point that fell back below its evidence threshold must
+        leave the database too, or it returns as learned after a restart."""
+        store.replace_effects(
+            "conversion_curve", {"g1|inverter|50": (0.94, 200.0)}, 1_700_000_000
+        )
+        store.replace_effects(
+            "conversion_curve", {"g1|inverter|20": (0.95, 80.0)}, 1_700_000_100
+        )
+        assert list(store.load_effects("conversion_curve")) == ["g1|inverter|20"]
+
+    def test_replace_effects_with_nothing_empties_the_scope(self, store: Store):
+        store.replace_effects(
+            "conversion_curve", {"g1|inverter|50": (0.94, 200.0)}, 1_700_000_000
+        )
+        store.replace_effects("conversion_curve", {}, 1_700_000_100)
+        assert store.load_effects("conversion_curve") == {}
+
+    def test_replace_effects_leaves_other_scopes_alone(self, store: Store):
+        store.save_effects("string", {"s1": (0.2, 10.0)}, 1_700_000_000)
+        store.replace_effects("conversion_curve", {}, 1_700_000_100)
+        assert store.load_effects("string") == {"s1": (0.2, 10.0)}
+
     def test_a_configured_scope_collecting_nothing_stays_visible(
         self, store: Store
     ):

@@ -31,10 +31,14 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 
+from . import conversion
 from . import curtailment as curt
+from . import curve_learning
+from .curve_learning import LearnedCurve
 from .aggregate import hourly_from_5min, interval_mid
 from .config import INTERVAL_SECONDS, GeometrySegment, PlantConfig
 from .learning import (
+    SCOPE_CONVERSION_CURVE,
     SCOPE_PLANT,
     SCOPE_STRING,
     SCOPE_STRING_DAYPART,
@@ -171,6 +175,8 @@ class LearnStats:
     ghi_hours_rejected: int = 0
     censored_hours: int = 0
     reconstructed_intervals: int = 0
+    #: Conversion curves whose evidence has moved at least one point.
+    curves_learned: int = 0
     #: Why observations were skipped.  A bare count says an hour was not used
     #: and leaves you guessing which of four quite different reasons applied --
     #: which is exactly how a plant can sit at zero learned observations for
@@ -230,6 +236,10 @@ class ForecastEngine:
         self._implausible_hours: frozenset[int] = frozenset()
         self._shading_fitted_day: int | None = None
         self._shading_fitted_counts: dict[str, int] = {}
+        #: Datasheet curves, injected by the integration layer (file I/O).
+        self.inverter_curves: dict[str, tuple[tuple[float, float], ...]] = {}
+        #: Learned conversion curves, keyed ``scope_id|stage``.
+        self.curves: dict[str, LearnedCurve] = {}
 
     # ------------------------------------------------------------------ #
     # model state
@@ -244,7 +254,71 @@ class ForecastEngine:
         self.ghi_bias = GhiBiasModel.from_rows(
             self.store.load_ghi_bias(self.plant.forecast_source)
         )
+        self.curves = curve_learning.from_rows(
+            self.store.load_effects(SCOPE_CONVERSION_CURVE),
+            self._curve_priors(),
+            {
+                f"{group.group_id}|inverter": group.curve_max_deviation_pp
+                for group in self.plant.groups
+            },
+        )
         self.fit_shading(force=True)
+
+    def _curve_priors(self) -> dict[str, tuple[tuple[float, float], ...]]:
+        """The configured curve per learnable scope, before any learning.
+
+        Honours the plant-wide switch as well as the per-group one: "apply
+        learned correction" off means every learned layer is off, which is
+        what makes a clean physics-only comparison possible.
+        """
+        if not self.plant.learning_enabled:
+            return {}
+        out: dict[str, tuple[tuple[float, float], ...]] = {}
+        for group in self.plant.groups:
+            if group.output_path != "direct" or not group.curve_learning:
+                continue
+            curve, _source = conversion.configured_curve(
+                group.inverter_model, group.custom_curve, self.inverter_curves
+            )
+            if curve:
+                out[f"{group.group_id}|inverter"] = tuple(curve)
+        return out
+
+    def fit_curves(self, now_ts: float) -> int:
+        """Correct the configured curves with the measured pairs.
+
+        Only groups whose owner switched learning on, and only the inverter
+        stage: the MPPT pairs keep accumulating, but that stage still runs
+        on a flat factor and turning it into a curve is its own change.
+        """
+        priors = self._curve_priors()
+        if not priors:
+            self.curves = {}
+            return 0
+        fitted: dict[str, LearnedCurve] = {}
+        for group in self.plant.groups:
+            key = f"{group.group_id}|inverter"
+            prior = priors.get(key)
+            if prior is None or not group.inverter_max_ac_w:
+                continue
+            pairs = [
+                (ts, in_w, out_w, coverage)
+                for ts, _scope, stage, in_w, out_w, coverage, _c in
+                self.store.conversion_rows(scope_id=group.group_id)
+                # The table models the stage on purpose; a group id and a
+                # string id could collide outside HA's ULID subentries.
+                if stage == "inverter"
+            ]
+            fitted[key] = curve_learning.fit_curve(
+                pairs,
+                prior,
+                reference_w=float(group.inverter_max_ac_w),
+                now_ts=now_ts,
+                max_deviation_pp=group.curve_max_deviation_pp,
+                min_samples=group.curve_min_samples,
+            )
+        self.curves = fitted
+        return sum(1 for curve in fitted.values() if curve.any_learned)
 
     def fit_shading(self, now_ts: float | None = None, force: bool = False) -> None:
         """Rebuild the sky maps from the raw observations.
@@ -297,6 +371,12 @@ class ForecastEngine:
             self.store.save_effects(scope, self.model.to_rows(scope), now_ts)
         self.store.save_ghi_bias(
             self.plant.forecast_source, self.ghi_bias.to_rows(), now_ts
+        )
+        # Replace, not merge: a point that fell back below its evidence
+        # threshold must disappear from the database too, or it returns as
+        # "learned" after the next restart.
+        self.store.replace_effects(
+            SCOPE_CONVERSION_CURVE, curve_learning.to_rows(self.curves), now_ts
         )
 
     # ------------------------------------------------------------------ #
@@ -1179,6 +1259,9 @@ class ForecastEngine:
 
         if stats.shading_observations:
             self.fit_shading(now_ts)
+        # After the censoring stamp above, so a curtailed interval cannot
+        # reach the fit.  Cheap: a few thousand rows grouped in memory.
+        stats.curves_learned = self.fit_curves(now_ts)
         stats.ghi_hours_rejected = len(self.implausible_ghi_hours(start, end))
         self.store.set_cursor(CURSOR_LEARN, end)
         self.store.set_cursor(CURSOR_HOURLY, end)

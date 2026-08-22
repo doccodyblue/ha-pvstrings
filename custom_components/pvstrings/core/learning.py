@@ -32,6 +32,9 @@ DAYPARTS = ("morning", "midday", "afternoon")
 SCOPE_PLANT = "plant"
 SCOPE_STRING = "string"
 SCOPE_STRING_DAYPART = "string_daypart"
+#: Learned conversion curve support points.  Shares the effects table --
+#: same shape, same persistence, same reset path.
+SCOPE_CONVERSION_CURVE = "conversion_curve"
 
 #: Half-life of the rolling mean, counted in effective observations.
 HALFLIFE = 15.0

@@ -895,6 +895,13 @@ class GroupConversionSensor(PvStringsEntity):
             "stages": list(group.converted.stages),
             "semantics": _AC_SEMANTICS if self._direct else _STORAGE_SEMANTICS,
         }
+        if group.converted.curve_prior is not None:
+            out["curve_prior"] = group.converted.curve_prior
+        if group.converted.learning is not None:
+            out["conversion_learning"] = {
+                "stage": "inverter_efficiency",
+                **group.converted.learning,
+            }
         if group.converted.factor is not None:
             # Flat-factor paths: the number that was actually applied, so a
             # card need not infer it from the ratio of two rounded totals.

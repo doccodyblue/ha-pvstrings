@@ -50,6 +50,9 @@ from .const import (
     CONF_AZIMUTH,
     CONF_BATTERY_COUPLED,
     CONF_CHARGE_EFFICIENCY,
+    CONF_CURVE_LEARNING,
+    CONF_CURVE_MAX_DEVIATION,
+    CONF_CURVE_MIN_SAMPLES,
     CONF_CUSTOM_CURVE,
     CONF_DISCHARGE_EFFICIENCY,
     CONF_FORECAST_CLIPPING,
@@ -499,6 +502,18 @@ def conversion_schema(path: str, defaults: dict[str, Any] | None = None) -> vol.
                 _optional(
                     CONF_AC_POWER_ENTITY, values.get(CONF_AC_POWER_ENTITY)
                 ): _power_entity_selector(),
+                vol.Optional(
+                    CONF_CURVE_LEARNING,
+                    default=values.get(CONF_CURVE_LEARNING, False),
+                ): BooleanSelector(),
+                vol.Optional(
+                    CONF_CURVE_MAX_DEVIATION,
+                    default=values.get(CONF_CURVE_MAX_DEVIATION, 5),
+                ): _number(1, 20, 0.5, "%"),
+                vol.Optional(
+                    CONF_CURVE_MIN_SAMPLES,
+                    default=values.get(CONF_CURVE_MIN_SAMPLES, 50),
+                ): _number(10, 2000, 10),
             }
         )
     return vol.Schema(
@@ -526,6 +541,9 @@ _DIRECT_KEYS = (
     CONF_CUSTOM_CURVE,
     CONF_FORECAST_CLIPPING,
     CONF_AC_POWER_ENTITY,
+    CONF_CURVE_LEARNING,
+    CONF_CURVE_MAX_DEVIATION,
+    CONF_CURVE_MIN_SAMPLES,
 )
 _STORAGE_KEYS = (
     CONF_MPPT_EFFICIENCY,

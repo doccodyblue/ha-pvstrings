@@ -273,7 +273,10 @@
             "ac_power_entity": "Gemessene AC-Leistung (optional)",
             "mppt_efficiency": "Wirkungsgrad externer MPPT",
             "charge_efficiency": "Ladewirkungsgrad Akku",
-            "discharge_efficiency": "Entladewirkungsgrad Akku"
+            "discharge_efficiency": "Entladewirkungsgrad Akku",
+            "curve_learning": "Kennlinie aus Messungen lernen",
+            "curve_max_deviation_pp": "Maximale Korrektur",
+            "curve_min_samples": "Evidenz je Stützstelle"
           },
           "data_description": {
             "inverter_model": "Datenblatt-Kennlinie. „Keine Kennlinie“ reicht DC unverändert durch.",
@@ -282,7 +285,10 @@
             "ac_power_entity": "Der AC-Ausgangssensor des Wechselrichters. Wird für die kommende Lernstufe gespeichert; noch ungenutzt.",
             "mppt_efficiency": "Nur für Laderegler vor dem Akku (z. B. Victron). 0 = keine eigene Stufe. Mikrowechselrichter haben die MPPT-Verluste schon in ihrer Kennlinie — nie beides konfigurieren.",
             "charge_efficiency": "DC-Pfad in den Akku. Die Prognose endet an der Akku-Klemme.",
-            "discharge_efficiency": "Nur für Plausibilitätsprüfungen gespeichert; Entladen ist Regelung, keine Prognose."
+            "discharge_efficiency": "Nur für Plausibilitätsprüfungen gespeichert; Entladen ist Regelung, keine Prognose.",
+            "curve_learning": "Korrigiert die Datenblatt-Kennlinie mit gemessenen DC/AC-Paaren. Braucht die gemessene AC-Leistung oben. Standardmäßig aus: Lernen verändert Prognosewerte. Das Datenblatt bleibt Ausgangspunkt und Rückfallebene.",
+            "curve_max_deviation_pp": "Wie weit ein gelernter Punkt vom Datenblatt abweichen darf, in Prozentpunkten. Die Sicherung dagegen, dass ein Tag mit kaputtem Sensor die Kennlinie umschreibt.",
+            "curve_min_samples": "Gewichtete Fünf-Minuten-Paare, die eine Laststelle braucht, bevor der gelernte Wert das Datenblatt ersetzt. Darunter gilt das Datenblatt — die Kennlinie ist nie halb gelernt."
           }
         }
       },

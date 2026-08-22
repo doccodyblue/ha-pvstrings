@@ -126,6 +126,61 @@ class TestDispatch:
         assert out.curve_source == CURVE_CUSTOM
 
 
+class TestLearnedCurveReachesTheForecast:
+    """Stage B is only worth anything if the fitted curve is the one the
+    forecast actually multiplies by."""
+
+    def _learned(self, efficiency: float):
+        from core.curve_learning import fit_curve
+
+        prior = ((2.0, 0.86), (10.0, 0.93), (50.0, 0.96), (100.0, 0.95))
+        rated, now = 1600.0, 1_800_000_000
+        in_w = rated * 0.5
+        return prior, fit_curve(
+            [(now - i * 300, in_w, in_w * efficiency, 1.0) for i in range(300)],
+            prior,
+            rated,
+            now,
+        )
+
+    def test_the_forecast_uses_the_learned_value(self):
+        prior, learned = self._learned(0.92)
+        hourly = {0: 0.8}  # 800 W mean = 50 % of 1600 W
+        with_learning = convert_group(
+            hourly, "direct", 1600.0, "custom", prior, False, None, 0.96, {},
+            learned=learned,
+        )
+        without = convert_group(
+            hourly, "direct", 1600.0, "custom", prior, False, None, 0.96, {},
+        )
+        assert with_learning.curve_source == "learned"
+        assert with_learning.curve_prior == CURVE_CUSTOM
+        assert without.curve_source == CURVE_CUSTOM
+        assert with_learning.hourly_kwh[0] < without.hourly_kwh[0]
+        assert with_learning.hourly_kwh[0] == pytest.approx(0.8 * 0.92, abs=0.005)
+
+    def test_a_curve_that_is_still_its_prior_is_not_called_learned(self):
+        from core.curve_learning import fit_curve
+
+        prior = ((2.0, 0.86), (50.0, 0.96), (100.0, 0.95))
+        empty = fit_curve([], prior, 1600.0, 1_800_000_000)
+        out = convert_group(
+            {0: 0.8}, "direct", 1600.0, "custom", prior, False, None, 0.96, {},
+            learned=empty,
+        )
+        assert out.curve_source == CURVE_CUSTOM
+        assert out.learning is None
+
+    def test_learning_carries_its_evidence_along(self):
+        prior, learned = self._learned(0.92)
+        out = convert_group(
+            {0: 0.8}, "direct", 1600.0, "custom", prior, False, None, 0.96, {},
+            learned=learned,
+        )
+        assert out.learning["bins"]["0.50"]["learned"] is True
+        assert out.learning["coverage"] > 0
+
+
 class TestCurveLoader:
     def test_the_shipped_models_all_load(self):
         # const.py standalone: importing the package would pull HA.

@@ -31,6 +31,9 @@ from .const import (
     CONF_AC_POWER_ENTITY,
     CONF_BATTERY_COUPLED,
     CONF_CHARGE_EFFICIENCY,
+    CONF_CURVE_LEARNING,
+    CONF_CURVE_MAX_DEVIATION,
+    CONF_CURVE_MIN_SAMPLES,
     CONF_CUSTOM_CURVE,
     CONF_DISCHARGE_EFFICIENCY,
     CONF_FORECAST_CLIPPING,
@@ -211,6 +214,13 @@ def build_plant_config(hass: HomeAssistant, entry: ConfigEntry) -> PlantConfig:
                         data.get(CONF_DISCHARGE_EFFICIENCY, 0.96)
                     ),
                     ac_power_entity=data.get(CONF_AC_POWER_ENTITY) or None,
+                    curve_learning=bool(data.get(CONF_CURVE_LEARNING, False)),
+                    curve_max_deviation_pp=float(
+                        data.get(CONF_CURVE_MAX_DEVIATION, 5.0)
+                    ),
+                    curve_min_samples=float(
+                        data.get(CONF_CURVE_MIN_SAMPLES, 50.0)
+                    ),
                 )
             )
 
@@ -393,6 +403,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: PvStringsConfigEntry) ->
         coordinator.inverter_curves = await hass.async_add_executor_job(
             load_curves, INVERTER_MODELS
         )
+        # The engine needs the datasheet curves before load_models(), which
+        # rebuilds the learned ones on top of them as priors.
+        coordinator.engine.inverter_curves = coordinator.inverter_curves
     await coordinator.async_prepare(
         weather_entity=_merged(entry).get(CONF_WEATHER_ENTITY)
     )

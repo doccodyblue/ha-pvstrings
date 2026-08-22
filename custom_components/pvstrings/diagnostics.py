@@ -123,6 +123,7 @@ async def async_get_config_entry_diagnostics(
                     "fixed_limit_w": group.fixed_limit_w,
                     "output_path": group.output_path,
                     "inverter_model": group.inverter_model,
+                    "curve_learning": group.curve_learning,
                     "forecast_clipping": group.forecast_clipping,
                     "mppt_efficiency": group.mppt_efficiency,
                     "charge_efficiency": group.charge_efficiency,

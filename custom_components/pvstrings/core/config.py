@@ -170,9 +170,19 @@ class CurtailmentGroup:
     mppt_efficiency: float | None = None
     charge_efficiency: float = 0.96
     discharge_efficiency: float = 0.96
-    #: Measured AC output, config-only in tranche 1 (future learning target).
-    #: Deliberately NOT tracked or persisted yet.
+    #: Measured AC output: the far side of the inverter stage, collected as
+    #: training data and, with learning on, the thing the curve is fitted to.
     ac_power_entity: str | None = None
+    #: Stage B (upgrade.md 3.3): correct the datasheet curve with measured
+    #: pairs.  Off by default -- learning changes forecast numbers, and that
+    #: is the user's decision, not an upgrade's.
+    curve_learning: bool = False
+    #: How far a learned support point may sit from the datasheet, in
+    #: percentage points.  The guard against a bad sensor day rewriting the
+    #: curve; the datasheet is wrong by tolerances, not by tens of percent.
+    curve_max_deviation_pp: float = 5.0
+    #: Evidence a support point needs before it overrides the datasheet.
+    curve_min_samples: float = 50.0
 
     def __post_init__(self) -> None:
         if not self.group_id:

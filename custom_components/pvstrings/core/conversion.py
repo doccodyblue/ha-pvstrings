@@ -12,12 +12,16 @@ by the learning stage together with unit-to-unit spread.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Mapping, Sequence
+from dataclasses import dataclass, replace
+from typing import Any, Mapping, Sequence
 
 CURVE_DATASHEET = "datasheet"
 CURVE_CUSTOM = "custom"
 CURVE_NEUTRAL = "neutral"
+#: Stage B: the configured curve, corrected by measured pairs.  Reported
+#: only once evidence has actually moved a support point -- a curve that
+#: is still entirely its own prior is not "learned", it is the prior.
+CURVE_LEARNED = "learned"
 #: The storage path has no curve at all -- its stages are flat configured
 #: factors.  Reporting "neutral" there claimed the output equalled the input
 #: while the factors were in fact applied.
@@ -38,6 +42,10 @@ class ConversionResult:
     #: Flat multiplier, for paths whose stages are constants rather than a
     #: load-dependent curve.  ``None`` where efficiency varies per hour.
     factor: float | None = None
+    #: What the learned curve was fitted on top of, when learning applies.
+    curve_prior: str | None = None
+    #: Evidence behind the learned curve, for display.
+    learning: dict[str, object] | None = None
 
 
 def interpolate(curve: Curve, load_fraction: float) -> float:
@@ -131,6 +139,18 @@ def convert_storage(
     )
 
 
+def configured_curve(
+    inverter_model: str | None,
+    custom_curve: Curve | None,
+    curves: Mapping[str, Curve],
+) -> tuple[Curve | None, str]:
+    """The curve before any learning, and what to call it."""
+    if inverter_model == "custom" and custom_curve:
+        return custom_curve, CURVE_CUSTOM
+    curve = curves.get(inverter_model) if inverter_model else None
+    return curve, CURVE_DATASHEET if curve else CURVE_NEUTRAL
+
+
 def convert_group(
     hourly_kwh: Mapping[int, float],
     output_path: str,
@@ -141,26 +161,30 @@ def convert_group(
     mppt_efficiency: float | None,
     charge_efficiency: float,
     curves: Mapping[str, Curve],
+    learned: Any | None = None,
 ) -> ConversionResult | None:
     """Dispatch one group's DC series through its configured path.
 
     ``None`` for path "none": no conversion, no new entities -- the
-    pre-conversion behaviour.
+    pre-conversion behaviour.  ``learned`` is a fitted curve that replaces
+    the configured one where evidence moved it; the prior stays visible so
+    a reader can tell what the learning changed.
     """
     if output_path == "direct":
-        if inverter_model == "custom" and custom_curve:
-            return convert_direct(
-                hourly_kwh, rated_ac_w, custom_curve, CURVE_CUSTOM,
-                forecast_clipping,
-            )
-        curve = curves.get(inverter_model) if inverter_model else None
-        return convert_direct(
-            hourly_kwh,
-            rated_ac_w,
-            curve,
-            CURVE_DATASHEET if curve else CURVE_NEUTRAL,
-            forecast_clipping,
+        prior, prior_source = configured_curve(
+            inverter_model, custom_curve, curves
         )
+        curve, source = prior, prior_source
+        learning = None
+        if learned is not None and prior is not None and learned.any_learned:
+            curve, source = learned.points(), CURVE_LEARNED
+            learning = learned.as_dict()
+        result = convert_direct(
+            hourly_kwh, rated_ac_w, curve, source, forecast_clipping
+        )
+        if source == CURVE_LEARNED and result.curve_source == CURVE_LEARNED:
+            return replace(result, curve_prior=prior_source, learning=learning)
+        return result
     if output_path == "storage":
         return convert_storage(hourly_kwh, mppt_efficiency, charge_efficiency)
     return None

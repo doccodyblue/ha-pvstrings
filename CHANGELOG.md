@@ -20,6 +20,21 @@
   limits (`semantics` attribute says so). Config entry minor version 2
   with `async_migrate_entry`; group flow gains a second, path-shaped
   step. Two-step Codex review per upgrade.md §11.
+- **The inverter curve corrects itself from measurements** (stage B).
+  With `curve_learning` switched on for a direct-path group, the
+  datasheet curve becomes a prior: support points across the load axis
+  move towards the measured efficiency, bounded by a cap around the
+  datasheet (default ±5 pp), and only once a point has enough evidence
+  (default 50 weighted pairs) — below that the datasheet stands, so the
+  curve is never half-learned. Clipped intervals, the standby floor and
+  everything the censoring marked stay out of the fit. Learned points
+  persist through the existing effects table and reset with
+  `reset_learning`; the sensor reports `curve_source: learned` with
+  `curve_prior` and a `conversion_learning` block (per-bucket eta, n_eff,
+  prior, coverage) so learned and datasheet can be compared. Off by
+  default: learning changes forecast numbers, and that is the owner's
+  decision. The MPPT stage keeps its flat factor for now — its pairs
+  keep accumulating.
 - **Conversion stages are now measured, not just asserted.** Where both
   sides of a stage exist as entities, the collector records the pair every
   five minutes into `conversion_5min` (store schema v6): the inverter stage

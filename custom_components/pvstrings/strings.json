@@ -273,7 +273,10 @@
             "ac_power_entity": "Measured AC power (optional)",
             "mppt_efficiency": "External MPPT efficiency",
             "charge_efficiency": "Battery charge efficiency",
-            "discharge_efficiency": "Battery discharge efficiency"
+            "discharge_efficiency": "Battery discharge efficiency",
+            "curve_learning": "Learn the curve from measurements",
+            "curve_max_deviation_pp": "Maximum correction",
+            "curve_min_samples": "Evidence per support point"
           },
           "data_description": {
             "inverter_model": "Datasheet efficiency curve. 'No curve' passes DC through unchanged.",
@@ -282,7 +285,10 @@
             "ac_power_entity": "The inverter's AC output sensor. Stored for the upcoming learning stage; not used yet.",
             "mppt_efficiency": "Only for charge controllers in front of the battery (e.g. Victron). 0 = no separate stage. Micro-inverters already include MPPT losses in their curve — never configure both.",
             "charge_efficiency": "DC path into the battery. The forecast ends at the battery terminal.",
-            "discharge_efficiency": "Stored for plausibility checks only; discharge is a control decision, not a forecast."
+            "discharge_efficiency": "Stored for plausibility checks only; discharge is a control decision, not a forecast.",
+            "curve_learning": "Corrects the datasheet curve with measured DC/AC pairs. Needs the measured AC power above. Off by default: learning changes forecast numbers. The datasheet stays the starting point and the fallback.",
+            "curve_max_deviation_pp": "How far a learned point may sit from the datasheet, in percentage points. The guard against one bad sensor day rewriting the curve.",
+            "curve_min_samples": "Weighted five-minute pairs a load point needs before the learned value replaces the datasheet. Points below it keep the datasheet, so the curve is never half-learned."
           }
         }
       },

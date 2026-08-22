@@ -32,17 +32,27 @@ Zu entscheiden beim Bauen:
   5–7 %. Neu durchrechnen (Rohdaten bleiben unangetastet, nur die
   Interpretation ändert sich).
 
-### 2. Phase 4b — Kennlinien wirklich fitten
+### 2. Kennlinien-Lernen: Feinschliff an den Konstanten
 
-Gesammelt wird seit 21.08. (`conversion_5min`). Der Fit selbst fehlt:
-Buckets über der Lastachse, Datenblatt als Prior, `n_eff` je Bucket,
-Standby-Sockel aus den Daten statt geraten, `curve_source: learned`.
-Attribut-Vertrag ist von der Dash-Session vorgegeben
-(`handover-wandlung-lernen.md` dort): `curve_prior`,
-`conversion_learning.bins`, `coverage`.
+Stufe B ist gebaut (22.08.) und läuft mit Leitplanken aus der Spec.
+Zwei Konstanten sind noch geraten und gehören nachgezogen, sobald ein
+paar klare Tage in `conversion_5min` liegen:
 
-**Frühestens Anfang September** — der Sinn des Wartens ist, Streuung und
-Bucket-Besetzung zu messen statt zu schätzen. Vorher nicht anfangen.
+- **`LOAD_BUCKETS`** (2/5/10/20/35/50/75/100 %): sitzen die Stützstellen
+  dort, wo die Paare tatsächlich landen? Im Code als vorläufig markiert.
+- **`STANDBY_FLOOR_PCT`** (1 %): der Eigenverbrauch des Wechselrichters
+  ist messbar, sobald genug Schwachlast-Paare da sind — dann die
+  Schwelle aus den Daten setzen statt aus dem Bauch.
+
+Reine Konstantenpflege, kein Umbau. Prüfen über
+`conversion_curves` in der Diagnose (gelernt vs. Datenblatt je Bucket).
+
+### 2b. MPPT-Stufe lernt noch nicht
+
+Die Paare werden gesammelt, angewendet wird weiter ein fester Faktor.
+Grund: gemessen 0,972/0,971 gegen konfigurierte 0,97 — der Pauschalwert
+stimmt fast, und eine Kurve daraus zu machen hieße `convert_storage`
+umzubauen. Lohnt sich erst, wenn die Residuen es rechtfertigen.
 
 ### 3. POA-Beam-Anteil exakt statt horizontal
 

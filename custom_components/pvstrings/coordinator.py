@@ -550,6 +550,13 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
                 mppt_efficiency=group.mppt_efficiency,
                 charge_efficiency=group.charge_efficiency,
                 curves=self.inverter_curves,
+                learned=(
+                    self.engine.curves.get(f"{group.group_id}|inverter")
+                    # Both switches, like every other learned layer: the
+                    # plant-wide one exists so a user can see bare physics.
+                    if group.curve_learning and self.plant.learning_enabled
+                    else None
+                ),
             )
             if group.output_path == OUTPUT_PATH_DIRECT and converted is not None:
                 has_direct = True
@@ -657,6 +664,12 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
                 "strings": self.engine.shading.summary(),
             },
             "observations": self.engine.model.observations_seen,
+            # Learned vs. datasheet side by side: an efficiency deviation is
+            # otherwise not diagnosable after the fact.
+            "conversion_curves": {
+                key: curve.as_dict()
+                for key, curve in sorted(self.engine.curves.items())
+            },
         }
         return data
 
@@ -984,8 +997,14 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
             await self.hass.async_add_executor_job(
                 self.store.clear_shading_obs, string_id
             )
+            await self.hass.async_add_executor_job(
+                self.store.clear_conversion_obs, string_id
+            )
         else:
             await self.hass.async_add_executor_job(self.store.clear_effects, None)
             await self.hass.async_add_executor_job(self.store.clear_shading_obs)
+            # The curves are refitted from these every hour, so leaving them
+            # would rebuild what the reset just discarded.
+            await self.hass.async_add_executor_job(self.store.clear_conversion_obs)
         await self.hass.async_add_executor_job(self.engine.load_models)
         await self.async_request_refresh()
