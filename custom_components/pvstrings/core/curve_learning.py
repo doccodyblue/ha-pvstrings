@@ -55,6 +55,21 @@ RECENCY_HALFLIFE_DAYS = 365.0
 #: so it survives a restart alongside the support points.
 MAX_LOAD_KEY = -1.0
 
+#: A real inverter loses several points of efficiency between a tenth of
+#: its rating and half of it -- that droop is the entire reason curves are
+#: load-dependent.  Measuring less than this across such a span means the
+#: two sides are not independent: some DTUs report AC as DC times a fixed
+#: factor, and learning from that pair teaches the firmware's constant
+#: while erasing the real droop, which hurts most in exactly the low-load
+#: hours that carry a good share of the yearly energy.
+IMPLAUSIBLE_FLATNESS_PP = 1.5
+#: The two points compared must be this far apart in load to say anything.
+FLATNESS_MIN_SPAN = 4.0
+#: ...and each needs at least this much evidence to be worth comparing.
+FLATNESS_MIN_EVIDENCE = 5.0
+
+BLOCKED_DERIVED = "output_appears_derived_from_input"
+
 
 @dataclass(frozen=True, slots=True)
 class Bin:
@@ -82,6 +97,10 @@ class LearnedCurve:
     """A curve plus the evidence behind it."""
 
     bins: dict[float, Bin] = field(default_factory=dict)
+    #: Set when the evidence was rejected as implausible.  The measurements
+    #: stay visible in the bins -- seeing *why* nothing is being learned is
+    #: the whole point -- but nothing is applied.
+    blocked: str | None = None
     #: Highest load fraction ever observed, in percent.  A 1.4 kWp array on
     #: a 1600 W inverter physically cannot pass ~87 %, so its top support
     #: points can never fill -- and a readiness figure measured against
@@ -108,18 +127,18 @@ class LearnedCurve:
     def coverage(self) -> float:
         """Share of the *reachable* support points that are evidence-driven."""
         reachable = self.reachable
-        if not reachable:
+        if self.blocked or not reachable:
             return 0.0
         moved = sum(1 for load in reachable if self.bins[load].learned)
         return round(moved / len(reachable), 3)
 
     @property
     def any_learned(self) -> bool:
-        return any(b.learned for b in self.bins.values())
+        return not self.blocked and any(b.learned for b in self.bins.values())
 
     @property
     def any_evidence(self) -> bool:
-        return any(b.n_eff > 0 for b in self.bins.values())
+        return not self.blocked and any(b.n_eff > 0 for b in self.bins.values())
 
     def points(self) -> tuple[tuple[float, float], ...]:
         """``((load_pct, eta), ...)`` for the interpolator."""
@@ -131,6 +150,7 @@ class LearnedCurve:
         return {
             "coverage": self.coverage,
             "max_load": round(self.max_load_pct / 100, 3),
+            "blocked": self.blocked,
             "bins": {
                 f"{load / 100:.2f}": {
                     "eta": round(b.eta, 4),
@@ -148,6 +168,27 @@ class LearnedCurve:
 
 def _nearest_bucket(load_pct: float) -> float:
     return min(LOAD_BUCKETS, key=lambda edge: abs(edge - load_pct))
+
+
+def _looks_derived(bins: Mapping[float, Bin]) -> bool:
+    """Is the measured efficiency suspiciously flat across the load axis?
+
+    Compares the lowest and highest sufficiently-evidenced support points
+    that are far enough apart in load to say anything.  Real hardware
+    droops between them; a fixed factor does not.
+    """
+    solid = sorted(
+        load
+        for load, b in bins.items()
+        if b.measured is not None and b.n_eff >= FLATNESS_MIN_EVIDENCE
+    )
+    if len(solid) < 2:
+        return False
+    low, high = solid[0], solid[-1]
+    if high / max(low, 0.01) < FLATNESS_MIN_SPAN:
+        return False
+    difference = abs(bins[high].measured - bins[low].measured) * 100.0
+    return difference < IMPLAUSIBLE_FLATNESS_PP
 
 
 def _recency(ts_utc: float, now_ts: float) -> float:
@@ -247,7 +288,36 @@ def fit_curve(
             measured=measured,
             spread=variance ** 0.5,
         )
-    return LearnedCurve(bins=bins, max_load_pct=round(max_load, 2))
+    return _guarded(bins, round(max_load, 2))
+
+
+def _guarded(bins: dict[float, Bin], max_load_pct: float) -> LearnedCurve:
+    """Refuse implausible evidence, wherever the bins came from.
+
+    Applied on the way out of a fit *and* on the way back in from storage:
+    the stored numbers are the raw measurements, so a curve rejected as
+    derived would otherwise come back unexamined after a restart and be
+    applied.
+    """
+    if not _looks_derived(bins):
+        return LearnedCurve(bins=bins, max_load_pct=max_load_pct)
+    # Keep the measurements on display and apply none of them: the numbers
+    # are real, they are just not measuring a conversion.
+    return LearnedCurve(
+        bins={
+            load: Bin(
+                eta=b.prior,
+                n_eff=b.n_eff,
+                prior=b.prior,
+                learned=False,
+                measured=b.measured,
+                spread=b.spread,
+            )
+            for load, b in bins.items()
+        },
+        blocked=BLOCKED_DERIVED,
+        max_load_pct=max_load_pct,
+    )
 
 
 def to_rows(curves: Mapping[str, LearnedCurve]) -> dict[str, tuple[float, float]]:
@@ -342,8 +412,7 @@ def from_rows(
                 bins[load] = Bin(
                     eta=prior_eta, n_eff=0.0, prior=prior_eta, learned=False
                 )
-        out[scope_key] = LearnedCurve(
-            bins=bins,
-            max_load_pct=stored_max[0] if stored_max else max_load,
+        out[scope_key] = _guarded(
+            bins, stored_max[0] if stored_max else max_load
         )
     return out

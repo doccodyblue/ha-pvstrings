@@ -155,6 +155,71 @@ class TestExcludedRegimes:
         assert fit_curve(pairs(50.0, 0.94, 500), PRIOR, 0.0, NOW).bins == {}
 
 
+class TestImplausibleEvidence:
+    """Some inverters report AC as DC times a fixed factor.
+
+    Measured on a live HMS-1600-4T: 0.9528 at 2 % load, 0.9506 at 50 %,
+    0.9515 at 75 % -- a quarter of a percentage point across the whole
+    axis, with a spread of two ten-thousandths. Real hardware loses ten
+    points or more between those loads. Learning from such a pair teaches
+    the firmware's constant and erases the real droop, which hurts most
+    in the low-load hours that carry a good share of the yearly energy.
+    """
+
+    def _flat(self, efficiency=0.95, count=300):
+        rows = []
+        for load in (2.0, 5.0, 10.0, 20.0, 35.0, 50.0):
+            rows += pairs(load, efficiency, count)
+        return rows
+
+    def test_a_flat_measurement_is_refused(self):
+        curve = fit_curve(self._flat(), PRIOR, RATED, NOW)
+        assert curve.blocked == "output_appears_derived_from_input"
+        assert curve.any_learned is False
+        assert curve.any_evidence is False
+        assert curve.coverage == 0.0
+
+    def test_nothing_is_applied_but_everything_stays_visible(self):
+        """Seeing why nothing is learned is the entire point."""
+        curve = fit_curve(self._flat(), PRIOR, RATED, NOW)
+        for load, b in curve.bins.items():
+            assert b.eta == pytest.approx(b.prior)
+            if b.measured is not None:
+                assert b.measured == pytest.approx(0.95, abs=0.01)
+                assert b.n_eff > 0
+
+    def test_a_real_curve_with_droop_is_accepted(self):
+        """The guard must not reject genuine hardware."""
+        rows = (
+            pairs(2.0, 0.84, 300) + pairs(10.0, 0.91, 300)
+            + pairs(50.0, 0.955, 300)
+        )
+        curve = fit_curve(rows, PRIOR, RATED, NOW)
+        assert curve.blocked is None
+        assert curve.any_learned is True
+
+    def test_one_load_point_alone_cannot_look_flat(self):
+        """Flatness needs two points far enough apart to mean anything."""
+        curve = fit_curve(pairs(50.0, 0.95, 300), PRIOR, RATED, NOW)
+        assert curve.blocked is None
+
+    def test_thin_points_do_not_trigger_the_guard(self):
+        rows = pairs(2.0, 0.95, 2) + pairs(50.0, 0.95, 2)
+        assert fit_curve(rows, PRIOR, RATED, NOW).blocked is None
+
+    def test_a_restart_does_not_launder_refused_evidence(self):
+        """The stored numbers are the raw measurements, so a curve rejected
+        as derived would come back unexamined and be applied."""
+        curve = fit_curve(self._flat(), PRIOR, RATED, NOW)
+        restored = from_rows(
+            to_rows({"g1|inverter": curve}), {"g1|inverter": PRIOR}
+        )["g1|inverter"]
+        assert restored.blocked == "output_appears_derived_from_input"
+        assert restored.any_learned is False
+        for b in restored.bins.values():
+            assert b.eta == pytest.approx(b.prior)
+
+
 class TestPersistence:
     def test_only_measured_points_are_stored(self):
         """Storing the prior too would freeze today's datasheet into the
@@ -224,7 +289,8 @@ class TestTheDashboardContract:
     def test_the_block_has_the_agreed_shape(self):
         curve = fit_curve(pairs(50.0, 0.94, 200), PRIOR, RATED, NOW)
         block = curve.as_dict()
-        assert set(block) == {"coverage", "max_load", "bins"}
+        assert set(block) == {"coverage", "max_load", "blocked", "bins"}
+        assert block["blocked"] is None
         entry = block["bins"]["0.50"]
         assert set(entry) == {
             "eta", "n_eff", "prior", "learned", "measured", "spread",
