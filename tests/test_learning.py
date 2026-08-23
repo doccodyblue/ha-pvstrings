@@ -9,7 +9,6 @@ import pytest
 from core.learning import (
     MAX_N_EFF,
     SHRINK_K,
-    STRING_DAYPART_MIN_N,
     Effect,
     GhiBiasModel,
     LogRatioModel,
@@ -19,6 +18,7 @@ from core.learning import (
     plant_key,
     weather_class,
 )
+from core.quality import assess
 
 
 class TestBuckets:
@@ -81,15 +81,19 @@ class TestEffect:
             effect.update(0.2, 1.0)
         assert effect.n_eff == pytest.approx(MAX_N_EFF, rel=0.01)
 
-    def test_no_threshold_may_sit_above_the_ceiling(self):
-        """A gate above the ceiling disables its layer permanently.
+    def test_the_ceiling_moves_with_the_observation_weight(self):
+        """Why no layer may be gated on an ``n_eff`` threshold.
 
-        STRING_DAYPART_MIN_N was 25 against a ceiling of 22.14: the per-string
-        x daypart effect accumulated evidence for ever, was filtered back out
-        of the summary by the same threshold, and never once reached the
-        forecast.
+        The ceiling is ``w / ALPHA``, not MAX_N_EFF: a plant whose hours are
+        mostly censored saturates far below it and would sit under any fixed
+        gate for ever.  Two revisions of the string x daypart gate died of
+        this -- first an absolute 25 above the full-weight ceiling, then
+        0.7 x MAX_N_EFF above the half-weight one.
         """
-        assert STRING_DAYPART_MIN_N < MAX_N_EFF
+        half = Effect()
+        for _ in range(2000):
+            half.update(0.2, 0.5)
+        assert half.n_eff == pytest.approx(MAX_N_EFF * 0.5, rel=0.01)
 
 
 class TestLogRatioModel:
@@ -131,11 +135,59 @@ class TestLogRatioModel:
             model.observe(self._obs(string_id="s1", part="afternoon", measured_kwh=1.0))
             model.observe(self._obs(string_id="s2", part="afternoon", measured_kwh=1.0))
 
-        buckets = model.summary()["string_daypart"]
-        assert "s1|morning" in buckets, "the interaction never became visible"
+        assert "s1|morning" in model.summary()["string_daypart"]
         assert model.factor("s1", "clear", "morning") < model.factor(
             "s1", "clear", "afternoon"
         )
+
+    def test_a_thin_interaction_is_reported_rather_than_hidden(self):
+        """Filling and broken must not look the same from outside.
+
+        The bucket is persisted from the first observation, so a summary that
+        drops the thin ones invites the reading that the write path is dead --
+        which is how issue #2 was reported.
+        """
+        model = LogRatioModel()
+        for _ in range(5):
+            model.observe(self._obs(string_id="s1", part="morning"))
+
+        bucket = model.summary()["string_daypart"]["s1|morning"]
+        assert bucket["n_eff"] > 0.0
+
+    def test_a_thin_interaction_ramps_in_rather_than_switching_on(self):
+        """Shrinkage replaces the gate, so growth must be gradual.
+
+        A cliff at some ``n_eff`` would step the forecast the moment it was
+        crossed; the whole reason the gate came out is that a ramp is both
+        safer and reachable at any observation weight.
+        """
+        thin, thick = LogRatioModel(), LogRatioModel()
+        for _ in range(3):
+            thin.observe(self._obs(string_id="s1", part="morning", measured_kwh=0.7))
+        for _ in range(200):
+            thick.observe(self._obs(string_id="s1", part="morning", measured_kwh=0.7))
+
+        assert 0.0 < abs(thin.string_daypart["s1|morning"].shrunk) < abs(
+            thick.string_daypart["s1|morning"].shrunk
+        )
+
+    def test_a_censored_hour_is_discounted_once_not_twice(self):
+        """``quality.assess`` owns the value-kind discount.
+
+        Halving it again here made a censored hour worth a quarter of a
+        measured one, which on a mostly-censored plant is the difference
+        between an interaction layer that switches on and one that never does.
+        """
+        censored = LogRatioModel()
+        censored.observe(
+            self._obs(
+                measured_kwh=1.5,
+                physics_kwh=1.0,
+                weight=0.5,  # what assess() hands over for a lower bound
+                value_kind="lower_bound",
+            )
+        )
+        assert censored.string["s1"].n_eff == pytest.approx(0.5)
 
     def test_plant_effect_is_shared_between_strings(self):
         """A forecast error is plant-wide; one string's evidence must help the
@@ -210,10 +262,23 @@ class TestCensoredUpdates:
         assert model.factor("s1", "clear", "midday") == pytest.approx(1.0)
 
     def test_reconstructed_moves_less_than_measured(self):
+        """Weights come from ``assess`` here, as they do in the learn pass.
+
+        Building them by hand would let the discount be applied twice again
+        without a test noticing -- that is the shape of the bug this pins.
+        """
         strong, weak = LogRatioModel(), LogRatioModel()
         for _ in range(30):
-            strong.observe(self._obs(measured_kwh=0.7))
-            weak.observe(self._obs(measured_kwh=0.7, value_kind="reconstructed"))
+            strong.observe(
+                self._obs(measured_kwh=0.7, weight=assess(1.0, 40.0).weight)
+            )
+            weak.observe(
+                self._obs(
+                    measured_kwh=0.7,
+                    value_kind="reconstructed",
+                    weight=assess(1.0, 40.0, "reconstructed").weight,
+                )
+            )
         assert weak.factor("s1", "clear", "midday") > strong.factor(
             "s1", "clear", "midday"
         )

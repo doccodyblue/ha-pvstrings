@@ -20,7 +20,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Iterable, Mapping
 
-from .quality import VALUE_LOWER_BOUND, VALUE_MEASURED, VALUE_RECONSTRUCTED
+from .quality import VALUE_LOWER_BOUND, VALUE_MEASURED
 
 # --------------------------------------------------------------------------- #
 # buckets
@@ -54,13 +54,15 @@ SHRINK_K = 10.0
 #: that is about twenty-two, no matter how long a plant runs.
 MAX_N_EFF = 1.0 / ALPHA
 
-#: A per-string x daypart effect only switches on once its bucket is populated.
-#: Expressed as a share of what a bucket can ever hold, because a plain
-#: constant here was set to 25 -- above the ceiling above -- which disabled the
-#: whole layer permanently and invisibly: it accumulated evidence for ever,
-#: ``summary()`` filtered it back out with the same threshold, and
-#: ``log_correction`` skipped it on every single call.
-STRING_DAYPART_MIN_N = 0.7 * MAX_N_EFF
+#: There is deliberately no evidence gate on the string x daypart layer.
+#: Two attempts at one both failed the same way: any threshold is compared
+#: against ``n_eff``, whose ceiling is ``w / ALPHA`` and therefore depends on
+#: the mean observation weight.  At 0.7 x MAX_N_EFF a plant averaging weight
+#: 0.5 -- a battery-coupled one, where most hours are censored -- could never
+#: reach it, so the layer stayed dark for ever on exactly the installations
+#: that needed it.  ``Effect.shrunk`` already does the job the gate was meant
+#: to do, and does it as a ramp instead of a cliff: half strength at
+#: ``SHRINK_K`` observations, and near zero below that.
 
 #: Hard clamp on any single correction, in the log domain.  exp(0.7) ~ 2.0.
 MAX_LOG_EFFECT = 0.7
@@ -233,7 +235,7 @@ class LogRatioModel:
         if offset is not None:
             total += offset.shrunk
         interaction = self.string_daypart.get(f"{string_id}|{part}")
-        if interaction is not None and interaction.n_eff >= STRING_DAYPART_MIN_N:
+        if interaction is not None:
             total += interaction.shrunk
         return _clamp(total, -MAX_LOG_EFFECT * 2, MAX_LOG_EFFECT * 2)
 
@@ -287,11 +289,12 @@ class LogRatioModel:
             return False
         ratio = obs.measured_kwh / obs.physics_kwh
 
+        # ``quality.assess`` owns the value-kind discount and has already
+        # applied it.  Discounting again here made a censored hour worth a
+        # quarter of a measured one and a reconstructed one an eighth, which on
+        # a battery-coupled plant -- most hours censored -- starves every bucket
+        # in the model.
         weight = obs.weight
-        if obs.value_kind == VALUE_LOWER_BOUND:
-            weight *= 0.5
-        elif obs.value_kind == VALUE_RECONSTRUCTED:
-            weight *= 0.35
 
         residual = math.log(ratio)
 
@@ -327,10 +330,13 @@ class LogRatioModel:
                 key: {"factor": round(math.exp(e.shrunk), 4), "n_eff": round(e.n_eff, 2)}
                 for key, e in sorted(self.string.items())
             },
+            # Every bucket, unfiltered.  These rows are written to the store
+            # from the first observation onwards, so a summary that dropped the
+            # thin ones made "still filling" and "the write path is dead" look
+            # identical from outside -- which is how this got reported as a bug.
             "string_daypart": {
                 key: {"factor": round(math.exp(e.shrunk), 4), "n_eff": round(e.n_eff, 2)}
                 for key, e in sorted(self.string_daypart.items())
-                if e.n_eff >= STRING_DAYPART_MIN_N
             },
         }
 

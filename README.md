@@ -233,7 +233,7 @@ Two details that are easy to get wrong:
 ```
 log(actual / physics) = plant_effect[weather_class × daypart]   (12 shared effects)
                       + string_offset[string_id]                (strongly regularised)
-                      ( + string_daypart[string, daypart]  once the bucket is populated )
+                      ( + string_daypart[string, daypart]  shrunk to neutral while thin )
 ```
 
 Forecast errors act plant-wide; mounting, nameplate and shading errors act per

@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **The per-string × daypart correction could never switch on for a
+  battery-coupled plant.** It was gated on `n_eff >= 0.7 × MAX_N_EFF`,
+  but `MAX_N_EFF` is where `n_eff` saturates *at observation weight 1.0*.
+  The real ceiling is `w / ALPHA`, so a plant whose hours are mostly
+  censored — which is every battery-coupled one — saturated around 11 and
+  sat under a gate of 15.5 for ever. The same class of bug the gate itself
+  was introduced to fix, one revision later. The gate is gone: `Effect.shrunk`
+  already holds a thin bucket near neutral, and does it as a ramp rather
+  than a cliff at some threshold. (#2)
+- **A censored hour counted a quarter, not a half.** `quality.assess`
+  applies the value-kind discount when the observation is built and
+  `LogRatioModel.observe` applied it a second time — 0.25× for a curtailed
+  hour, 0.12× for a reconstructed one. On a plant where two hours in three
+  are curtailed this starved every bucket in the model.
+- **`log_ratio.string_daypart` reported `{}` while it was filling.** The
+  summary filtered the table by the same gate that decided whether the
+  layer was in use, so twelve populated buckets in the database showed as
+  an empty dict in both the sensor attribute and the diagnostics — making
+  "not enough evidence yet" and "the write path is broken" indistinguishable
+  from outside. All buckets are now reported with their `n_eff`. (#2)
+
 ## v1.20.0 — 2026-08-22
 
 ### Added
