@@ -4,7 +4,7 @@
 
 > ## ⚠️ Beta — young, and honest about it
 >
-> Version 1.20.0. Running on **two installations** since 11 August 2026 — long
+> Version 1.20.1. Running on **two installations** since 11 August 2026 — long
 > enough to have found real bugs, nowhere near long enough to be trusted
 > blindly. Treat every number it produces as provisional.
 >
