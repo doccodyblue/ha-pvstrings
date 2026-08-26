@@ -69,6 +69,24 @@ this.
 All energy sensors carry proper `device_class` and `state_class`, so they work
 in the Energy dashboard and in long-term statistics.
 
+### Reading it back out
+
+Everything above is an ordinary entity with ordinary attributes — nothing is
+locked inside a custom card. The hourly series sits in the `forecast` attribute,
+templates and automations read it like any other sensor, and the per-group
+*Remaining forecast* exists precisely so a controller can ask how much is still
+to come behind one inverter before it decides to throttle or divert.
+
+That is the intended use: this integration answers *what the plant could
+produce*, and leaves *what to do about it* to your automations.
+
+If you would rather see it than query it,
+**[PV Strings Dashboard](https://github.com/doccodyblue/ha-pvstrings-dash)** is a
+separate HACS repository — cards for the sky map, the forecast, the conversion
+path and the per-hour correction chain, plus a strategy that builds a whole
+dashboard from your entity registry without a card editor. It is optional, and
+it draws nothing the integration does not already publish.
+
 ---
 
 ## Installation
