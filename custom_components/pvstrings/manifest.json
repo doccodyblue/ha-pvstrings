@@ -1,6 +1,9 @@
 {
   "domain": "pvstrings",
   "name": "PV Strings",
+  "after_dependencies": [
+    "recorder"
+  ],
   "codeowners": [
     "@doccodyblue"
   ],

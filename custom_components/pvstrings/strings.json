@@ -128,7 +128,6 @@
   },
   "config_subentries": {
     "string": {
-      "title": "PV string",
       "initiate_flow": {
         "user": "Add string",
         "reconfigure": "Edit string"
@@ -211,7 +210,6 @@
       }
     },
     "curtailment_group": {
-      "title": "Curtailment group",
       "initiate_flow": {
         "user": "Add curtailment group",
         "reconfigure": "Edit curtailment group"

@@ -128,7 +128,6 @@
   },
   "config_subentries": {
     "string": {
-      "title": "PV-Strang",
       "initiate_flow": {
         "user": "Strang hinzufügen",
         "reconfigure": "Strang bearbeiten"
@@ -211,7 +210,6 @@
       }
     },
     "curtailment_group": {
-      "title": "Abregelungsgruppe",
       "initiate_flow": {
         "user": "Abregelungsgruppe hinzufügen",
         "reconfigure": "Abregelungsgruppe bearbeiten"
