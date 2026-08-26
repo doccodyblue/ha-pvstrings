@@ -224,7 +224,13 @@ class TestConcernsReachTheUser:
 
     #: Which subentry type owns which concern, mirroring the two detectors.
     OWNERS = {
-        "string": ("helper_entity", "power_entity_reused", "power_entity_missing"),
+        "string": (
+            "helper_entity",
+            "power_entity_reused",
+            "power_entity_missing",
+            "power_entity_has_other_role",
+            "charger_vocabulary",
+        ),
         "curtailment_group": (
             "fixed_limit_with_battery",
             "storage_without_battery",
@@ -306,3 +312,85 @@ class TestConcernsReachTheUser:
     def test_the_group_form_runs_the_concern_check(self):
         source = FLOW.read_text()
         assert "group_concerns(self.hass, self._get_entry(), data)" in source
+
+
+class TestFractionalCurve:
+    """Percent-vs-fraction is a typo, so it gets an error, not a checkbox.
+
+    Entered as fractions the curve parses cleanly and every real load lands
+    past the last support point, where interpolation clamps to one constant
+    efficiency -- the curve stops being a curve without ever complaining.
+    """
+
+    def test_the_parser_rejects_a_curve_that_never_leaves_the_first_percent(self):
+        source = FLOW.read_text()
+        assert "_FractionalCurve" in source
+        assert "curve_fractional" in source
+
+    @pytest.mark.parametrize(
+        "path", TestConcernsReachTheUser.TRANSLATIONS, ids=lambda p: p.name
+    )
+    def test_the_message_says_what_to_write_instead(self, path):
+        import json
+
+        errors = json.loads(path.read_text())["config_subentries"][
+            "curtailment_group"
+        ]["error"]
+        assert "curve_fractional" in errors
+        # The point of a separate message is the worked example in it.
+        assert "100:0.95" in errors["curve_fractional"]
+
+
+class TestConstantsResolve:
+    """Every constant the flow uses must actually be imported.
+
+    The other tests here read the file as text or AST and never import it, so a
+    name that exists nowhere sails straight through them -- and Home Assistant
+    then raises ``NameError`` inside a form submit, which surfaces to the user
+    as a bare "Unknown error occurred". Two missing imports were caught this
+    way while the concern checks were being written.
+
+    Only SHOUTING_CASE names are examined: this module never uses that spelling
+    for a local, so membership needs no scope analysis to be exact.
+    """
+
+    @staticmethod
+    def _available(tree: ast.Module) -> set[str]:
+        names = set(dir(__builtins__)) | {"__name__", "__doc__"}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                names.update(alias.asname or alias.name for alias in node.names)
+            elif isinstance(node, ast.Import):
+                names.update(
+                    (alias.asname or alias.name).split(".")[0] for alias in node.names
+                )
+            elif isinstance(node, ast.Assign):
+                names.update(
+                    target.id
+                    for target in node.targets
+                    if isinstance(target, ast.Name)
+                )
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                names.add(node.target.id)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                names.add(node.name)
+        return names
+
+    def test_no_constant_is_used_without_being_imported(self):
+        tree = ast.parse(FLOW.read_text())
+        available = self._available(tree)
+        used = {
+            node.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Name)
+            and isinstance(node.ctx, ast.Load)
+            and node.id.isupper()
+            or (
+                isinstance(node, ast.Name)
+                and isinstance(node.ctx, ast.Load)
+                and node.id == node.id.upper()
+                and "_" in node.id
+            )
+        }
+        missing = sorted(name for name in used if name not in available)
+        assert not missing, f"used but never imported or defined: {missing}"

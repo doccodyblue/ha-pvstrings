@@ -210,7 +210,9 @@
           "data": {
             "ack_helper_entity": "This helper really is one physical measurement channel (for example power computed from voltage and current), not several strings added together",
             "ack_power_entity_reused": "Another string already uses this exact sensor. Both strings really are measured by it, and I accept that its energy is counted once per string",
-            "ack_power_entity_missing": "This entity does not currently exist in Home Assistant. It will start delivering data later, and until then this string collects nothing"
+            "ack_power_entity_missing": "This entity does not currently exist in Home Assistant. It will start delivering data later, and until then this string collects nothing",
+            "ack_power_entity_has_other_role": "This entity is already configured for something else on this plant — house load, grid flow, or an inverter's AC output. It really is this string's own DC power as well",
+            "ack_charger_vocabulary": "This charge controller words its states differently from the ones the censoring knows (bulk, absorption, float, …). Until they match, a controller holding a voltage is never recognised and those intervals are learned as if the sun had been weak"
           }
         }
       },
@@ -316,7 +318,8 @@
         "nameplate_required": "A relative limit in percent needs the inverter hardware maximum to be converted into watts.",
         "curve_invalid": "Curve needs at least two 'load:efficiency' pairs with strictly increasing load (0–150 %) and efficiency between 0.5 and 1.0.",
         "nameplate_required_conversion": "A curve or clipping needs the inverter hardware maximum (AC) from the previous page — load and cap both divide by it.",
-        "must_acknowledge": "Tick this to continue, or close the dialog and change the value."
+        "must_acknowledge": "Tick this to continue, or close the dialog and change the value.",
+        "curve_fractional": "Support points are percentages of the AC rating, not fractions: write 5:0.90, 50:0.96, 100:0.95 rather than 0.05:0.90."
       }
     }
   },

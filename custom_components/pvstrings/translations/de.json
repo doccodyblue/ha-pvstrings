@@ -210,7 +210,9 @@
           "data": {
             "ack_helper_entity": "Dieser Helfer ist wirklich ein einzelner physischer Messkanal (z. B. Leistung aus Spannung × Strom) und nicht die Summe mehrerer Stränge",
             "ack_power_entity_reused": "Ein anderer Strang nutzt bereits genau diesen Sensor. Beide Stränge werden tatsächlich von ihm gemessen, und ich nehme in Kauf, dass seine Energie je Strang einmal gezählt wird",
-            "ack_power_entity_missing": "Diese Entität existiert derzeit nicht in Home Assistant. Sie liefert erst später Daten, und bis dahin sammelt dieser Strang nichts"
+            "ack_power_entity_missing": "Diese Entität existiert derzeit nicht in Home Assistant. Sie liefert erst später Daten, und bis dahin sammelt dieser Strang nichts",
+            "ack_power_entity_has_other_role": "Diese Entität ist auf dieser Anlage bereits für etwas anderes konfiguriert — Hausverbrauch, Netzbezug oder der AC-Ausgang eines Wechselrichters. Sie ist trotzdem zugleich die DC-Leistung dieses Strangs",
+            "ack_charger_vocabulary": "Dieser Laderegler benennt seine Zustände anders als die der Zensur bekannten (bulk, absorption, float, …). Solange das nicht zusammenpasst, wird ein spannungshaltender Regler nie erkannt, und diese Intervalle werden gelernt, als wäre die Sonne schwach gewesen"
           }
         }
       },
@@ -316,7 +318,8 @@
         "nameplate_required": "Ein relatives Limit in Prozent braucht die Hardware-Maximalleistung, um in Watt umgerechnet werden zu können.",
         "curve_invalid": "Die Kennlinie braucht mindestens zwei „Last:Wirkungsgrad“-Paare mit streng steigender Last (0–150 %) und Wirkungsgrad zwischen 0,5 und 1,0.",
         "nameplate_required_conversion": "Kennlinie oder Kappung brauchen das Hardware-Maximum AC von der vorigen Seite — Last und Deckel teilen beide dadurch.",
-        "must_acknowledge": "Zum Fortfahren abhaken, oder den Dialog schließen und den Wert ändern."
+        "must_acknowledge": "Zum Fortfahren abhaken, oder den Dialog schließen und den Wert ändern.",
+        "curve_fractional": "Stützstellen sind Prozent der AC-Nennleistung, keine Bruchzahlen: 5:0.90, 50:0.96, 100:0.95 statt 0.05:0.90."
       }
     }
   },

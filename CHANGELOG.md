@@ -15,6 +15,19 @@
 
 ### Added
 
+- Two more things the flow can see about a string:
+  - **the power sensor already has another role** on this plant — house load,
+    grid flow, or an inverter's AC output. From a sensor's own attributes those
+    are indistinguishable from a string's DC; only the configuration knows.
+  - **the charge controller words its states unfamiliarly.**
+    `charger_is_limiting` answers limiting, free, or no idea, and the collector
+    can only act on the first two — so an unmapped vocabulary means a
+    controller holding a voltage is never recognised, and those intervals are
+    learned as if the sun had been weak.
+- A conversion curve entered as fractions (`0.05:0.90`) is now refused with its
+  own message and a worked example. It used to parse cleanly, and then every
+  real load sat beyond the last support point, where interpolation clamps to
+  one constant efficiency — the curve quietly stopped being a curve.
 - Three more pairs of settings that have to agree now raise a concern instead
   of disagreeing silently. All three fail the same way — censoring that never
   happens, or happens to every hour:

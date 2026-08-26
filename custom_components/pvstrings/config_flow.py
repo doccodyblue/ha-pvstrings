@@ -120,6 +120,7 @@ from .const import (
     SUBENTRY_GROUP,
     SUBENTRY_STRING,
 )
+from .core.curtailment import CHARGER_FREE_STATES, CHARGER_LIMITING_STATES
 from .core.config import (
     DEFAULT_ALBEDO,
     DEFAULT_SYSTEM_EFFICIENCY,
@@ -555,6 +556,10 @@ def _curve_to_text(curve: Any) -> str:
     return ", ".join(f"{point[0]:g}:{point[1]:g}" for point in curve)
 
 
+class _FractionalCurve(Exception):
+    """Support points look like fractions where percentages are expected."""
+
+
 def _parse_curve(text: str) -> list[list[float]] | None:
     """"5:0.90, 10:0.935, ..." -> [[load_pct, eff], ...] or None if invalid."""
     points: list[list[float]] = []
@@ -571,6 +576,12 @@ def _parse_curve(text: str) -> list[list[float]] | None:
             return None
     if len(points) < 2:
         return None
+    # Loads are percentages.  Entered as fractions every real load lands beyond
+    # the last support point, so the whole plant runs on one clamped efficiency
+    # and the curve silently stops being a curve.  A genuine curve describing
+    # only the first 1.5 % of load does not exist.
+    if max(load for load, _ in points) <= 1.5:
+        raise _FractionalCurve
     last_load = -1.0
     for load, efficiency in points:
         if not (0.0 <= load <= 150.0 and 0.5 < efficiency <= 1.0):
@@ -614,6 +625,8 @@ CONCERN_STORAGE_WITHOUT_BATTERY = "storage_without_battery"
 CONCERN_BATTERY_WITHOUT_SOC = "battery_without_soc"
 CONCERN_LIMIT_UNIT_RELATIVE = "limit_unit_relative"
 CONCERN_LIMIT_UNIT_ABSOLUTE = "limit_unit_absolute"
+CONCERN_POWER_HAS_OTHER_ROLE = "power_entity_has_other_role"
+CONCERN_CHARGER_VOCABULARY = "charger_vocabulary"
 
 ACK_PREFIX = "ack_"
 
@@ -663,7 +676,52 @@ def string_concerns(
     if hass.states.get(entity_id) is None:
         concerns.append(CONCERN_POWER_MISSING)
 
+    # The one wrong-sensor case that can be caught without watching it run:
+    # this entity has already been declared to be something else. House load,
+    # grid flow and an inverter's AC output all read as power and none of them
+    # is a string's DC, but only the configuration knows that -- from a
+    # sensor's own attributes the four are indistinguishable.
+    if entry is not None and entity_id in _declared_roles(entry):
+        concerns.append(CONCERN_POWER_HAS_OTHER_ROLE)
+
+    charger = data.get(CONF_CHARGER_STATE)
+    if charger and _charger_vocabulary_unknown(hass, charger):
+        concerns.append(CONCERN_CHARGER_VOCABULARY)
+
     return concerns
+
+
+def _declared_roles(entry: ConfigEntry) -> set[str]:
+    """Entities this plant already uses for something other than a string."""
+    configured = {**entry.data, **entry.options}
+    roles = {
+        configured.get(key)
+        for key in (CONF_GRID_POWER, CONF_HOUSE_LOAD, CONF_BATTERY_POWER)
+    }
+    for subentry in entry.subentries.values():
+        if subentry.subentry_type == SUBENTRY_GROUP:
+            roles.add(subentry.data.get(CONF_AC_POWER_ENTITY))
+    roles.discard(None)
+    return {str(entity_id) for entity_id in roles}
+
+
+def _charger_vocabulary_unknown(hass: Any, entity_id: str) -> bool:
+    """Does this controller word its states in a way the censoring knows?
+
+    ``charger_is_limiting`` answers "limiting", "free" or "no idea", and the
+    third is deliberate -- but the collector can only act on the first two, so
+    an unrecognised vocabulary means the charger simply never censors anything.
+    A snapshot of the current state cannot prove the whole vocabulary maps; it
+    is enough to catch a controller that words them differently, which is the
+    case worth catching.
+    """
+    state = hass.states.get(entity_id)
+    if state is None or state.state in ("unknown", "unavailable"):
+        return False
+    text = str(state.state).strip().lower()
+    return (
+        text not in CHARGER_LIMITING_STATES and text not in CHARGER_FREE_STATES
+    )
 
 
 def group_concerns(
@@ -1025,11 +1083,17 @@ class GroupSubentryFlow(_ReloadingSubentryFlow):
                 curve_text = str(user_input.get(CONF_CUSTOM_CURVE) or "")
                 data.pop(CONF_CUSTOM_CURVE, None)
                 if model == INVERTER_MODEL_CUSTOM:
-                    parsed = _parse_curve(curve_text)
-                    if parsed is None:
-                        errors[CONF_CUSTOM_CURVE] = "curve_invalid"
+                    try:
+                        parsed = _parse_curve(curve_text)
+                    except _FractionalCurve:
+                        # Its own message: "invalid" would send someone hunting
+                        # for a typo in a curve that is entirely well-formed.
+                        errors[CONF_CUSTOM_CURVE] = "curve_fractional"
                     else:
-                        data[CONF_CUSTOM_CURVE] = parsed
+                        if parsed is None:
+                            errors[CONF_CUSTOM_CURVE] = "curve_invalid"
+                        else:
+                            data[CONF_CUSTOM_CURVE] = parsed
                 if model != INVERTER_MODEL_NONE or data.get(
                     CONF_FORECAST_CLIPPING
                 ):
