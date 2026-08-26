@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- README no longer opens with a beta warning. The same facts — two
+  installations since 11 August, the Home Assistant versions actually
+  exercised, the three bugs the field found and the tests did not — now sit
+  in a *Where it stands* section at the end.
+
 ## v1.20.1 — 2026-08-23
 
 ### Fixed

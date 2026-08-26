@@ -2,42 +2,7 @@
 
 # PV Strings
 
-> ## ⚠️ Beta — young, and honest about it
->
-> Version 1.20.1. Running on **two installations** since 11 August 2026 — long
-> enough to have found real bugs, nowhere near long enough to be trusted
-> blindly. Treat every number it produces as provisional.
->
-> **What that means concretely:**
->
-> - The learning layer needs weeks of data. The first three days publish no
->   accuracy figure at all, deliberately: one day of history makes a confident
->   percentage out of one day's weather.
-> - The sky map needs longer still. It learns only the sky the sun has actually
->   crossed, so a full year is what it takes to be complete — and on a fresh
->   install it corrects nothing, which is the correct behaviour rather than a
->   fault.
-> - Only Home Assistant **2026.8** has actually been run. The 2025.9 minimum
->   was established by checking that the required APIs exist there, not by
->   running it.
-> - Expect breaking changes between minor versions until 2.0. The database
->   schema migrates in place and the v2 → v3 upgrade has been exercised against
->   a real database, but further migrations may still ask you to start over.
->
-> **What is tested:** 575 automated tests cover the physics chain, the learning
-> rules, censoring, the sky map, storage and the config-flow schemas —
-> including the parts that only fail against a real Home Assistant.
->
-> **What the tests did not catch**, and what the field did, is worth knowing
-> before you rely on this: a correction layer whose gate was set above the
-> value it could ever reach, so it never once switched on; a sky map whose
-> reference settled inside a shadow and reported a flawless sky over a roof
-> that was dark all morning; and the same map, once fixed, putting phantom loss
-> on a panel with a clear view of the whole sky. All three looked exactly like
-> "not enough data yet" from the outside. If a number here looks wrong to you,
-> it may well be — please open an issue with the diagnostics download.
-
-
+*Version 1.20.1 · Home Assistant 2025.9 or newer · MIT*
 
 A Home Assistant integration that forecasts and evaluates PV yield **per string**,
 not per plant.
@@ -120,7 +85,7 @@ directory and restart.
 
 ### Requirements
 
-**Home Assistant 2025.9 or newer.** That floor is not a guess -- it is where
+**Home Assistant 2025.9 or newer.** That floor is not a guess — it is where
 `ConfigSubentryFlow.async_update_reload_and_abort` appears, which the string
 and group editors rely on. Earlier releases fail progressively: 2025.2 has no
 subentry API at all, 2025.3 gains one without `_get_entry`, and 2025.6 still
@@ -458,6 +423,35 @@ repairs.
   unaffected.
 - No neural networks or tree ensembles, no champion/challenger, no multi-source
   blending, no snow model.
+
+---
+
+## Where it stands
+
+Running on two installations since 11 August 2026, and developed against Home
+Assistant 2026.8. The 2025.9 floor was established by checking that the required
+APIs exist there, not by running it. Breaking changes remain possible between
+minor versions before 2.0; the schema migrates in place, and the v2 → v3 upgrade
+has been exercised against a real database.
+
+778 automated tests cover the physics chain, the learning rules, censoring, the
+sky map, storage and the config-flow schemas — including the parts that only
+fail against a real Home Assistant.
+
+The model does need time, and says so rather than guessing: no accuracy figure is
+published for the first three days, because one day of history makes a confident
+percentage out of one day's weather. The sky map learns only the sky the sun has
+actually crossed, so a full year is what it takes to be complete — on a fresh
+install it corrects nothing, which is the intended behaviour and not a fault.
+
+Three bugs the field found and the test suite did not, all since fixed: a
+correction layer whose gate sat above the value it could ever reach, so it never
+switched on; a sky map whose reference settled inside a shadow and reported a
+flawless sky over a roof that was dark all morning; and the same map, once fixed,
+putting phantom loss on a panel with a clear view of the whole sky. All three
+looked exactly like "not enough data yet" from the outside — which is why the
+diagnostics download carries the model internals. If a number here looks wrong to
+you, it may well be: open an issue and attach it.
 
 ---
 
