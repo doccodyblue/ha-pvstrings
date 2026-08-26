@@ -1,4 +1,4 @@
-![PV Strings](brands/icon.png)
+![PV Strings](custom_components/pvstrings/brand/icon.png)
 
 # PV Strings
 
