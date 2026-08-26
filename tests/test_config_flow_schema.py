@@ -225,7 +225,13 @@ class TestConcernsReachTheUser:
     #: Which subentry type owns which concern, mirroring the two detectors.
     OWNERS = {
         "string": ("helper_entity", "power_entity_reused", "power_entity_missing"),
-        "curtailment_group": ("fixed_limit_with_battery",),
+        "curtailment_group": (
+            "fixed_limit_with_battery",
+            "storage_without_battery",
+            "battery_without_soc",
+            "limit_unit_relative",
+            "limit_unit_absolute",
+        ),
     }
 
     @staticmethod
@@ -299,4 +305,4 @@ class TestConcernsReachTheUser:
 
     def test_the_group_form_runs_the_concern_check(self):
         source = FLOW.read_text()
-        assert "group_concerns(data)" in source
+        assert "group_concerns(self.hass, self._get_entry(), data)" in source

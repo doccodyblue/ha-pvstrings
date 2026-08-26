@@ -64,6 +64,7 @@ from .const import (
     INVERTER_MODELS,
     OUTPUT_PATH_DIRECT,
     OUTPUT_PATH_NONE,
+    OUTPUT_PATH_STORAGE,
     OUTPUT_PATHS,
     CONF_BATTERY_POWER,
     CONF_BATTERY_SOC,
@@ -609,8 +610,29 @@ CONCERN_HELPER_ENTITY = "helper_entity"
 CONCERN_POWER_REUSED = "power_entity_reused"
 CONCERN_POWER_MISSING = "power_entity_missing"
 CONCERN_FIXED_LIMIT_BATTERY = "fixed_limit_with_battery"
+CONCERN_STORAGE_WITHOUT_BATTERY = "storage_without_battery"
+CONCERN_BATTERY_WITHOUT_SOC = "battery_without_soc"
+CONCERN_LIMIT_UNIT_RELATIVE = "limit_unit_relative"
+CONCERN_LIMIT_UNIT_ABSOLUTE = "limit_unit_absolute"
 
 ACK_PREFIX = "ack_"
+
+#: Units a limit entity may carry, by kind.  A relative limit is a percentage
+#: of the nameplate and an absolute one is a power, and the two fields sit next
+#: to each other with near-identical names.  Swapping them is silent and
+#: expensive: 800 read as a percentage of a 1600 W inverter becomes a 12.8 kW
+#: ceiling that nothing ever reaches, so no hour is ever censored; 50 read as
+#: watts censors almost every hour instead.
+_RELATIVE_LIMIT_UNITS = {"%"}
+_ABSOLUTE_LIMIT_UNITS = {"w", "kw", "va", "kva"}
+
+
+def _unit_of(hass: Any, entity_id: str) -> str | None:
+    state = hass.states.get(entity_id)
+    if state is None:
+        return None
+    unit = state.attributes.get("unit_of_measurement")
+    return str(unit).strip().lower() if unit else None
 
 
 def string_concerns(
@@ -644,11 +666,50 @@ def string_concerns(
     return concerns
 
 
-def group_concerns(data: dict[str, Any]) -> list[str]:
-    """Soft objections to a curtailment group."""
+def group_concerns(
+    hass: Any, entry: ConfigEntry | None, data: dict[str, Any]
+) -> list[str]:
+    """Soft objections to a curtailment group.
+
+    Every one of these is a pair of settings that has to agree and is allowed
+    to disagree: two fields, filled in at different moments, with nothing
+    between them.  The consequence is always the same shape -- censoring that
+    silently does not happen, or happens to every hour.
+    """
     concerns: list[str] = []
-    if data.get(CONF_BATTERY_COUPLED) and data.get(CONF_FIXED_LIMIT):
+    battery_coupled = bool(data.get(CONF_BATTERY_COUPLED))
+
+    if battery_coupled and data.get(CONF_FIXED_LIMIT):
         concerns.append(CONCERN_FIXED_LIMIT_BATTERY)
+
+    # A storage path says the group's output goes into a battery; battery
+    # coupling says the inverter throttles once that battery is full.  Having
+    # the first without the second is how a full battery gets learned as a
+    # weak string.
+    if data.get(CONF_OUTPUT_PATH) == OUTPUT_PATH_STORAGE and not battery_coupled:
+        concerns.append(CONCERN_STORAGE_WITHOUT_BATTERY)
+
+    # Battery coupling is evaluated from the plant-level state of charge, which
+    # lives in the options flow -- a different dialog, so the two are easy to
+    # get out of step.  Without it ``full_battery_binding`` returns "unknown"
+    # for every hour and the coupling does nothing at all.
+    if battery_coupled and entry is not None:
+        configured = {**entry.data, **entry.options}
+        if not configured.get(CONF_BATTERY_SOC):
+            concerns.append(CONCERN_BATTERY_WITHOUT_SOC)
+
+    relative = data.get(CONF_LIMIT_ENTITY)
+    if relative:
+        unit = _unit_of(hass, relative)
+        if unit is not None and unit not in _RELATIVE_LIMIT_UNITS:
+            concerns.append(CONCERN_LIMIT_UNIT_RELATIVE)
+
+    absolute = data.get(CONF_LIMIT_ABS_ENTITY)
+    if absolute:
+        unit = _unit_of(hass, absolute)
+        if unit is not None and unit not in _ABSOLUTE_LIMIT_UNITS:
+            concerns.append(CONCERN_LIMIT_UNIT_ABSOLUTE)
+
     return concerns
 
 
@@ -923,7 +984,7 @@ class GroupSubentryFlow(_ReloadingSubentryFlow):
                     errors[CONF_INVERTER_MAX_AC] = "nameplate_required"
             if not errors:
                 self._pending = data
-                self._concerns = group_concerns(data)
+                self._concerns = group_concerns(self.hass, self._get_entry(), data)
                 if self._concerns:
                     return await self.async_step_confirm()
                 return await self._acknowledged()

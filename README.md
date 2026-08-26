@@ -145,11 +145,18 @@ the first place. With a sensor it learns both. The `Irradiance forecast` entity
 reports which of the two is in use as `truth_source`, so you can tell at a
 glance.
 
-It does not have to be a pyranometer. A silicon reference cell in the plane of
-the modules matches their spectral response better than a thermopile does, and
-even a weather station's lux-derived figure recovers most of the benefit — a
-constant scale error cancels out between this layer and the per-string one, and
-what remains is the spectral drift with cloud cover.
+**Mount it horizontally.** The reading is used as global horizontal irradiance:
+the physics layer decomposes it into direct and diffuse and then transposes
+that onto each string's own plane. A sensor lying in the plane of the modules
+has already been tilted once, and would be tilted a second time — an error that
+travels with the sun rather than scaling out, so no learned correction removes
+it. A weather station's radiation sensor is horizontal by construction and is
+the easy right answer.
+
+It does not have to be a pyranometer. A weather station's lux-derived figure
+recovers most of the benefit: a constant scale error cancels out between this
+layer and the per-string one, and what remains is the spectral drift with cloud
+cover.
 
 ### No internet access?
 

@@ -89,7 +89,8 @@
         },
         "data_description": {
           "grid_power_entity": "Sign convention: positive = importing from the grid, negative = exporting. A reversed sign flips the savings calculation.",
-          "battery_soc_entity": "Also used by battery-coupled curtailment groups to spot a full battery."
+          "battery_soc_entity": "Also used by battery-coupled curtailment groups to spot a full battery.",
+          "ghi_entity": "Global **horizontal** irradiance. The value is decomposed and then transposed onto each string's own plane, so a sensor lying in the plane of the modules would be tilted twice -- an error that travels with the sun and no learned correction removes. A weather station's radiation sensor is horizontal by construction."
         }
       },
       "advanced": {
@@ -303,7 +304,11 @@
           "title": "Please confirm",
           "description": "Some of what you entered is usually a misconfiguration, but not always. Tick each box you have checked, or close this dialog and change the value.",
           "data": {
-            "ack_fixed_limit_with_battery": "The fixed limit really does cap what the string sensors measure. On a battery-coupled plant the trackers usually measure DC before the battery, where production legitimately exceeds the limit — and every such interval would be censored as curtailed"
+            "ack_fixed_limit_with_battery": "The fixed limit really does cap what the string sensors measure. On a battery-coupled plant the trackers usually measure DC before the battery, where production legitimately exceeds the limit — and every such interval would be censored as curtailed",
+            "ack_storage_without_battery": "This group feeds a battery but the inverter does not throttle when that battery is full. Otherwise leave the dialog and switch on 'Battery coupled' — without it, a full battery is learned as a weak string",
+            "ack_battery_without_soc": "No battery state of charge is configured for this plant, so battery coupling cannot be evaluated and does nothing. The sensor is set in the integration's options, not here",
+            "ack_limit_unit_relative": "This entity really reports a percentage of the inverter's rating. It is read as one: at a 1600 W rating, a reading of 800 becomes a 12.8 kW ceiling that nothing ever reaches, and no hour is ever censored",
+            "ack_limit_unit_absolute": "This entity really reports watts. It is read as watts: a reading of 50 becomes a 50 W ceiling and censors almost every hour of the day"
           }
         }
       },

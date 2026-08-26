@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **The README asked for the irradiance sensor to be mounted the wrong way.**
+  It recommended a reference cell *in the plane of the modules*; the reading is
+  used as global **horizontal** irradiance, decomposed and then transposed onto
+  each string's plane. A sensor already lying in the array's plane is therefore
+  tilted twice. Unlike a scale error, that one travels with the sun, so the
+  source-bias layer cannot learn it away. The README and the sensor picker now
+  both say horizontal. Anyone who followed the old advice should re-site the
+  sensor; nothing in the stored data needs changing.
+
+### Added
+
+- Three more pairs of settings that have to agree now raise a concern instead
+  of disagreeing silently. All three fail the same way — censoring that never
+  happens, or happens to every hour:
+  - **a storage output path without battery coupling**, which learns a full
+    battery as a weak string
+  - **battery coupling without a state-of-charge sensor**, which leaves the
+    coupling switched on and completely inert, because the sensor lives in the
+    options flow rather than in the group dialog
+  - **a limit entity whose unit contradicts its field.** 800 W read as a
+    percentage of a 1600 W inverter becomes a 12.8 kW ceiling nothing reaches;
+    50 % read as watts censors nearly every hour.
+
 ## v1.20.3 — 2026-08-26
 
 ### Fixed

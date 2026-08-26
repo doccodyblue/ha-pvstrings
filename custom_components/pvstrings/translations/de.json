@@ -89,7 +89,8 @@
         },
         "data_description": {
           "grid_power_entity": "Vorzeichen: positiv = Netzbezug, negativ = Einspeisung. Ein umgekehrtes Vorzeichen kehrt die Ersparnisrechnung um.",
-          "battery_soc_entity": "Wird auch von speichergekoppelten Abregelungsgruppen genutzt, um einen vollen Speicher zu erkennen."
+          "battery_soc_entity": "Wird auch von speichergekoppelten Abregelungsgruppen genutzt, um einen vollen Speicher zu erkennen.",
+          "ghi_entity": "Globale **horizontale** Einstrahlung. Der Wert wird zerlegt und dann auf die Ebene jedes Strangs transponiert — ein Sensor in Modulebene würde also zweimal gekippt. Dieser Fehler wandert mit der Sonne und wird von keiner gelernten Korrektur beseitigt. Der Strahlungssensor einer Wetterstation ist bauartbedingt horizontal."
         }
       },
       "advanced": {
@@ -303,7 +304,11 @@
           "title": "Bitte bestätigen",
           "description": "Einiges an deiner Eingabe ist meistens eine Fehlkonfiguration — aber nicht immer. Hake jeden Punkt ab, den du geprüft hast, oder schließe den Dialog und ändere den Wert.",
           "data": {
-            "ack_fixed_limit_with_battery": "Das feste Limit kappt wirklich das, was die Strang-Sensoren messen. Bei einer speichergekoppelten Anlage messen die Tracker meist DC vor dem Akku, wo die Erzeugung das Limit völlig legal überschreitet — und jedes solche Intervall würde als gedrosselt zensiert"
+            "ack_fixed_limit_with_battery": "Das feste Limit kappt wirklich das, was die Strang-Sensoren messen. Bei einer speichergekoppelten Anlage messen die Tracker meist DC vor dem Akku, wo die Erzeugung das Limit völlig legal überschreitet — und jedes solche Intervall würde als gedrosselt zensiert",
+            "ack_storage_without_battery": "Diese Gruppe lädt einen Akku, aber der Wechselrichter drosselt nicht, wenn der Akku voll ist. Andernfalls den Dialog verlassen und „Speichergekoppelt“ einschalten — sonst wird ein voller Akku als schwacher Strang gelernt",
+            "ack_battery_without_soc": "Für diese Anlage ist kein Akku-Ladestand konfiguriert, damit lässt sich die Speicherkopplung nicht auswerten und sie bewirkt nichts. Der Sensor wird in den Optionen der Integration gesetzt, nicht hier",
+            "ack_limit_unit_relative": "Diese Entität meldet wirklich einen Prozentwert der Wechselrichter-Nennleistung. Genau so wird sie gelesen: bei 1600 W Nennleistung wird aus einem Messwert von 800 eine Grenze von 12,8 kW, die nie erreicht wird — es wird nie eine Stunde zensiert",
+            "ack_limit_unit_absolute": "Diese Entität meldet wirklich Watt. Genau so wird sie gelesen: aus einem Messwert von 50 wird eine Grenze von 50 W, die fast jede Stunde des Tages zensiert"
           }
         }
       },
