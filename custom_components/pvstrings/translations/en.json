@@ -202,11 +202,21 @@
           "data_description": {
             "mppt_output_entity": "Battery-side power of this string's MPPT charge controller. With the panel power above it forms a measured pair, which lets the MPPT efficiency be learned instead of assumed. Collected only; nothing uses it yet."
           }
+        },
+        "confirm": {
+          "title": "Please confirm",
+          "description": "Some of what you entered is usually a misconfiguration, but not always. Tick each box you have checked, or close this dialog and change the value.",
+          "data": {
+            "ack_helper_entity": "This helper really is one physical measurement channel (for example power computed from voltage and current), not several strings added together",
+            "ack_power_entity_reused": "Another string already uses this exact sensor. Both strings really are measured by it, and I accept that its energy is counted once per string",
+            "ack_power_entity_missing": "This entity does not currently exist in Home Assistant. It will start delivering data later, and until then this string collects nothing"
+          }
         }
       },
       "error": {
         "helper_overlaps": "This helper aggregates entities that another string already uses. Point each string at its physical channel instead.",
-        "efficiency_out_of_range": "Enter the efficiency as a fraction between 0.5 and 1.0 (0 inherits the plant value), not as a percentage."
+        "efficiency_out_of_range": "Enter the efficiency as a fraction between 0.5 and 1.0 (0 inherits the plant value), not as a percentage.",
+        "must_acknowledge": "Tick this to continue, or close the dialog and change the value."
       }
     },
     "curtailment_group": {
@@ -218,7 +228,7 @@
       "step": {
         "user": {
           "title": "Add curtailment group",
-          "description": "Strings that can only be curtailed together -- normally one group per inverter. A commanded limit is not curtailment: it only counts once the available power actually reaches it. A permanent legal cap such as 800 W belongs in the fixed limit, not in the hardware maximum.",
+          "description": "Strings that can only be curtailed together -- normally one group per inverter. A commanded limit is not curtailment: it only counts once the available power actually reaches it. A permanent cap such as 800 W belongs in the fixed limit only if it caps what your string sensors measure; behind a battery it does not.",
           "data": {
             "name": "Name",
             "limit_entity": "Limit entity, relative (%)",
@@ -231,9 +241,9 @@
           },
           "data_description": {
             "limit_entity": "An entity reporting the currently commanded limit in percent, e.g. OpenDTU's relative limit. 100 % means the hardware maximum.",
-            "inverter_max_ac_w": "The technical AC maximum from the inverter datasheet, e.g. 2400 W. NOT a legal feed-in cap such as 800 W -- that belongs in the fixed limit below. Only used to turn a relative limit in percent into watts.",
+            "inverter_max_ac_w": "The technical AC maximum from the inverter datasheet, e.g. 2400 W. NOT a legal feed-in cap such as 800 W. Only used to turn a relative limit in percent into watts.",
             "limit_abs_entity": "An entity reporting the commanded limit in watts, e.g. OpenDTU's absolute limit. Takes precedence over the relative one.",
-            "fixed_limit_w": "A cap configured permanently in the inverter, e.g. the legal 800 W of a balcony plant. Applies on top of the limit entities -- the lower value wins.",
+            "fixed_limit_w": "Only for plants whose *measured* power is itself capped -- a grid-tied inverter permanently set to 800 W, with the string sensors behind that cap. Leave empty when the cap sits behind a battery: trackers measuring DC before the battery legitimately produce more, and every such interval would be censored as curtailed, which costs exactly the best observations. Applies on top of the limit entities -- the lower value wins.",
             "battery_coupled": "The inverter throttles once the battery is full. Uses the plant-level battery state of charge from the options.",
             "soc_limit": "Above this state of charge the battery counts as full, and throttled output is treated as curtailment.",
             "output_path": "What this group's DC forecast should be converted into. 'No conversion' keeps everything exactly as before."
@@ -288,12 +298,20 @@
             "curve_max_deviation_pp": "How far a learned point may sit from the datasheet, in percentage points. The guard against one bad sensor day rewriting the curve.",
             "curve_min_samples": "Weighted five-minute pairs at which a load point is half measurement, half datasheet. Points move gradually with the evidence behind them, so there is no step where an unmeasured neighbour meets a measured one; a point nobody measured stays exactly on the datasheet."
           }
+        },
+        "confirm": {
+          "title": "Please confirm",
+          "description": "Some of what you entered is usually a misconfiguration, but not always. Tick each box you have checked, or close this dialog and change the value.",
+          "data": {
+            "ack_fixed_limit_with_battery": "The fixed limit really does cap what the string sensors measure. On a battery-coupled plant the trackers usually measure DC before the battery, where production legitimately exceeds the limit — and every such interval would be censored as curtailed"
+          }
         }
       },
       "error": {
         "nameplate_required": "A relative limit in percent needs the inverter hardware maximum to be converted into watts.",
         "curve_invalid": "Curve needs at least two 'load:efficiency' pairs with strictly increasing load (0–150 %) and efficiency between 0.5 and 1.0.",
-        "nameplate_required_conversion": "A curve or clipping needs the inverter hardware maximum (AC) from the previous page — load and cap both divide by it."
+        "nameplate_required_conversion": "A curve or clipping needs the inverter hardware maximum (AC) from the previous page — load and cap both divide by it.",
+        "must_acknowledge": "Tick this to continue, or close the dialog and change the value."
       }
     }
   },

@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **The curtailment-group form told battery-coupled plants to do the wrong
+  thing.** The help on the fixed limit said a legal cap such as 800 W belongs
+  there — true only when the cap sits between the panels and the string
+  sensors. Where the trackers measure DC *before* a battery, the AC cap behind
+  it never touches the measurement, and `group_binding` compares the measured
+  DC sum against that limit: every interval above 800 W, which is legal and
+  ordinary, would be censored as curtailed. That discards exactly the
+  high-irradiance hours the model learns most from. The text now states the
+  real criterion — is your *measured* value capped — and the combination is
+  flagged in the form.
+
+### Added
+
+- **A confirmation step for setups that are usually, but not always, wrong.**
+  One checkbox per objection, each with its own translated sentence, all of
+  which must be ticked before the subentry is written:
+  - a string pointing at an aggregate helper entity
+  - two strings pointing at the same power sensor — previously not checked at
+    all, and the most likely mistake on an inverter with two trackers and one
+    total sensor
+  - a power entity that no longer exists
+  - a fixed limit on a battery-coupled group
+
+  This replaces a `_LOGGER.warning` on the helper case, which by construction
+  never reached the person who could still fix it. Nothing is refused that was
+  accepted before; the objections are stated, not enforced.
+
 ## v1.20.2 — 2026-08-26
 
 ### Added

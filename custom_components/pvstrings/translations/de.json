@@ -202,11 +202,21 @@
           "data_description": {
             "mppt_output_entity": "Batterieseitige Leistung des MPPT-Ladereglers dieses Strangs. Zusammen mit der Panel-Leistung oben ergibt das ein Messpaar — damit lässt sich der MPPT-Wirkungsgrad später lernen statt annehmen. Wird nur aufgezeichnet, noch nicht genutzt."
           }
+        },
+        "confirm": {
+          "title": "Bitte bestätigen",
+          "description": "Einiges an deiner Eingabe ist meistens eine Fehlkonfiguration — aber nicht immer. Hake jeden Punkt ab, den du geprüft hast, oder schließe den Dialog und ändere den Wert.",
+          "data": {
+            "ack_helper_entity": "Dieser Helfer ist wirklich ein einzelner physischer Messkanal (z. B. Leistung aus Spannung × Strom) und nicht die Summe mehrerer Stränge",
+            "ack_power_entity_reused": "Ein anderer Strang nutzt bereits genau diesen Sensor. Beide Stränge werden tatsächlich von ihm gemessen, und ich nehme in Kauf, dass seine Energie je Strang einmal gezählt wird",
+            "ack_power_entity_missing": "Diese Entität existiert derzeit nicht in Home Assistant. Sie liefert erst später Daten, und bis dahin sammelt dieser Strang nichts"
+          }
         }
       },
       "error": {
         "helper_overlaps": "Dieser Helfer fasst Entitäten zusammen, die bereits ein anderer Strang nutzt. Jeden Strang direkt auf seinen physischen Kanal zeigen lassen.",
-        "efficiency_out_of_range": "Wirkungsgrad als Bruch zwischen 0.5 und 1.0 eingeben (0 = Anlagenwert), nicht in Prozent."
+        "efficiency_out_of_range": "Wirkungsgrad als Bruch zwischen 0.5 und 1.0 eingeben (0 = Anlagenwert), nicht in Prozent.",
+        "must_acknowledge": "Zum Fortfahren abhaken, oder den Dialog schließen und den Wert ändern."
       }
     },
     "curtailment_group": {
@@ -218,7 +228,7 @@
       "step": {
         "user": {
           "title": "Abregelungsgruppe hinzufügen",
-          "description": "Stränge, die nur gemeinsam abgeregelt werden können — normalerweise eine Gruppe je Wechselrichter. Ein gesetztes Limit ist noch keine Abregelung: es zählt erst, wenn die verfügbare Leistung es tatsächlich erreicht. Eine dauerhafte gesetzliche Grenze wie 800 W gehört ins feste Limit, nicht ins Hardware-Maximum.",
+          "description": "Stränge, die nur gemeinsam abgeregelt werden können — normalerweise eine Gruppe je Wechselrichter. Ein gesetztes Limit ist noch keine Abregelung: es zählt erst, wenn die verfügbare Leistung es tatsächlich erreicht. Eine dauerhafte Grenze wie 800 W gehört nur dann ins feste Limit, wenn sie das kappt, was deine Strang-Sensoren messen — hinter einem Akku tut sie das nicht.",
           "data": {
             "name": "Name",
             "limit_entity": "Limit-Entität relativ (%)",
@@ -231,9 +241,9 @@
           },
           "data_description": {
             "limit_entity": "Entität mit dem aktuell gesetzten Limit in Prozent, z. B. das relative Limit von OpenDTU. 100 % heißt Hardware-Maximum.",
-            "inverter_max_ac_w": "Das technische AC-Maximum laut Wechselrichter-Datenblatt, z. B. 2400 W. NICHT die gesetzliche Einspeisegrenze wie 800 W — die gehört ins feste Limit darunter. Wird nur gebraucht, um ein relatives Limit in Prozent in Watt umzurechnen.",
+            "inverter_max_ac_w": "Das technische AC-Maximum laut Wechselrichter-Datenblatt, z. B. 2400 W. NICHT die gesetzliche Einspeisegrenze wie 800 W. Wird nur gebraucht, um ein relatives Limit in Prozent in Watt umzurechnen.",
             "limit_abs_entity": "Entität mit dem gesetzten Limit in Watt, z. B. das absolute Limit von OpenDTU. Hat Vorrang vor dem relativen Limit.",
-            "fixed_limit_w": "Eine dauerhaft im Wechselrichter eingestellte Obergrenze, z. B. die gesetzlichen 800 W eines Balkonkraftwerks. Gilt zusätzlich zu den Limit-Entitäten — der niedrigere Wert zählt.",
+            "fixed_limit_w": "Nur für Anlagen, deren **gemessene** Leistung selbst gekappt wird — ein netzgekoppelter Wechselrichter, der dauerhaft auf 800 W steht, mit den Strang-Sensoren hinter dieser Grenze. Leer lassen, wenn die Grenze hinter einem Akku sitzt: Tracker, die DC vor dem Akku messen, erzeugen legal mehr, und jedes solche Intervall würde als gedrosselt zensiert — das kostet genau die besten Beobachtungen. Gilt zusätzlich zu den Limit-Entitäten — der niedrigere Wert zählt.",
             "battery_coupled": "Der Wechselrichter drosselt, sobald der Speicher voll ist. Nutzt den Batterie-Ladestand aus den Optionen.",
             "soc_limit": "Oberhalb dieses Ladestands gilt der Speicher als voll; gedrosselte Leistung wird dann als Abregelung gewertet.",
             "output_path": "Wohin die DC-Prognose dieser Gruppe umgerechnet wird. „Keine Umrechnung“ lässt alles exakt wie bisher."
@@ -288,12 +298,20 @@
             "curve_max_deviation_pp": "Wie weit ein gelernter Punkt vom Datenblatt abweichen darf, in Prozentpunkten. Die Sicherung dagegen, dass ein Tag mit kaputtem Sensor die Kennlinie umschreibt.",
             "curve_min_samples": "Gewichtete Fünf-Minuten-Paare, bei denen eine Laststelle je zur Hälfte Messung und Datenblatt ist. Die Punkte wandern allmählich mit ihrer Evidenz — so entsteht keine Stufe, wo ein ungemessener Nachbar auf einen gemessenen trifft; eine nie gemessene Stelle bleibt exakt auf dem Datenblatt."
           }
+        },
+        "confirm": {
+          "title": "Bitte bestätigen",
+          "description": "Einiges an deiner Eingabe ist meistens eine Fehlkonfiguration — aber nicht immer. Hake jeden Punkt ab, den du geprüft hast, oder schließe den Dialog und ändere den Wert.",
+          "data": {
+            "ack_fixed_limit_with_battery": "Das feste Limit kappt wirklich das, was die Strang-Sensoren messen. Bei einer speichergekoppelten Anlage messen die Tracker meist DC vor dem Akku, wo die Erzeugung das Limit völlig legal überschreitet — und jedes solche Intervall würde als gedrosselt zensiert"
+          }
         }
       },
       "error": {
         "nameplate_required": "Ein relatives Limit in Prozent braucht die Hardware-Maximalleistung, um in Watt umgerechnet werden zu können.",
         "curve_invalid": "Die Kennlinie braucht mindestens zwei „Last:Wirkungsgrad“-Paare mit streng steigender Last (0–150 %) und Wirkungsgrad zwischen 0,5 und 1,0.",
-        "nameplate_required_conversion": "Kennlinie oder Kappung brauchen das Hardware-Maximum AC von der vorigen Seite — Last und Deckel teilen beide dadurch."
+        "nameplate_required_conversion": "Kennlinie oder Kappung brauchen das Hardware-Maximum AC von der vorigen Seite — Last und Deckel teilen beide dadurch.",
+        "must_acknowledge": "Zum Fortfahren abhaken, oder den Dialog schließen und den Wert ändern."
       }
     }
   },

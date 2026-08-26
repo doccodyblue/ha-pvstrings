@@ -203,3 +203,100 @@ class TestReloadStrategy:
         """
         source = FLOW.read_text()
         assert "async_schedule_reload" not in source
+
+
+class TestConcernsReachTheUser:
+    """A concern nobody can read is worse than no concern at all.
+
+    These replaced a ``_LOGGER.warning`` that fired on every helper entity and
+    was, by construction, invisible to the person still able to fix the setup.
+    The rules themselves need Home Assistant to run, so what is pinned here is
+    the wiring: every concern the code can raise has a checkbox label in every
+    language, and both entry points into a subentry actually route through the
+    confirmation step.
+    """
+
+    TRANSLATIONS = (
+        FLOW.parent / "strings.json",
+        FLOW.parent / "translations/en.json",
+        FLOW.parent / "translations/de.json",
+    )
+
+    #: Which subentry type owns which concern, mirroring the two detectors.
+    OWNERS = {
+        "string": ("helper_entity", "power_entity_reused", "power_entity_missing"),
+        "curtailment_group": ("fixed_limit_with_battery",),
+    }
+
+    @staticmethod
+    def _concern_constants() -> set[str]:
+        """The CONCERN_* string literals the flow can actually raise."""
+        tree = ast.parse(FLOW.read_text())
+        found = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            for target in node.targets:
+                if (
+                    isinstance(target, ast.Name)
+                    and target.id.startswith("CONCERN_")
+                    and isinstance(node.value, ast.Constant)
+                ):
+                    found.add(node.value.value)
+        return found
+
+    def test_every_concern_is_owned_by_exactly_one_subentry_type(self):
+        declared = {c for group in self.OWNERS.values() for c in group}
+        assert self._concern_constants() == declared, (
+            "a new CONCERN_* constant needs a home in OWNERS and a label below"
+        )
+
+    @pytest.mark.parametrize("path", TRANSLATIONS, ids=lambda p: p.name)
+    def test_every_concern_has_a_checkbox_label(self, path):
+        import json
+
+        data = json.loads(path.read_text())
+        for subentry_type, concerns in self.OWNERS.items():
+            step = data["config_subentries"][subentry_type]["step"]
+            assert "confirm" in step, f"{subentry_type} has no confirmation step"
+            labels = step["confirm"]["data"]
+            for concern in concerns:
+                key = f"ack_{concern}"
+                assert key in labels, f"{path.name}: {subentry_type} lacks {key}"
+                assert labels[key].strip(), f"{path.name}: {key} is empty"
+
+    @pytest.mark.parametrize("path", TRANSLATIONS, ids=lambda p: p.name)
+    def test_an_unticked_box_can_explain_itself(self, path):
+        import json
+
+        data = json.loads(path.read_text())
+        for subentry_type in self.OWNERS:
+            errors = data["config_subentries"][subentry_type].get("error", {})
+            assert "must_acknowledge" in errors, (
+                f"{path.name}: {subentry_type} cannot explain a blank checkbox"
+            )
+
+    def test_both_ways_into_a_string_run_the_concern_check(self):
+        """Creating and editing must agree; the edit path is the older one."""
+        tree = ast.parse(FLOW.read_text())
+        flow = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ClassDef) and node.name == "StringSubentryFlow"
+        )
+        for step in ("async_step_user", "async_step_reconfigure"):
+            method = next(
+                node
+                for node in flow.body
+                if isinstance(node, ast.AsyncFunctionDef) and node.name == step
+            )
+            called = {
+                node.func.id
+                for node in ast.walk(method)
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            }
+            assert "string_concerns" in called, f"{step} skips the concern check"
+
+    def test_the_group_form_runs_the_concern_check(self):
+        source = FLOW.read_text()
+        assert "group_concerns(data)" in source

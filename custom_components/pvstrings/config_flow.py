@@ -12,7 +12,6 @@ installed at the time.
 
 from __future__ import annotations
 
-import logging
 from datetime import datetime
 from typing import Any
 
@@ -132,8 +131,6 @@ from .core.config import (
 )
 from .core.weather import OPEN_METEO_MODELS, SOURCE_HA_WEATHER, SOURCE_OPEN_METEO
 
-_LOGGER = logging.getLogger(__name__)
-
 # Home Assistant refuses ``async_update_reload_and_abort`` on an entry that has
 # update listeners -- and this integration registers one so the options flow
 # takes effect.  Subentry edits therefore use ``async_update_and_abort`` and let
@@ -229,33 +226,32 @@ def _sources_of_helper(hass: Any, entity_id: str) -> set[str]:
     return sources
 
 
-def check_power_entity(
+def helper_overlaps(
     hass: Any, entry: ConfigEntry | None, entity_id: str, own_subentry_id: str | None
-) -> str | None:
-    """Return a warning key when a chosen power entity is a bad idea.
+) -> bool:
+    """Does this aggregate helper read a channel another string already owns?
 
-    Aggregate helpers are the trap here.  Pointing two strings at a min/max or
-    template helper double-counts one physical channel and drops another; in
-    the plant total it barely shows, and per string -- which is the entire point
-    of this integration -- it is useless.
+    The hard case of the helper trap, and the only one worth refusing outright:
+    a min/max or template helper whose sources include a sensor another string
+    is already pointing at double-counts that channel and drops the other.  In
+    the plant total it barely shows; per string -- which is the entire point of
+    this integration -- it is useless.
+
+    Merely *being* a helper is a concern rather than an error, because a
+    template computing one channel from voltage and current is perfectly
+    sound.  See :func:`string_concerns`.
     """
-    platform = _helper_platform(hass, entity_id)
-    if platform is None:
-        return None
+    if _helper_platform(hass, entity_id) is None or entry is None:
+        return False
 
-    if entry is not None:
-        already_used: set[str] = set()
-        for subentry_id, subentry in entry.subentries.items():
-            if subentry.subentry_type != SUBENTRY_STRING:
-                continue
-            if subentry_id == own_subentry_id:
-                continue
-            configured = subentry.data.get(CONF_POWER_ENTITY)
-            if configured:
-                already_used.add(configured)
-        if _sources_of_helper(hass, entity_id) & already_used:
-            return "helper_overlaps"
-    return "helper_entity"
+    already_used = {
+        configured
+        for subentry_id, subentry in entry.subentries.items()
+        if subentry.subentry_type == SUBENTRY_STRING
+        and subentry_id != own_subentry_id
+        and (configured := subentry.data.get(CONF_POWER_ENTITY))
+    }
+    return bool(_sources_of_helper(hass, entity_id) & already_used)
 
 
 # --------------------------------------------------------------------------- #
@@ -599,6 +595,80 @@ def _efficiency_out_of_range(data: dict[str, Any]) -> bool:
     return value is not None and float(value) < 0.5
 
 
+# --------------------------------------------------------------------------- #
+# concerns: things that are probably wrong but legitimately might not be
+# --------------------------------------------------------------------------- #
+#
+# These are not validation errors.  Every one of them describes a setup that is
+# almost always a mistake and occasionally correct, so refusing it would lock
+# out the rare real case -- and logging it, which is what the helper warning
+# used to do, reaches nobody.  Each concern becomes a checkbox the user has to
+# tick, which puts the sentence in front of the person who can still fix it.
+
+CONCERN_HELPER_ENTITY = "helper_entity"
+CONCERN_POWER_REUSED = "power_entity_reused"
+CONCERN_POWER_MISSING = "power_entity_missing"
+CONCERN_FIXED_LIMIT_BATTERY = "fixed_limit_with_battery"
+
+ACK_PREFIX = "ack_"
+
+
+def string_concerns(
+    hass: Any, entry: ConfigEntry | None, data: dict[str, Any], own_subentry_id: str | None
+) -> list[str]:
+    """Soft objections to a string's power channel."""
+    concerns: list[str] = []
+    entity_id = data.get(CONF_POWER_ENTITY)
+    if not entity_id:
+        return concerns
+
+    if _helper_platform(hass, entity_id) is not None:
+        concerns.append(CONCERN_HELPER_ENTITY)
+
+    if entry is not None:
+        for subentry_id, subentry in entry.subentries.items():
+            if subentry.subentry_type != SUBENTRY_STRING:
+                continue
+            if subentry_id == own_subentry_id:
+                continue
+            if subentry.data.get(CONF_POWER_ENTITY) == entity_id:
+                concerns.append(CONCERN_POWER_REUSED)
+                break
+
+    # Deliberately "does not exist" rather than "is unavailable": an inverter
+    # below its start-up voltage reports unavailable every night, so anyone
+    # configuring after sunset would be asked to confirm a healthy sensor.
+    if hass.states.get(entity_id) is None:
+        concerns.append(CONCERN_POWER_MISSING)
+
+    return concerns
+
+
+def group_concerns(data: dict[str, Any]) -> list[str]:
+    """Soft objections to a curtailment group."""
+    concerns: list[str] = []
+    if data.get(CONF_BATTERY_COUPLED) and data.get(CONF_FIXED_LIMIT):
+        concerns.append(CONCERN_FIXED_LIMIT_BATTERY)
+    return concerns
+
+
+def concern_schema(concerns: list[str]) -> vol.Schema:
+    return vol.Schema(
+        {
+            vol.Required(f"{ACK_PREFIX}{concern}", default=False): BooleanSelector()
+            for concern in concerns
+        }
+    )
+
+
+def unacknowledged(concerns: list[str], user_input: dict[str, Any]) -> dict[str, str]:
+    return {
+        f"{ACK_PREFIX}{concern}": "must_acknowledge"
+        for concern in concerns
+        if not user_input.get(f"{ACK_PREFIX}{concern}")
+    }
+
+
 def _clean(data: dict[str, Any]) -> dict[str, Any]:
     """Drop empty optional values so ``.get()`` defaults stay meaningful."""
     out: dict[str, Any] = {}
@@ -769,6 +839,34 @@ class PvStringsOptionsFlow(OptionsFlow):
 class _ReloadingSubentryFlow(ConfigSubentryFlow):
     """Shared behaviour: adding a subentry must rebuild the plant."""
 
+    #: Concerns raised by the last submitted form, awaiting acknowledgement.
+    _concerns: list[str]
+
+    async def async_step_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Make the user tick every concern before the subentry is written.
+
+        A checkbox per concern rather than one lump of text: the labels come
+        from ``strings.json`` and are therefore translated, and an unticked box
+        is a form error, so the dialog cannot be clicked away without reading.
+        """
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            errors = unacknowledged(self._concerns, user_input)
+            if not errors:
+                return await self._acknowledged()
+
+        return self.async_show_form(
+            step_id="confirm",
+            data_schema=concern_schema(self._concerns),
+            errors=errors,
+        )
+
+    async def _acknowledged(self) -> SubentryFlowResult:
+        """Continue where the concern check interrupted."""
+        raise NotImplementedError
+
     def _created(self, title: str, data: dict[str, Any]) -> SubentryFlowResult:
         """Finish a subentry.
 
@@ -789,6 +887,7 @@ class GroupSubentryFlow(_ReloadingSubentryFlow):
         self._pending: dict[str, Any] = {}
         self._reconfigure = False
         self._existing: dict[str, Any] = {}
+        self._concerns: list[str] = []
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -824,14 +923,10 @@ class GroupSubentryFlow(_ReloadingSubentryFlow):
                     errors[CONF_INVERTER_MAX_AC] = "nameplate_required"
             if not errors:
                 self._pending = data
-                path = data.get(CONF_OUTPUT_PATH, OUTPUT_PATH_NONE)
-                if path != OUTPUT_PATH_NONE:
-                    return await self.async_step_conversion()
-                # Back to "none": stale conversion keys must not survive, or a
-                # later path switch would resurrect them.
-                for key in _DIRECT_KEYS + _STORAGE_KEYS:
-                    self._pending.pop(key, None)
-                return self._finish()
+                self._concerns = group_concerns(data)
+                if self._concerns:
+                    return await self.async_step_confirm()
+                return await self._acknowledged()
             existing = user_input
 
         return self.async_show_form(
@@ -839,6 +934,16 @@ class GroupSubentryFlow(_ReloadingSubentryFlow):
             data_schema=group_schema(existing),
             errors=errors,
         )
+
+    async def _acknowledged(self) -> SubentryFlowResult:
+        path = self._pending.get(CONF_OUTPUT_PATH, OUTPUT_PATH_NONE)
+        if path != OUTPUT_PATH_NONE:
+            return await self.async_step_conversion()
+        # Back to "none": stale conversion keys must not survive, or a later
+        # path switch would resurrect them.
+        for key in _DIRECT_KEYS + _STORAGE_KEYS:
+            self._pending.pop(key, None)
+        return self._finish()
 
     async def async_step_conversion(
         self, user_input: dict[str, Any] | None = None
@@ -907,6 +1012,9 @@ class StringSubentryFlow(_ReloadingSubentryFlow):
 
     def __init__(self) -> None:
         self._pending: dict[str, Any] = {}
+        self._concerns: list[str] = []
+        self._reconfigure = False
+        self._geometry_pending = False
 
     # -- creation ------------------------------------------------------- #
 
@@ -918,23 +1026,17 @@ class StringSubentryFlow(_ReloadingSubentryFlow):
 
         if user_input is not None:
             data = _clean(user_input)
-            warning = check_power_entity(
-                self.hass, entry, data[CONF_POWER_ENTITY], None
-            )
-            if warning == "helper_overlaps":
-                errors[CONF_POWER_ENTITY] = warning
+            if helper_overlaps(self.hass, entry, data[CONF_POWER_ENTITY], None):
+                errors[CONF_POWER_ENTITY] = "helper_overlaps"
             if _efficiency_out_of_range(data):
                 errors[CONF_STRING_EFFICIENCY] = "efficiency_out_of_range"
             if not errors:
-                title = data.pop(CONF_NAME)
-                if warning:
-                    _LOGGER.warning(
-                        "pvstrings: string %s points at helper entity %s -- prefer "
-                        "the physical channel",
-                        title,
-                        data[CONF_POWER_ENTITY],
-                    )
-                return self._created(title, data)
+                self._reconfigure = False
+                self._pending = data
+                self._concerns = string_concerns(self.hass, entry, data, None)
+                if self._concerns:
+                    return await self.async_step_confirm()
+                return await self._acknowledged()
 
         return self.async_show_form(
             step_id="user",
@@ -955,27 +1057,52 @@ class StringSubentryFlow(_ReloadingSubentryFlow):
 
         if user_input is not None:
             data = _clean(user_input)
-            warning = check_power_entity(
+            if helper_overlaps(
                 self.hass, entry, data[CONF_POWER_ENTITY], subentry.subentry_id
-            )
-            if warning == "helper_overlaps":
-                errors[CONF_POWER_ENTITY] = warning
+            ):
+                errors[CONF_POWER_ENTITY] = "helper_overlaps"
             if _efficiency_out_of_range(data):
                 errors[CONF_STRING_EFFICIENCY] = "efficiency_out_of_range"
             if not errors:
+                self._reconfigure = True
                 self._pending = data
-                if self._geometry_changed(current, data):
-                    return await self.async_step_geometry()
-                title = data.pop(CONF_NAME)
-                return self.async_update_and_abort(
-                    entry, subentry, title=title, data=data
+                self._geometry_pending = self._geometry_changed(current, data)
+                self._concerns = string_concerns(
+                    self.hass, entry, data, subentry.subentry_id
                 )
+                if self._concerns:
+                    return await self.async_step_confirm()
+                return await self._acknowledged()
 
         return self.async_show_form(
             step_id="reconfigure",
             data_schema=string_schema(self.hass, entry, user_input or current),
             errors=errors,
             description_placeholders={"history": await self._history_text()},
+        )
+
+    async def _acknowledged(self) -> SubentryFlowResult:
+        """Write the string, once nothing is left to object to.
+
+        Geometry comes after the concern check on purpose: the validity-period
+        question is about *when* a correct value started, and asking it before
+        the user has confirmed the value is even right puts the two in the
+        wrong order.
+        """
+        if not self._reconfigure:
+            data = dict(self._pending)
+            title = data.pop(CONF_NAME)
+            return self._created(title, data)
+
+        if self._geometry_pending:
+            return await self.async_step_geometry()
+        data = dict(self._pending)
+        title = data.pop(CONF_NAME)
+        return self.async_update_and_abort(
+            self._get_entry(),
+            self._get_reconfigure_subentry(),
+            title=title,
+            data=data,
         )
 
     @staticmethod
