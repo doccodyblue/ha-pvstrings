@@ -51,6 +51,7 @@ from .const import (
 )
 from .coordinator import PvStringsCoordinator, PvStringsData
 from .core.forecast import DAY_AHEAD_ISSUE_HOUR_LOCAL, floor_hour
+from .core.weather import OPEN_METEO_ATTRIBUTION, SOURCE_OPEN_METEO
 from .core import units
 
 #: Fallback when Home Assistant has no currency configured.
@@ -712,6 +713,20 @@ class PvStringsEntity(CoordinatorEntity[PvStringsCoordinator], SensorEntity):
 
     def __init__(self, coordinator: PvStringsCoordinator) -> None:
         super().__init__(coordinator)
+
+    @property
+    def attribution(self) -> str | None:
+        """Credit the irradiance source.
+
+        Open-Meteo serves its data under CC-BY 4.0, which obliges us to name
+        it wherever the data surfaces.  Resolved per state rather than set
+        once, because the source is a config option: on the weather-entity
+        fallback no Open-Meteo data is involved and claiming otherwise would
+        be a false credit.
+        """
+        if self.coordinator.plant.forecast_source == SOURCE_OPEN_METEO:
+            return OPEN_METEO_ATTRIBUTION
+        return None
 
 
 class PlantSensor(PvStringsEntity):

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+
+- **Open-Meteo attribution on every entity.** Its data is published under
+  CC BY 4.0, which obliges us to name it wherever the data surfaces. The
+  credit resolves per state and stays absent on the weather-entity source,
+  where no Open-Meteo data is involved and the credit would be false.
+- README section on data sources: what leaves the machine, the request
+  volume against Open-Meteo's free-tier limit, and the note that commercial
+  plant operators need their own API key.
+
 ### Changed
 
 - README no longer opens with a beta warning. The same facts — two

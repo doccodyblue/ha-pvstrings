@@ -30,6 +30,12 @@ OPEN_METEO_ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
 SOURCE_OPEN_METEO = "open_meteo"
 SOURCE_HA_WEATHER = "ha_weather"
 
+#: Open-Meteo serves its data under CC-BY 4.0, so it has to be named wherever
+#: that data shows up.  Kept here rather than in the entity layer because it
+#: belongs to the source, not to the presentation -- and it travels with the
+#: URLs above if either ever changes.
+OPEN_METEO_ATTRIBUTION = "Weather data by Open-Meteo.com (CC BY 4.0)"
+
 #: Open-Meteo models worth offering.  ``best_match`` lets the API pick the best
 #: available regional model for the site, which is the right default everywhere.
 OPEN_METEO_MODELS = (

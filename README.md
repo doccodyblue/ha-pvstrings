@@ -104,8 +104,10 @@ correctly outside the euro zone.
 ## Setup
 
 **1. Add the integration.** Location is prefilled from your Home Assistant
-coordinates. The default irradiance source is Open-Meteo — free, global, no API
-key, and it exposes the actual GHI/DNI/DHI components.
+coordinates. The default irradiance source is [Open-Meteo](https://open-meteo.com/)
+— free, global, no API key, and it exposes the actual GHI/DNI/DHI components.
+Your coordinates go to Open-Meteo with each request; the weather-entity source
+below keeps everything on your own machine.
 
 **2. Add a curtailment group** (optional, one per inverter that can be limited).
 A group carries the limit entity, the inverter nameplate, and optionally the
@@ -452,6 +454,24 @@ putting phantom loss on a panel with a clear view of the whole sky. All three
 looked exactly like "not enough data yet" from the outside — which is why the
 diagnostics download carries the model internals. If a number here looks wrong to
 you, it may well be: open an issue and attach it.
+
+---
+
+## Data sources
+
+Irradiance and weather come from **[Open-Meteo](https://open-meteo.com/)**, whose
+data is published under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+Every entity carries `Weather data by Open-Meteo.com (CC BY 4.0)` as its
+attribution while that source is selected. Open-Meteo's free tier covers
+"personal home automation purposes" explicitly, and the integration asks for one
+forecast every 30 minutes — roughly 48 calls a day against a limit of 10,000.
+
+**If you run your plant commercially**, Open-Meteo counts that as commercial use
+and expects an API key. That is between you and them; nothing in this integration
+changes on your side either way.
+
+The physics runs on **[pvlib](https://pvlib-python.readthedocs.io/)**
+(BSD-3-Clause), installed by Home Assistant rather than shipped here.
 
 ---
 
