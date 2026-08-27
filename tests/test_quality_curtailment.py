@@ -32,6 +32,19 @@ class TestQuality:
         """Dawn flicker between 0.0 and unavailable is information, not a gap."""
         assert classify(0.1, 1.0) == QUALITY_NIGHT
 
+    def test_full_coverage_with_sun_down_is_still_night(self):
+        """An inverter that stays awake covers the dark hours perfectly.
+
+        Two strings on the same plant behaved differently overnight: the ones
+        that went unavailable were called night, the ones that kept reporting
+        a steady zero were called ``exact``.  Same darkness, opposite labels,
+        and the second one travelled downstream as a daylight hour -- read as
+        an anomaly by learning, as a stalled learner by the health check, and
+        as an errorless hour by the score.
+        """
+        assert classify(1.0, 1.0) == QUALITY_NIGHT
+        assert assess(1.0, 1.0).quality == QUALITY_NIGHT
+
     def test_missing_hours_carry_no_learning_weight(self):
         assert assess(0.1, 40.0).usable_for_learning is False
 

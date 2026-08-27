@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A dark hour counted as daylight whenever the inverter stayed awake.**
+  Hourly rows were classified by coverage first and sun position second, so a
+  string reporting a steady zero all night covered its hour perfectly and was
+  labelled `exact`, while a sibling that simply went unavailable was correctly
+  labelled `night`. Same darkness, opposite labels — and three layers read the
+  wrong one: learning booked the dark zeros as `zero_physics_in_daylight`, the
+  counter meant for real anomalies; the health check took that anomaly as proof
+  the learner had stalled and announced once every night that the forecast
+  "will not improve" while it was in fact improving all day; and scoring
+  averaged the errorless dark hours into `nmae` and `mae_kwh`, which made both
+  read better than the plant deserved. Darkness is now decided before coverage.
+  `wmape` and `daily_bias_kwh` were never affected — they are ratios of sums
+  and day-based totals, so an hour of zero against zero could not move them.
+  Hours already stored under the old label keep it and age out of the score
+  windows on their own; nothing needs rebuilding.
+
 ## v1.20.4 — 2026-08-26
 
 ### Fixed

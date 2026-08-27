@@ -395,6 +395,18 @@ class TestMaterialisation:
             == "night"
         )
 
+    def test_a_fully_covered_night_hour_is_still_night(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """Coverage says how much was measured, not whether the sun was up."""
+        midnight = DAY_START
+        write_measurements(seeded_store, "s1", midnight, power_w=0.0, coverage=1.0)
+        engine.materialise_hourly(midnight, midnight + HOUR)
+        assert (
+            seeded_store.hourly_range(midnight, midnight + HOUR, "s1")[0].quality
+            == "night"
+        )
+
 
 class TestLearningCycle:
     def _prepare_day(
