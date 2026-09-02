@@ -4,12 +4,15 @@
 
 ### Added
 
-- **The day-ahead history is published, day by day.** `deviation_yesterday`
-  gains a `history` attribute: for the last thirty days, what was announced
-  the evening before and what actually came -- for the plant and for each
-  string, keyed by `string_id` (`strings_detail` maps names to ids). It is the
-  same pairing the accuracy sensors are scored on, so nothing reading this can
-  disagree with them.
+- **The day-ahead history is published, day by day.** The 30-day day-ahead
+  accuracy sensor gains a `history` attribute: what was announced the evening
+  before and what actually came, for the plant and for each string, keyed by
+  `string_id` (`strings_detail` maps names to ids). These are the very pairs
+  that score is computed from, so nothing reading them can disagree with the
+  sensor they sit on. Deliberately not on `deviation_yesterday`, which sums
+  every logged hour and the whole measured day -- a slightly different number
+  for the same day, and two of them on one entity is a support question
+  waiting to happen.
 
   Written for the dashboard, which until now rebuilt those numbers from
   recorder statistics of `forecast_tomorrow` -- possible only as a side effect

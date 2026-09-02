@@ -350,12 +350,10 @@ PLANT_SENSORS: tuple[PlantSensorDescription, ...] = (
             ),
             "actual_kwh": round(data.produced_yesterday_kwh, 3),
             "issue_hour_local": DAY_AHEAD_ISSUE_HOUR_LOCAL,
-            # The same comparison for the last thirty days, plant and per
-            # string (keyed by string_id; strings_detail maps names to ids).
-            # A dashboard drawing this used to rebuild it from recorder
-            # statistics of the forecast entity -- possible only as a side
-            # effect of a state_class a forecast should not carry.
-            "history": data.scores_day_ahead.get(30, {}).get("history"),
+            # The day-by-day history lives on the day-ahead accuracy sensor,
+            # not here: it is built from scored pairs and would contradict
+            # the two numbers above, which sum every logged hour and the
+            # whole measured day.
         },
     ),
     PlantSensorDescription(
@@ -407,7 +405,15 @@ PLANT_SENSORS: tuple[PlantSensorDescription, ...] = (
         value_fn=lambda data, _c: _score(
             data, 30, "wmape", censored=False, day_ahead=True
         ),
-        attrs_fn=lambda data, _c: _score_attrs(data, 30, day_ahead=True),
+        attrs_fn=lambda data, _c: {
+            **_score_attrs(data, 30, day_ahead=True),
+            # The days behind this number: what was announced the evening
+            # before and what came, plant and per string (keyed by string_id;
+            # strings_detail maps names to ids).  Published here because these
+            # are exactly the pairs this score is computed from -- a card
+            # drawing them cannot disagree with the sensor it sits next to.
+            "history": data.scores_day_ahead.get(30, {}).get("history"),
+        },
     ),
     PlantSensorDescription(
         key="bias_day_ahead_30d",
