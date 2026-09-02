@@ -165,6 +165,16 @@ def _score_attrs(
     return attrs
 
 
+_DELIVERED_SEMANTICS = (
+    "Valued on delivered energy, not on DC production: each group's measured "
+    "DC energy is multiplied by its conversion factor -- measured where an AC "
+    "sensor supplies the evidence, otherwise the inverter curve, and for a "
+    "battery path the configured charge and discharge efficiencies, which is "
+    "an estimate. Strings with no output path stay at DC and are counted as "
+    "such under delivery.by_basis_kwh."
+)
+
+
 PLANT_SENSORS: tuple[PlantSensorDescription, ...] = (
     PlantSensorDescription(
         key="forecast_today",
@@ -404,9 +414,12 @@ PLANT_SENSORS: tuple[PlantSensorDescription, ...] = (
             "week_eur": data.savings.get("week", {}).get("eur"),
             "year_eur": data.savings.get("year", {}).get("eur"),
             "kwh_total": data.savings.get("total", {}).get("kwh"),
+            "dc_kwh_total": data.savings.get("total", {}).get("dc_kwh"),
             "eur_per_kwh": data.savings.get("total", {}).get("eur_per_kwh"),
             "annual_estimate_eur": data.savings.get("annual_estimate_eur"),
+            "delivery": data.savings.get("delivery"),
             "scenario_eur": data.scenarios,
+            "semantics": _DELIVERED_SEMANTICS,
             "note": (
                 "Scenarios value the same measured production under every tariff "
                 "model, so the cost of a meter swap is visible before it happens."
@@ -434,7 +447,9 @@ PLANT_SENSORS: tuple[PlantSensorDescription, ...] = (
                 ),
                 "note": (
                     "The annual figure is weighted by the site's own clear-sky "
-                    "seasonality, not extrapolated linearly from days elapsed."
+                    "seasonality, not extrapolated linearly from days elapsed, "
+                    "and rests on delivered energy -- see the savings sensor "
+                    "for what each group's conversion factor is based on."
                 ),
             }
             if data.amortisation

@@ -587,6 +587,83 @@ class Store:
         total += self._raw_energy_wh(last_hour_end, end_ts, string_id) / 1000.0
         return total
 
+    def energy_kwh_by_string(self, start_ts: int, end_ts: int) -> dict[str, float]:
+        """The same window as ``energy_kwh_between``, split per string.
+
+        Same folding rule -- hourly aggregates where they exist, raw rows for
+        the hours nobody has folded yet -- but one query instead of one per
+        string.  The split is what the savings calculation needs: each string
+        leaves the plant through its group's own path, and a plant total
+        cannot be converted after the fact without assuming they all share
+        one.
+        """
+        first_hour, last_hour_end = self._hour_split(start_ts, end_ts)
+        if last_hour_end <= first_hour:
+            return {
+                string_id: wh / 1000.0
+                for string_id, wh in self._raw_energy_wh_by_string(
+                    start_ts, end_ts
+                ).items()
+            }
+
+        totals: dict[str, float] = {}
+        folded_hours: set[int] = set()
+        for row in self._query(
+            "SELECT ts_utc, string_id, COALESCE(SUM(energy_kwh), 0) AS kwh "
+            "FROM string_hourly WHERE ts_utc >= ? AND ts_utc < ? "
+            "GROUP BY ts_utc, string_id",
+            (first_hour, last_hour_end),
+        ):
+            folded_hours.add(int(row["ts_utc"]))
+            key = str(row["string_id"])
+            totals[key] = totals.get(key, 0.0) + float(row["kwh"])
+
+        for hour in range(first_hour, last_hour_end, HOUR):
+            if hour not in folded_hours:
+                self._add_wh(totals, self._raw_energy_wh_by_string(hour, hour + HOUR))
+        self._add_wh(totals, self._raw_energy_wh_by_string(start_ts, first_hour))
+        self._add_wh(totals, self._raw_energy_wh_by_string(last_hour_end, end_ts))
+        return totals
+
+    @staticmethod
+    def _add_wh(totals: dict[str, float], raw_wh: Mapping[str, float]) -> None:
+        for string_id, wh in raw_wh.items():
+            totals[string_id] = totals.get(string_id, 0.0) + wh / 1000.0
+
+    def _raw_energy_wh_by_string(
+        self, start_ts: int, end_ts: int
+    ) -> dict[str, float]:
+        if end_ts <= start_ts:
+            return {}
+        return {
+            str(row["string_id"]): float(row["wh"])
+            for row in self._query(
+                "SELECT string_id, COALESCE(SUM(energy_wh), 0) AS wh "
+                "FROM string_5min WHERE ts_utc >= ? AND ts_utc < ? "
+                "GROUP BY string_id",
+                (start_ts, end_ts),
+            )
+        }
+
+    def conversion_totals(self, scope_id: str, stage: str) -> tuple[float, float, int]:
+        """``(input, output, rows)`` over the clean measured pairs of a stage.
+
+        Watt-means, not energy: every row covers the same interval, so the
+        interval length cancels in the ratio of the two sums and what is left
+        is the load-weighted efficiency the stage actually ran at.  Censored
+        rows stay out for the same reason the curve fit leaves them out -- a
+        curtailed interval says what the limit did, not what the stage does.
+        """
+        row = self._query(
+            "SELECT COALESCE(SUM(in_w), 0) AS in_w, "
+            "COALESCE(SUM(out_w), 0) AS out_w, COUNT(*) AS rows "
+            "FROM conversion_5min WHERE scope_id = ? AND stage = ? "
+            "AND in_w > 0 AND out_w IS NOT NULL AND out_w >= 0 "
+            "AND COALESCE(censored, 1) = 0",
+            (scope_id, stage),
+        )[0]
+        return float(row["in_w"]), float(row["out_w"]), int(row["rows"])
+
     def update_curtailment_flags(
         self, rows: Iterable[tuple[int | None, int, str]]
     ) -> None:

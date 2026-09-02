@@ -1077,3 +1077,79 @@ class TestMigrationToPoaBeam:
             assert (1_700_000_300.0, 181.0, 31.0, 0.7, 1.0, 450.0, 0.9) in rows
         finally:
             store.close()
+
+
+class TestEnergyPerString:
+    """The savings calculation needs the split: each string leaves the plant
+    through its own group's path, so a plant total cannot be converted after
+    the fact."""
+
+    def _raw(self, ts, sid, wh):
+        return (ts, sid, wh, wh * 12, 1.0, 10, None, None, "measured")
+
+    def test_split_matches_the_plant_total(self, store: Store):
+        store.upsert_5min([self._raw(300, "s1", 500.0), self._raw(300, "s2", 250.0)])
+        split = store.energy_kwh_by_string(0, 900)
+        assert split == {"s1": pytest.approx(0.5), "s2": pytest.approx(0.25)}
+        assert sum(split.values()) == pytest.approx(store.energy_kwh_between(0, 900))
+
+    def test_folded_hours_are_read_from_the_aggregate(self, store: Store):
+        """Same rule as energy_kwh_between: raw rows may be compacted away and
+        the lifetime split must not shrink with them."""
+        now = 200 * 86400
+        hour = now - 200 * 3600
+        store.upsert_5min(
+            [self._raw(hour + i * 300, "s1", 100.0) for i in range(12)]
+        )
+        store.upsert_hourly(
+            [(hour, "s1", 1.2, 1.0, 0.0, None, None, None, "measured", "exact")]
+        )
+        before = store.energy_kwh_by_string(hour, hour + 3600)
+        store.compact(now_ts=now, raw_days=0)
+        after = store.energy_kwh_by_string(hour, hour + 3600)
+        assert before["s1"] == pytest.approx(1.2)
+        assert after == before
+
+    def test_unfolded_hours_still_fall_back_to_raw(self, store: Store):
+        hour = 3600
+        store.upsert_5min(
+            [self._raw(hour + i * 300, "s1", 100.0) for i in range(12)]
+        )
+        assert store.energy_kwh_by_string(hour, hour + 3600)["s1"] == pytest.approx(1.2)
+
+    def test_a_window_without_a_whole_hour_is_not_counted_twice(self, store: Store):
+        store.upsert_5min([self._raw(300, "s1", 500.0)])
+        assert store.energy_kwh_by_string(60, 900)["s1"] == pytest.approx(0.5)
+
+    def test_an_empty_window_is_empty(self, store: Store):
+        assert store.energy_kwh_by_string(0, 900) == {}
+
+
+class TestConversionTotals:
+    def test_the_ratio_is_the_load_weighted_efficiency(self, store: Store):
+        store.upsert_conversion(
+            [
+                (300, "g1", "inverter", 600.0, 570.0, 1.0, "s1", 1),
+                (600, "g1", "inverter", 400.0, 372.0, 1.0, "s1", 1),
+            ]
+        )
+        # Both pairs clean: physics has judged nothing binding.
+        store.upsert_5min(
+            [
+                (300, "s1", 50.0, 600.0, 1.0, 10, None, 0, "measured"),
+                (600, "s1", 50.0, 400.0, 1.0, 10, None, 0, "measured"),
+            ]
+        )
+        store.mark_conversion_censored(0, 1000)
+        in_w, out_w, rows = store.conversion_totals("g1", "inverter")
+        assert rows == 2
+        assert out_w / in_w == pytest.approx((570 + 372) / 1000)
+
+    def test_censored_pairs_are_left_out(self, store: Store):
+        store.upsert_5min([(300, "s1", 50.0, 600.0, 1.0, 10, 500.0, 1, "lower_bound")])
+        store.upsert_conversion([(300, "g1", "inverter", 600.0, 570.0, 1.0, "s1", 1)])
+        store.mark_conversion_censored(0, 1000)
+        assert store.conversion_totals("g1", "inverter") == (0.0, 0.0, 0)
+
+    def test_an_unmeasured_scope_reports_nothing(self, store: Store):
+        assert store.conversion_totals("g9", "inverter") == (0.0, 0.0, 0)

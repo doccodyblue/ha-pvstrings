@@ -8,11 +8,18 @@ import pytest
 
 from core.config import Economics
 from core.economics import (
+    BASIS_CONFIGURED,
+    BASIS_CURVE,
+    BASIS_DC,
+    BASIS_MEASURED,
     MODE_FEED_IN,
     MODE_NET_METERING,
     MODE_SELF_CONSUMPTION,
+    DeliveryFactor,
     amortisation,
     annual_estimate,
+    delivered,
+    delivery_factor,
     period_share,
     savings,
     scenarios,
@@ -385,3 +392,100 @@ class TestAmortisationDoesNotProjectNonsense:
         assert just_inside.target_date is not None
         just_outside = amortisation(1300.0, 0.0, 12.0, date(2026, 8, 17))
         assert just_outside.target_date is None
+
+
+class TestDeliveryFactor:
+    """Which rung of the evidence ladder a group ends up on, and why."""
+
+    def test_measurement_beats_the_curve(self):
+        result = delivery_factor(
+            "direct", measured=(1000.0, 940.0, 500), curve_factor=0.96
+        )
+        assert result == DeliveryFactor(0.94, BASIS_MEASURED, 500)
+
+    def test_too_few_pairs_fall_back_to_the_curve(self):
+        result = delivery_factor(
+            "direct", measured=(1000.0, 940.0, 12), curve_factor=0.96
+        )
+        assert result == DeliveryFactor(0.96, BASIS_CURVE)
+
+    def test_an_impossible_measurement_is_refused_not_applied(self):
+        """A mis-scaled AC sensor reading 1.4x would otherwise pay for energy
+        nobody produced."""
+        result = delivery_factor(
+            "direct", measured=(1000.0, 1400.0, 900), curve_factor=0.96
+        )
+        assert result == DeliveryFactor(0.96, BASIS_CURVE)
+
+    def test_no_curve_and_no_evidence_stays_at_dc(self):
+        assert delivery_factor("direct") == DeliveryFactor(1.0, BASIS_DC)
+
+    def test_storage_counts_charge_and_discharge(self):
+        result = delivery_factor("storage", configured_factor=0.97 * 0.96 * 0.96)
+        assert result.basis == BASIS_CONFIGURED
+        assert result.factor == pytest.approx(0.894, abs=5e-4)
+
+    def test_a_group_without_a_path_is_untouched(self):
+        assert delivery_factor("none") == DeliveryFactor(1.0, BASIS_DC)
+
+    def test_a_measured_storage_path_does_not_exist(self):
+        """Charge efficiency is not a two-port and is never measured; passing
+        pairs in must not promote the storage path to 'measured'."""
+        result = delivery_factor(
+            "storage", measured=(1000.0, 940.0, 900), configured_factor=0.9
+        )
+        assert result.basis == BASIS_CONFIGURED
+
+
+class TestDelivered:
+    FACTORS = {
+        "s1": DeliveryFactor(0.95, BASIS_MEASURED, 800),
+        "s2": DeliveryFactor(0.9, BASIS_CONFIGURED),
+    }
+
+    def test_each_string_is_converted_on_its_own_path(self):
+        result = delivered({"s1": 10.0, "s2": 5.0}, self.FACTORS)
+        assert result.kwh == pytest.approx(9.5 + 4.5)
+        assert result.dc_kwh == pytest.approx(15.0)
+
+    def test_the_basis_split_says_what_rests_on_a_measurement(self):
+        result = delivered({"s1": 10.0, "s2": 5.0}, self.FACTORS)
+        assert result.by_basis == {BASIS_MEASURED: 9.5, BASIS_CONFIGURED: 4.5}
+
+    def test_an_unknown_string_counts_at_dc_rather_than_vanishing(self):
+        """History outlives configuration: a string removed from the setup
+        still has energy in the database, and dropping it would shrink the
+        lifetime figure instead of merely leaving it uncorrected."""
+        result = delivered({"s1": 10.0, "gone": 4.0}, self.FACTORS)
+        assert result.kwh == pytest.approx(13.5)
+        assert result.by_basis[BASIS_DC] == pytest.approx(4.0)
+
+    def test_nothing_produced_is_not_a_division(self):
+        assert delivered({}, self.FACTORS).factor == 1.0
+
+
+class TestSavingsRunOnDeliveredEnergy:
+    def _econ(self, mode=MODE_SELF_CONSUMPTION):
+        return Economics(
+            mode=mode,
+            price_per_kwh=0.32,
+            feed_in_tariff=0.08,
+            investment_eur=3500.0,
+            commissioning_date=date(2025, 4, 1),
+        )
+
+    def test_conversion_losses_are_not_paid_for(self):
+        """The whole point of the delivery layer: 5 % of DC energy never
+        reaches a socket and must not earn the retail price."""
+        dc = savings(10.0, None, self._econ()).saved_eur
+        ac = savings(delivered({"s1": 10.0}, {"s1": DeliveryFactor(0.95, BASIS_MEASURED)}).kwh,
+                     None, self._econ()).saved_eur
+        assert ac == pytest.approx(dc * 0.95)
+
+    def test_both_sides_of_the_split_are_now_ac(self):
+        """self_used = delivered - exported: the exported half comes off the
+        grid meter, so the other half has to be on the same side of the
+        inverter or the split is a unit mix."""
+        result = savings(9.5, 7.0, self._econ())
+        assert result.self_used_kwh == pytest.approx(2.5)
+        assert result.saved_eur == pytest.approx(2.5 * 0.32 + 7 * 0.08)

@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+### Changed
+
+- **Savings and amortisation are valued on delivered energy, not on DC
+  production.** The strings are measured on their DC side, and the money
+  sensors were paying the retail price for the conversion losses too --
+  systematically five to seven percent too high for a direct path, around ten
+  through a battery, with the amortisation date early to match. Each group's
+  measured DC energy now passes through a conversion factor first, taken from
+  the best evidence that group has: its own AC sensor where one exists, read as
+  one load-weighted ratio over the same pairs the efficiency curve is fitted
+  on; otherwise the inverter curve, averaged over the load range the group
+  actually runs at; for a battery path the configured MPPT, charge and
+  discharge efficiencies, which is an estimate and is labelled as one. Strings
+  with no output path stay at DC and are counted as such. The
+  `savings_total` attributes carry `dc_kwh_total` next to `kwh_total` and a
+  `delivery` block naming every group's factor and its basis, so a number that
+  sits below the production sensor can be explained rather than reported as a
+  bug.
+
+  Two consequences worth stating plainly. **Your lifetime savings figure will
+  drop** by whatever your conversion losses are -- nothing was recomputed and
+  no data was touched, the same measurements are simply no longer valued as if
+  they had arrived at a socket. And the self-consumption split is now
+  unit-consistent: exported energy comes off the grid meter in AC, and the
+  self-used remainder is now AC too, where before it was a DC figure minus an
+  AC one. That mix was invisible under `net_metering`, where both halves carry
+  the same price, and distorted the split under `self_consumption`.
+
+  A factor outside the plausible band -- a mis-scaled AC sensor reading above
+  1.0, or below half -- is refused rather than applied, and the next rung of
+  evidence is used instead.
+
 ### Fixed
 
 - **A dark hour counted as daylight whenever the inverter stayed awake.**

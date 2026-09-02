@@ -365,7 +365,30 @@ Every interval carries an honest `coverage`, and quality follows it:
 
 Runs on measured data only, so it is valid before the learning layer is warm.
 
-Three tariff models, and all three are always computed side by side:
+### What gets valued
+
+Not DC production — **delivered energy**. The strings are measured on their DC
+side, but what displaces a purchase is what comes out of the inverter, or back
+out of the battery. Each group's measured DC energy is therefore multiplied by
+a conversion factor before any price touches it, and the `savings_total`
+attributes name what that factor rests on:
+
+| Basis | Where the factor comes from |
+|---|---|
+| `measured` | the group's own AC sensor — the same pairs the efficiency curve is fitted on, read as one load-weighted ratio. Needs ~200 clean intervals, roughly two days of daylight |
+| `curve` | the inverter curve, averaged over the load range this group actually runs at. Clipping is deliberately left out: an inverter that clips pulls its own DC input down with it, and the measured DC energy has already lost that |
+| `configured` | a battery path: MPPT × charge × discharge efficiency. All three are configured numbers — battery power is a net flow after the house load, not a two-port, so no side of it is measurable the way an inverter's is. An estimate, and labelled as one |
+| `dc` | no output path, or nothing to convert with. Counted on its DC side, exactly as before |
+
+`dc_kwh_total` sits next to `kwh_total` so the two are comparable, and
+`delivery.by_basis_kwh` shows how much of the total rests on a measurement
+rather than an assumption. An implausible factor — a mis-scaled AC sensor
+reading above 1.0, say — is refused rather than applied, and the next rung
+down is used instead.
+
+### Tariff models
+
+Three, and all three are always computed side by side:
 
 - `net_metering` — the meter physically runs backwards, so every exported kWh
   displaces an imported one. **Temporary by construction.**
@@ -382,6 +405,10 @@ Annual figures are extrapolated using the site's **own clear-sky seasonality**,
 derived from your strings' geometry — not `savings_so_far / days × 365`. Measured
 from spring, that linear form runs straight over the yield peak and overstates
 the year badly.
+
+Amortisation runs on the same delivered energy, so its target date moves out by
+however much your conversion losses are — typically 4–6 % for a direct path,
+around 10 % through a battery.
 
 ---
 

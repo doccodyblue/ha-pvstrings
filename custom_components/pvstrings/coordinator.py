@@ -12,7 +12,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from functools import partial
-from typing import Any
+from typing import Any, Mapping, Sequence
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -33,8 +33,8 @@ from .const import (
 from .core import economics as econ
 from .core import persistence
 from .core.aggregate import merge_hourly
-from .core.config import PlantConfig
-from .core.conversion import ConversionResult, convert_group
+from .core.config import CurtailmentGroup, PlantConfig
+from .core.conversion import CURVE_NEUTRAL, ConversionResult, convert_group
 from .core.learning import SCOPE_CONVERSION_CURVE
 from .core.forecast import HOUR, ForecastEngine, LearnStats, floor_hour
 from .core.health import Health, learn_summary
@@ -542,6 +542,7 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         groups: dict[str, GroupForecast] = {}
         ac_totals: dict[int, float] = {}
         has_direct = False
+        delivery: dict[str, econ.DeliveryFactor] = {}
         for group in self.plant.groups:
             members = self.plant.strings_in_group(group.group_id)
             if not members:
@@ -554,13 +555,13 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
             # Downstream of everything learned: log_forecast, scoring and
             # censoring all ran on the DC series above.  Static config only
             # (executor context, no hass.states).
-            converted = convert_group(
+            convert = partial(
+                convert_group,
                 dict(hourly),
                 output_path=group.output_path,
                 rated_ac_w=group.inverter_max_ac_w,
                 inverter_model=group.inverter_model,
                 custom_curve=group.custom_curve,
-                forecast_clipping=group.forecast_clipping,
                 mppt_efficiency=group.mppt_efficiency,
                 charge_efficiency=group.charge_efficiency,
                 curves=self.inverter_curves,
@@ -572,6 +573,10 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
                     else None
                 ),
             )
+            converted = convert(forecast_clipping=group.forecast_clipping)
+            factor = self._delivery_factor(group, hourly, convert)
+            for member in members:
+                delivery[member.string_id] = factor
             if group.output_path == OUTPUT_PATH_DIRECT and converted is not None:
                 has_direct = True
                 for ts, value in converted.hourly_kwh.items():
@@ -638,7 +643,7 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
             )
             data.scores_day_ahead[days] = self.engine.score_day_ahead(days, now_ts)
 
-        data.savings = self._savings(now, day_start, now_ts)
+        data.savings = self._savings(now, day_start, now_ts, delivery)
         data.amortisation = data.savings.pop("amortisation", None)
         data.scenarios = data.savings.pop("scenarios", {})
         data.string_detail = self._string_detail(day_start, now_ts)
@@ -933,8 +938,83 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         predicted = [row["potential_kwh"] for row in rows if row["potential_kwh"]]
         return sum(predicted) if predicted else None
 
+    def _delivery_factor(
+        self,
+        group: CurtailmentGroup,
+        hourly: Sequence[tuple[int, float]],
+        convert: Any,
+    ) -> econ.DeliveryFactor:
+        """How much of this group's DC energy arrives where it can be valued.
+
+        The measured rung is the same evidence the curve is fitted on, read as
+        one load-weighted ratio.  The curve rung applies the curve to the
+        forecast this group just produced, which weights it over the load
+        range the group really runs at instead of reading the curve off at
+        some nominal point.
+
+        Clipping is deliberately left out of the curve rung.  An inverter that
+        clips pulls its own DC input down with it, so the measured DC energy
+        this factor multiplies has already lost that energy -- clipping again
+        here would subtract it twice.
+        """
+        if group.output_path == OUTPUT_PATH_STORAGE:
+            return econ.delivery_factor(
+                group.output_path,
+                configured_factor=(group.mppt_efficiency or 1.0)
+                * group.charge_efficiency
+                * group.discharge_efficiency,
+            )
+        if group.output_path != OUTPUT_PATH_DIRECT:
+            return econ.delivery_factor(group.output_path)
+
+        curve_factor = None
+        unclipped = convert(forecast_clipping=False)
+        if unclipped is not None and unclipped.curve_source != CURVE_NEUTRAL:
+            dc_sum = sum(value for _ts, value in hourly if value > 0)
+            if dc_sum > 0:
+                curve_factor = sum(unclipped.hourly_kwh.values()) / dc_sum
+        return econ.delivery_factor(
+            group.output_path,
+            measured=self.store.conversion_totals(group.group_id, "inverter"),
+            curve_factor=curve_factor,
+        )
+
+    def _delivery_summary(
+        self,
+        delivery: Mapping[str, econ.DeliveryFactor],
+        total: econ.Delivery | None,
+    ) -> dict[str, Any]:
+        """What each group's factor was, and what the plant total rests on."""
+        groups: dict[str, Any] = {}
+        for group in self.plant.groups:
+            members = self.plant.strings_in_group(group.group_id)
+            if not members:
+                continue
+            # Every member of a group shares its factor, so the first one
+            # carries it.
+            factor = delivery.get(members[0].string_id)
+            if factor is None:
+                continue
+            entry: dict[str, Any] = {
+                "factor": factor.factor,
+                "basis": factor.basis,
+                "path": group.output_path,
+            }
+            if factor.samples:
+                entry["samples"] = factor.samples
+            groups[group.name] = entry
+        return {
+            "groups": groups,
+            "by_basis_kwh": total.by_basis if total is not None else {},
+            "factor_total": round(total.factor, 4) if total is not None else None,
+        }
+
     def _savings(
-        self, now: datetime, day_start: int, now_ts: int
+        self,
+        now: datetime,
+        day_start: int,
+        now_ts: int,
+        delivery: Mapping[str, econ.DeliveryFactor],
     ) -> dict[str, Any]:
         economics = self.plant.economics
         local = dt_util.as_local(now)
@@ -958,6 +1038,8 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         )
 
         out: dict[str, Any] = {}
+        has_grid = self.plant.plant_state.grid_power_entity is not None
+        total_delivery: econ.Delivery | None = None
         for label, start in (
             ("today", day_start),
             ("week", week_start),
@@ -965,22 +1047,32 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
             ("year", year_start),
             ("total", total_start),
         ):
-            produced = self.store.energy_kwh_between(start, now_ts)
+            # Valued on what left the plant, not on what the panels made: the
+            # strings are measured on their DC side and the conversion losses
+            # are real energy nobody can spend.
+            supplied = econ.delivered(
+                self.store.energy_kwh_by_string(start, now_ts), delivery
+            )
             _imported, exported = self.store.grid_energy_kwh(start, now_ts)
-            has_grid = self.plant.plant_state.grid_power_entity is not None
             result = econ.savings(
-                produced, exported if has_grid else None, economics
+                supplied.kwh, exported if has_grid else None, economics
             )
             out[label] = {
-                "kwh": round(produced, 3),
+                "kwh": round(supplied.kwh, 3),
+                # The DC side stays alongside it.  "Produced today" is a DC
+                # sensor, and a savings figure quietly sitting five percent
+                # under it reads as a bug unless both numbers are visible.
+                "dc_kwh": round(supplied.dc_kwh, 3),
                 "export_kwh": round(result.export_kwh, 3),
                 "eur": round(result.saved_eur, 2),
                 "eur_per_kwh": round(result.eur_per_kwh, 4),
             }
+            if label == "total":
+                total_delivery = supplied
 
         produced_total = out["total"]["kwh"]
         _imported, exported_total = self.store.grid_energy_kwh(total_start, now_ts)
-        has_grid = self.plant.plant_state.grid_power_entity is not None
+        out["delivery"] = self._delivery_summary(delivery, total_delivery)
         out["scenarios"] = {
             mode: round(result.saved_eur, 2)
             for mode, result in econ.scenarios(
