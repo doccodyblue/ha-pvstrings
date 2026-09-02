@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **The day still running was missing from the published day-ahead history.**
+  It is deliberately kept out of every score -- half a measured day against a
+  whole day's forecast is a clock reading, not an error -- but leaving the row
+  out entirely made a card drawing it say "no forecast issued" for today, when
+  one had been. Today now appears with a **null actual**, so the number
+  announced last evening is readable while the day is still open.
+
+  It cannot come from the paired query, which starts at the measured hours and
+  would report the day as whatever has been produced so far; the new
+  `Store.forecast_log_sum` reads the log itself, taking the newest issue at or
+  before the same cut-off. A day nobody announced stays absent rather than
+  appearing as a zero.
+
 ## v1.20.6 — 2026-09-02
 
 ### Added

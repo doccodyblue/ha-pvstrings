@@ -159,7 +159,10 @@ class HourForecast:
         )
 
 
-def _day_ahead_history(tally: "_ScoreTally") -> dict[str, Any]:
+def _day_ahead_history(
+    tally: "_ScoreTally",
+    running: tuple[str, dict[str, float]] | None = None,
+) -> dict[str, Any]:
     """Day by day, what was announced the evening before and what came.
 
     Published because the numbers exist here first-hand.  A dashboard would
@@ -180,15 +183,24 @@ def _day_ahead_history(tally: "_ScoreTally") -> dict[str, Any]:
             for day, values in sorted(daily.items())
         ]
 
-    return {
-        "plant": series(tally.daily_all),
-        # Keyed by string_id rather than name: names are editable, and
-        # ``strings_detail`` carries the mapping for anything that needs one.
-        "strings": {
-            string_id: series(daily)
-            for string_id, daily in sorted(tally.daily_by_string.items())
-        },
+    plant = series(tally.daily_all)
+    # Keyed by string_id rather than name: names are editable, and
+    # ``strings_detail`` carries the mapping for anything that needs one.
+    strings = {
+        string_id: series(daily)
+        for string_id, daily in sorted(tally.daily_by_string.items())
     }
+    if running is not None:
+        # The running day, with a null actual.  It is kept out of every score
+        # -- half a measured day against a whole day's forecast is a clock
+        # reading, not an error -- but it is the number a reader looks for in
+        # the morning, and leaving the row out entirely reads as "nothing was
+        # announced" rather than "the day is not over".
+        day, sums = running
+        plant.append([day, round(sum(sums.values()), 3), None])
+        for string_id, value in sorted(sums.items()):
+            strings.setdefault(string_id, []).append([day, round(value, 3), None])
+    return {"plant": plant, "strings": strings}
 
 
 @dataclass(slots=True)
@@ -1804,7 +1816,7 @@ class ForecastEngine:
 
         result = self._scored(tally)
         result["issue_hour_local"] = DAY_AHEAD_ISSUE_HOUR_LOCAL
-        result["history"] = _day_ahead_history(tally)
+        result["history"] = _day_ahead_history(tally, self._running_day_ahead(now_ts))
         if result["days_scored"] < MIN_SCORED_DAYS:
             # Silent about the number, honest about the basis: the counts stay
             # as they are so the attributes can show how far off publishing is.
@@ -1814,6 +1826,24 @@ class ForecastEngine:
             for bucket in ("uncensored", "all_hours"):
                 result[bucket] = {**result[bucket], **blank}
         return result
+
+    def _running_day_ahead(self, now_ts: int) -> tuple[str, dict[str, float]] | None:
+        """Per string, what was announced for the day that is still running.
+
+        ``None`` when nothing was issued before that day's cut-off, which is
+        the honest answer on a fresh install and keeps the caller from
+        publishing a zero that would read as a forecast of nothing.
+        """
+        today = datetime.fromtimestamp(now_ts, tz=self._tz).date()
+        start = int(
+            datetime(today.year, today.month, today.day, tzinfo=self._tz).timestamp()
+        )
+        nxt = today + timedelta(days=1)
+        end = int(
+            datetime(nxt.year, nxt.month, nxt.day, tzinfo=self._tz).timestamp()
+        )
+        sums = self.store.forecast_log_sum(start, end, self.day_ahead_cutoff(start))
+        return (today.strftime("%Y-%m-%d"), sums) if sums else None
 
     def day_ahead_cutoff(self, day_start_ts: int) -> int:
         """The instant a local day's forecast is judged against.

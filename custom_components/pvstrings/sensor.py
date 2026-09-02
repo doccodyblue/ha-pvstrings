@@ -412,6 +412,9 @@ PLANT_SENSORS: tuple[PlantSensorDescription, ...] = (
             # strings_detail maps names to ids).  Published here because these
             # are exactly the pairs this score is computed from -- a card
             # drawing them cannot disagree with the sensor it sits next to.
+            # The last row may be today, with a null actual: it is kept out of
+            # the score, but it is the number a reader looks for in the
+            # morning.
             "history": data.scores_day_ahead.get(30, {}).get("history"),
         },
     ),

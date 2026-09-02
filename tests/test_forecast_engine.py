@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import math
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 import pytest
 
 from core.config import INTERVAL_SECONDS, GeometrySegment, PlantConfig
@@ -818,6 +821,42 @@ class TestDayAheadScore:
                 series[index][1] for series in history["strings"].values()
             )
             assert summed == pytest.approx(predicted, abs=0.01)
+
+    def test_the_running_day_is_published_with_a_null_actual(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """Kept out of every score, but it is the number a reader looks for in
+        the morning; leaving it out reads as "nothing was announced"."""
+        now_ts = self._days(engine, seeded_store, 3)
+        today = DAY_START + 3 * 24 * HOUR
+        clear_sky_forecast(engine, seeded_store, today - HOUR, today, 24)
+        rows = engine.forecast(today, hours=24, start_ts=today, apply_learning=False)
+        cutoff = engine.day_ahead_cutoff(today)
+        seeded_store.log_forecast(
+            [(cutoff, r.ts_utc, r.string_id, r.potential_kwh, "physics") for r in rows]
+        )
+
+        result = engine.score_day_ahead(3, now_ts)
+        # The score itself is untouched: still three complete days.
+        assert result["days_scored"] == 3
+        last_day, predicted, actual = result["history"]["plant"][-1]
+        expected = datetime.fromtimestamp(
+            now_ts, tz=ZoneInfo(engine.plant.time_zone)
+        ).strftime("%Y-%m-%d")
+        assert last_day == expected
+        assert actual is None
+        # Published rounded to three decimals, like every other row.
+        assert predicted == pytest.approx(
+            sum(row.potential_kwh for row in rows), abs=5e-4
+        )
+
+    def test_a_day_nobody_announced_is_left_out(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """A zero would read as a forecast of nothing rather than as silence."""
+        now_ts = self._days(engine, seeded_store, 3)
+        history = engine.score_day_ahead(3, now_ts)["history"]
+        assert all(row[2] is not None for row in history["plant"])
 
     def test_the_rolling_score_does_not_pay_for_it(
         self, engine: ForecastEngine, seeded_store: Store

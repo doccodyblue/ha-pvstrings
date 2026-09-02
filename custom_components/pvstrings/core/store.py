@@ -1153,6 +1153,36 @@ class Store:
             (issued_before_ts, start_ts, end_ts),
         )
 
+    def forecast_log_sum(
+        self, start_ts: int, end_ts: int, issued_before_ts: int
+    ) -> dict[str, float]:
+        """Per string, what was forecast for a window as of one instant.
+
+        The log on its own, unpaired.  ``forecast_vs_actual_before`` cannot
+        answer this for a day that is still running: it starts from the
+        measured hours, so hours that have not happened yet are simply absent
+        and the day would read as whatever has been produced so far.
+
+        Per hour and string the newest issue at or before the cut-off wins --
+        the same rule as the paired query, so the two agree on the days where
+        both can answer.
+        """
+        rows = self._query(
+            """
+            SELECT f.string_id AS string_id, SUM(f.potential_kwh) AS kwh
+              FROM forecast_log f
+             WHERE f.ts_utc >= ? AND f.ts_utc < ?
+               AND f.issued_at_utc = (
+                    SELECT MAX(f2.issued_at_utc) FROM forecast_log f2
+                     WHERE f2.ts_utc = f.ts_utc
+                       AND f2.string_id = f.string_id
+                       AND f2.issued_at_utc <= ?)
+             GROUP BY f.string_id
+            """,
+            (start_ts, end_ts, issued_before_ts),
+        )
+        return {str(row["string_id"]): float(row["kwh"]) for row in rows}
+
     # -- shading ----------------------------------------------------------- #
 
     def add_shading_obs(self, rows: Iterable[tuple[Any, ...]]) -> None:
