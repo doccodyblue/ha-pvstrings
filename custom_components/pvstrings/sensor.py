@@ -350,6 +350,12 @@ PLANT_SENSORS: tuple[PlantSensorDescription, ...] = (
             ),
             "actual_kwh": round(data.produced_yesterday_kwh, 3),
             "issue_hour_local": DAY_AHEAD_ISSUE_HOUR_LOCAL,
+            # The same comparison for the last thirty days, plant and per
+            # string (keyed by string_id; strings_detail maps names to ids).
+            # A dashboard drawing this used to rebuild it from recorder
+            # statistics of the forecast entity -- possible only as a side
+            # effect of a state_class a forecast should not carry.
+            "history": data.scores_day_ahead.get(30, {}).get("history"),
         },
     ),
     PlantSensorDescription(

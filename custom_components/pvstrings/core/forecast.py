@@ -159,6 +159,38 @@ class HourForecast:
         )
 
 
+def _day_ahead_history(tally: "_ScoreTally") -> dict[str, Any]:
+    """Day by day, what was announced the evening before and what came.
+
+    Published because the numbers exist here first-hand.  A dashboard would
+    otherwise have to reconstruct them from recorder statistics of a forecast
+    entity -- which only ever worked as a side effect of a ``state_class``
+    those sensors should not carry, and broke silently for anyone whose
+    recorder excludes them.
+
+    Same pairing as the score above: hours without a measurement or without a
+    forecast are left out, so a day here is directly comparable to the
+    accuracy figures and to ``deviation_yesterday``, not to the day total the
+    forecast entity showed at the time.
+    """
+
+    def series(daily: Mapping[str, list[float]]) -> list[list[Any]]:
+        return [
+            [day, round(values[0], 3), round(values[1], 3)]
+            for day, values in sorted(daily.items())
+        ]
+
+    return {
+        "plant": series(tally.daily_all),
+        # Keyed by string_id rather than name: names are editable, and
+        # ``strings_detail`` carries the mapping for anything that needs one.
+        "strings": {
+            string_id: series(daily)
+            for string_id, daily in sorted(tally.daily_by_string.items())
+        },
+    }
+
+
 @dataclass(slots=True)
 class _ScoreTally:
     """Paired hours behind one score, accumulated across any number of queries.
@@ -173,6 +205,10 @@ class _ScoreTally:
     every: list[tuple[float, float]] = field(default_factory=list)
     daily_uncensored: dict[str, list[float]] = field(default_factory=dict)
     daily_all: dict[str, list[float]] = field(default_factory=dict)
+    #: ``string_id -> day -> [predicted, actual]``, filled only where a caller
+    #: asks for it.  The day-ahead score publishes its days; the rolling one
+    #: has no reader for them.
+    daily_by_string: dict[str, dict[str, list[float]]] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -1761,11 +1797,14 @@ class ForecastEngine:
         tally = _ScoreTally()
         for day_start, day_end, cutoff in self._day_ahead_windows(days, now_ts):
             self._tally(
-                self.store.forecast_vs_actual_before(day_start, day_end, cutoff), tally
+                self.store.forecast_vs_actual_before(day_start, day_end, cutoff),
+                tally,
+                by_string=True,
             )
 
         result = self._scored(tally)
         result["issue_hour_local"] = DAY_AHEAD_ISSUE_HOUR_LOCAL
+        result["history"] = _day_ahead_history(tally)
         if result["days_scored"] < MIN_SCORED_DAYS:
             # Silent about the number, honest about the basis: the counts stay
             # as they are so the attributes can show how far off publishing is.
@@ -1817,7 +1856,9 @@ class ForecastEngine:
                 self.day_ahead_cutoff(start),
             )
 
-    def _tally(self, rows: Iterable[Any], tally: "_ScoreTally") -> None:
+    def _tally(
+        self, rows: Iterable[Any], tally: "_ScoreTally", by_string: bool = False
+    ) -> None:
         """Fold paired hours into a running tally, in place."""
         for row in rows:
             actual = row["energy_kwh"]
@@ -1833,6 +1874,11 @@ class ForecastEngine:
             tally.daily_all.setdefault(day, [0.0, 0.0])
             tally.daily_all[day][0] += predicted
             tally.daily_all[day][1] += actual
+            if by_string:
+                per_day = tally.daily_by_string.setdefault(str(row["string_id"]), {})
+                bucket = per_day.setdefault(day, [0.0, 0.0])
+                bucket[0] += predicted
+                bucket[1] += actual
             if row["value_kind"] == VALUE_MEASURED and not row["curtailed_fraction"]:
                 tally.uncensored.append((predicted, actual))
                 tally.daily_uncensored.setdefault(day, [0.0, 0.0])

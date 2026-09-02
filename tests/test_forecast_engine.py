@@ -789,6 +789,43 @@ class TestDayAheadScore:
             before["uncensored"]["wmape"]
         )
 
+    def test_it_publishes_the_days_it_scored(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """A dashboard should not have to rebuild this from recorder
+        statistics of a forecast entity."""
+        now_ts = self._days(engine, seeded_store, 3)
+        history = engine.score_day_ahead(3, now_ts)["history"]
+
+        assert len(history["plant"]) == 3
+        for day, predicted, actual in history["plant"]:
+            assert len(day) == 10  # YYYY-MM-DD
+            # The evening run was half the day's actual, by construction.
+            assert predicted == pytest.approx(actual * 0.5, rel=0.02)
+
+    def test_every_string_carries_its_own_days(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        now_ts = self._days(engine, seeded_store, 3)
+        history = engine.score_day_ahead(3, now_ts)["history"]
+
+        assert set(history["strings"]) == {"s1", "s2", "s3"}
+        for series in history["strings"].values():
+            assert len(series) == 3
+        # The strings add up to the plant, day by day.
+        for index, (day, predicted, _actual) in enumerate(history["plant"]):
+            summed = sum(
+                series[index][1] for series in history["strings"].values()
+            )
+            assert summed == pytest.approx(predicted, abs=0.01)
+
+    def test_the_rolling_score_does_not_pay_for_it(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """Only the day-ahead score has a reader for the per-string days."""
+        now_ts = self._days(engine, seeded_store, 3)
+        assert "history" not in engine.score(DAY_START, now_ts)
+
     def test_it_withholds_the_number_until_enough_days(
         self, engine: ForecastEngine, seeded_store: Store
     ):

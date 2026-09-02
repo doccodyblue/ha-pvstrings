@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **The day-ahead history is published, day by day.** `deviation_yesterday`
+  gains a `history` attribute: for the last thirty days, what was announced
+  the evening before and what actually came -- for the plant and for each
+  string, keyed by `string_id` (`strings_detail` maps names to ids). It is the
+  same pairing the accuracy sensors are scored on, so nothing reading this can
+  disagree with them.
+
+  Written for the dashboard, which until now rebuilt those numbers from
+  recorder statistics of `forecast_tomorrow` -- possible only as a side effect
+  of the `state_class` removed in v1.20.5, and silently empty for anyone whose
+  recorder excludes the entity. The numbers exist here first-hand; they cost
+  nothing to publish, because the day-ahead score already computes them and
+  used to throw them away.
+
 ## v1.20.5 — 2026-09-02
 
 ### Fixed
