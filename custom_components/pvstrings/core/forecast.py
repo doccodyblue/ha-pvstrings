@@ -142,6 +142,12 @@ class HourForecast:
     #: irradiance source was trusted at, and what the sky map took away.
     bias_factor: float = 1.0
     shading_factor: float = 1.0
+    #: ``(interval_start, kWh)`` for this hour, filled only for the hours the
+    #: caller asked for.  It sums to ``potential_kwh``: the same correction is
+    #: applied to both, so a "how much of this hour is left" split cannot
+    #: disagree with the hour it splits.  Never logged or scored -- the
+    #: forecast record stays hourly.
+    fine: tuple[tuple[int, float], ...] = ()
 
     def as_log_row(self, issued_at_utc: int) -> tuple[Any, ...]:
         return (
@@ -743,7 +749,14 @@ class ForecastEngine:
             if state is not None:
                 conditions = self._apply_nowcast(index, conditions, state, now_ts)
         return self._evaluate(
-            index, conditions, apply_learning=apply_learning, is_forecast=True
+            index,
+            conditions,
+            apply_learning=apply_learning,
+            is_forecast=True,
+            # Two hours, not one: sensors read with a live clock between the
+            # coordinator's fifteen-minute rebuilds, so the hour can roll over
+            # before the next run replaces this.
+            fine_window=(floor_hour(now_ts), floor_hour(now_ts) + 2 * HOUR),
         )
 
     def _evaluate(
@@ -752,8 +765,15 @@ class ForecastEngine:
         conditions: pd.DataFrame,
         apply_learning: bool,
         is_forecast: bool,
+        fine_window: tuple[int, int] | None = None,
     ) -> list[HourForecast]:
-        """Run physics for every string and fold to hourly energies."""
+        """Run physics for every string and fold to hourly energies.
+
+        ``fine_window`` keeps the five-minute detail of the hours inside it
+        instead of discarding it with the fold.  Only the live forecast asks
+        for that -- backfill and scoring work on whole hours and would pay for
+        detail nobody reads.
+        """
         hour_keys = conditions["hour"].to_numpy()
         covered = conditions.groupby("hour")["covered"].any()
         unique_hours = sorted(
@@ -798,6 +818,7 @@ class ForecastEngine:
 
             per_hour: dict[int, float] = {}
             per_hour_unshaded: dict[int, float] = {}
+            per_fine: dict[int, dict[int, float]] = {}
             for segment, hours_in_segment in grouped:
                 mask = np.isin(hour_keys, hours_in_segment)
                 if not mask.any():
@@ -875,6 +896,17 @@ class ForecastEngine:
                     per_hour_unshaded[int(hour)] = per_hour_unshaded.get(
                         int(hour), 0.0
                     ) + float(bare)
+                if fine_window is not None:
+                    lo, hi = fine_window
+                    # The index holds interval midpoints; the series is keyed
+                    # on interval starts, like every other five-minute table.
+                    for moment, hour, value in zip(
+                        sub_index, sub["hour"].to_numpy(), energy
+                    ):
+                        start = int(moment.timestamp()) - INTERVAL_SECONDS // 2
+                        if lo <= start < hi:
+                            bucket = per_fine.setdefault(int(hour), {})
+                            bucket[start] = bucket.get(start, 0.0) + float(value)
 
             for hour in unique_hours:
                 physics_kwh = per_hour.get(hour, 0.0)
@@ -892,6 +924,14 @@ class ForecastEngine:
                         physics_kwh=physics_kwh,
                         unshaded_kwh=per_hour_unshaded.get(hour, physics_kwh)
                         * correction,
+                        # Corrected with the same factor as the hour, so the
+                        # parts still add up to the whole they split.
+                        fine=tuple(
+                            (start, value * correction)
+                            for start, value in sorted(
+                                per_fine.get(hour, {}).items()
+                            )
+                        ),
                         bias_factor=float(bias_by_hour.get(hour, 1.0)),
                         shading_factor=(
                             physics_kwh / per_hour_unshaded[hour]

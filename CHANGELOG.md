@@ -2,7 +2,59 @@
 
 ## Unreleased
 
+### Fixed
+
+- **The remaining forecast counted the hour that had already started whole.**
+  At 16:31 the full 0.654 kWh of the 16:00 hour still sat in the reported
+  remainder although most of it had been produced -- about a third too much on
+  that value, and it travels straight into whatever load decision reads it.
+  The running hour is now split on the five-minute series the forecast was
+  built from, not pro-rated linearly: near sunrise and sunset the clear-sky
+  curve moves by a factor inside one hour, which is why the forecast is
+  computed on that grid in the first place. Plant, string and group sensors
+  all use the same split, and each publishes `split_source` -- `fine` for the
+  real thing, `hourly_stale` when a missed refresh left no detail for the
+  running hour and it had to be counted whole again.
+
+  The **group** sensors had the opposite error: they summed from the current
+  minute against hour-start keys, which dropped the running hour entirely.
+  Both the DC remaining and the converted (AC / battery charge) remaining were
+  affected. Those values step **up**; plant and string values step **down**.
+
+- **A dark hour counted as daylight whenever the inverter stayed awake.**
+  Hourly rows were classified by coverage first and sun position second, so a
+  string reporting a steady zero all night covered its hour perfectly and was
+  labelled `exact`, while a sibling that simply went unavailable was correctly
+  labelled `night`. Same darkness, opposite labels — and three layers read the
+  wrong one: learning booked the dark zeros as `zero_physics_in_daylight`, the
+  counter meant for real anomalies; the health check took that anomaly as proof
+  the learner had stalled and announced once every night that the forecast
+  "will not improve" while it was in fact improving all day; and scoring
+  averaged the errorless dark hours into `nmae` and `mae_kwh`, which made both
+  read better than the plant deserved. Darkness is now decided before coverage.
+  `wmape` and `daily_bias_kwh` were never affected — they are ratios of sums
+  and day-based totals, so an hour of zero against zero could not move them.
+  Hours already stored under the old label keep it and age out of the score
+  windows on their own; nothing needs rebuilding.
+
+
 ### Changed
+
+- **Forecast sensors no longer carry a `state_class`.** A prediction that
+  rises and falls through the day is not a meter reading, and `TOTAL` had the
+  recorder accumulating long-term statistics out of it -- a sum with no
+  meaning, worst on the remaining sensors, which fall all day by design. Home
+  Assistant's own solar-forecast integration does the same. Measured sensors
+  are untouched: produced today and the savings figures keep theirs and stay
+  in the Energy dashboard. Statistics already recorded for the forecast
+  entities stay in the database as orphans; Developer tools → Statistics
+  offers to remove them.
+- **Every remaining sensor spells out that it is part of the day, not a
+  second summand.** Two users on two installations read the tile as two
+  numbers to add. New attributes: `forecast_today_kwh`,
+  `forecast_elapsed_kwh`, and a `semantics` line stating
+  `today = elapsed + remaining`. The entity names are unchanged -- renaming
+  would break existing dashboards and automations for a wording problem.
 
 - **Savings and amortisation are valued on delivered energy, not on DC
   production.** The strings are measured on their DC side, and the money
@@ -33,24 +85,6 @@
   A factor outside the plausible band -- a mis-scaled AC sensor reading above
   1.0, or below half -- is refused rather than applied, and the next rung of
   evidence is used instead.
-
-### Fixed
-
-- **A dark hour counted as daylight whenever the inverter stayed awake.**
-  Hourly rows were classified by coverage first and sun position second, so a
-  string reporting a steady zero all night covered its hour perfectly and was
-  labelled `exact`, while a sibling that simply went unavailable was correctly
-  labelled `night`. Same darkness, opposite labels — and three layers read the
-  wrong one: learning booked the dark zeros as `zero_physics_in_daylight`, the
-  counter meant for real anomalies; the health check took that anomaly as proof
-  the learner had stalled and announced once every night that the forecast
-  "will not improve" while it was in fact improving all day; and scoring
-  averaged the errorless dark hours into `nmae` and `mae_kwh`, which made both
-  read better than the plant deserved. Darkness is now decided before coverage.
-  `wmape` and `daily_bias_kwh` were never affected — they are ratios of sums
-  and day-based totals, so an hour of zero against zero could not move them.
-  Hours already stored under the old label keep it and age out of the score
-  windows on their own; nothing needs rebuilding.
 
 ## v1.20.4 — 2026-08-26
 

@@ -32,7 +32,12 @@ from .const import (
 )
 from .core import economics as econ
 from .core import persistence
-from .core.aggregate import merge_hourly
+from .core.aggregate import (
+    hour_share_ahead,
+    merge_hourly,
+    remaining_kwh as split_remaining,
+    split_source,
+)
 from .core.config import CurtailmentGroup, PlantConfig
 from .core.conversion import CURVE_NEUTRAL, ConversionResult, convert_group
 from .core.learning import SCOPE_CONVERSION_CURVE
@@ -66,10 +71,21 @@ class StringForecast:
     unshaded: list[tuple[int, float]] = field(default_factory=list)
     #: Per hour, what each layer of the model did to the raw physics.
     chain: dict[int, dict[str, float]] = field(default_factory=dict)
+    #: Five-minute detail of the hour that has already started, and the next
+    #: one.  Unrounded on purpose: it is a divisor, not a display value.
+    fine: list[tuple[int, float]] = field(default_factory=list)
 
     def sum_between(self, start_ts: int, end_ts: int) -> float:
         return sum(
             value for ts, value in self.hourly if start_ts <= ts < end_ts
+        )
+
+    def share_ahead(self, now_ts: int) -> float | None:
+        return hour_share_ahead(self.fine, now_ts)
+
+    def remaining_kwh(self, now_ts: int, end_ts: int) -> float:
+        return split_remaining(
+            self.hourly, now_ts, end_ts, self.share_ahead(now_ts)
         )
 
     def value_at(self, ts_utc: int) -> float:
@@ -100,9 +116,32 @@ class GroupForecast:
     #: reads it and must not move.
     output_path: str = "none"
     converted: ConversionResult | None = None
+    #: The members' five-minute detail, summed. See StringForecast.fine.
+    fine: list[tuple[int, float]] = field(default_factory=list)
 
     def sum_between(self, start_ts: int, end_ts: int) -> float:
         return sum(value for ts, value in self.hourly if start_ts <= ts < end_ts)
+
+    def share_ahead(self, now_ts: int) -> float | None:
+        return hour_share_ahead(self.fine, now_ts)
+
+    def remaining_kwh(self, now_ts: int, end_ts: int) -> float:
+        return split_remaining(
+            self.hourly, now_ts, end_ts, self.share_ahead(now_ts)
+        )
+
+    def converted_remaining_kwh(self, now_ts: int, end_ts: int) -> float:
+        """The same split, applied to the converted series.
+
+        The DC share carries over unchanged: conversion happens per hour, so
+        within the hour being split the efficiency is one constant and the
+        shape of the two curves is identical.
+        """
+        if self.converted is None:
+            return 0.0
+        return split_remaining(
+            self.converted_pairs(), now_ts, end_ts, self.share_ahead(now_ts)
+        )
 
     def converted_pairs(self) -> list[tuple[int, float]]:
         if self.converted is None:
@@ -133,6 +172,9 @@ class PvStringsData:
     strings: dict[str, StringForecast] = field(default_factory=dict)
     plant_hourly: list[tuple[int, float]] = field(default_factory=list)
     plant_unshaded: list[tuple[int, float]] = field(default_factory=list)
+    #: Five-minute detail of the running hour and the next, summed over the
+    #: strings. See StringForecast.fine.
+    plant_fine: list[tuple[int, float]] = field(default_factory=list)
     produced_today: dict[str, float] = field(default_factory=dict)
     produced_yesterday_kwh: float = 0.0
     #: ``None`` while no forecast from the evening before yesterday exists --
@@ -212,8 +254,19 @@ class PvStringsData:
     def day_after_kwh(self) -> float | None:
         return self.plant_between_or_none(self.day_after_start, self.day_after_end)
 
+    def share_ahead(self, now_ts: int) -> float | None:
+        return hour_share_ahead(self.plant_fine, now_ts)
+
     def remaining_kwh(self, now_ts: int) -> float:
-        return self.plant_between(floor_hour(now_ts), self.day_end)
+        """What is still to come today, the running hour split at the minute.
+
+        Counting that hour whole -- which every release before this one did --
+        reported roughly a third too much at half past a bright hour, and the
+        error travels straight into whatever load decision reads it.
+        """
+        return split_remaining(
+            self.plant_hourly, now_ts, self.day_end, self.share_ahead(now_ts)
+        )
 
     def next_hour_kwh(self, now_ts: int) -> float:
         start = floor_hour(now_ts) + HOUR
@@ -505,6 +558,7 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         }
         plant_hourly: dict[int, float] = {}
         plant_unshaded: dict[int, float] = {}
+        plant_fine: dict[int, float] = {}
         for row in rows:
             bucket = strings.get(row.string_id)
             if bucket is None:
@@ -529,10 +583,14 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
             plant_unshaded[row.ts_utc] = (
                 plant_unshaded.get(row.ts_utc, 0.0) + row.unshaded_kwh
             )
+            for ts, value in row.fine:
+                bucket.fine.append((ts, value))
+                plant_fine[ts] = plant_fine.get(ts, 0.0) + value
 
         for bucket in strings.values():
             bucket.hourly.sort()
             bucket.unshaded.sort()
+            bucket.fine.sort()
 
         # Aggregated only after every string has been computed, so that strings
         # inside one group may have entirely different geometry histories --
@@ -552,6 +610,12 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
                 for member in members
                 if member.string_id in strings
             )
+            # Not through merge_hourly: that rounds, and this series only
+            # exists to divide one hour into parts that still add up.
+            group_fine: dict[int, float] = {}
+            for member in members:
+                for ts, value in strings[member.string_id].fine:
+                    group_fine[ts] = group_fine.get(ts, 0.0) + value
             # Downstream of everything learned: log_forecast, scoring and
             # censoring all ran on the DC series above.  Static config only
             # (executor context, no hass.states).
@@ -588,6 +652,7 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
                 hourly=hourly,
                 output_path=group.output_path,
                 converted=converted,
+                fine=sorted(group_fine.items()),
             )
 
         data = PvStringsData(
@@ -622,6 +687,7 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
             plant_unshaded=sorted(
                 (ts, round(value, 4)) for ts, value in plant_unshaded.items()
             ),
+            plant_fine=sorted(plant_fine.items()),
         )
 
         for string in self.plant.strings:

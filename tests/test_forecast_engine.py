@@ -209,6 +209,68 @@ class TestForecast:
         # A 60 deg panel in June yields less at 14:00 than a 15 deg one.
         assert afternoon_steep[0].potential_kwh < afternoon[0].potential_kwh
 
+    def test_the_running_hour_keeps_its_five_minute_detail(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """Without it the remaining forecast can only count the hour whole."""
+        clear_sky_forecast(engine, seeded_store, DAY_START, DAY_START, 24)
+        noon = DAY_START + 12 * HOUR
+        rows = engine.forecast(noon + 1800, hours=24, start_ts=DAY_START)
+
+        detailed = {row.ts_utc for row in rows if row.fine}
+        assert detailed == {noon, noon + HOUR}
+
+    def test_the_parts_add_up_to_the_hour_they_split(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """The correction is applied to both, so a split can never disagree
+        with the hour it splits."""
+        clear_sky_forecast(engine, seeded_store, DAY_START, DAY_START, 24)
+        noon = DAY_START + 12 * HOUR
+        rows = [
+            row
+            for row in engine.forecast(noon, hours=24, start_ts=DAY_START)
+            if row.ts_utc == noon
+        ]
+        assert rows
+        for row in rows:
+            assert sum(value for _ts, value in row.fine) == pytest.approx(
+                row.potential_kwh
+            )
+
+    def test_the_intervals_are_starts_on_the_five_minute_grid(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        clear_sky_forecast(engine, seeded_store, DAY_START, DAY_START, 24)
+        noon = DAY_START + 12 * HOUR
+        row = next(
+            row
+            for row in engine.forecast(noon, hours=24, start_ts=DAY_START)
+            if row.ts_utc == noon and row.fine
+        )
+        assert [ts for ts, _v in row.fine] == [noon + i * 300 for i in range(12)]
+
+    def test_scoring_runs_pay_nothing_for_detail_they_do_not_read(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """Backfill and scoring work on whole hours."""
+        clear_sky_forecast(engine, seeded_store, DAY_START, DAY_START, 24)
+        rows = engine._evaluate(
+            engine._midpoint_index(DAY_START, DAY_START + HOUR),
+            engine._downscale(
+                engine._midpoint_index(DAY_START, DAY_START + HOUR),
+                engine._hourly_frame(
+                    seeded_store.latest_forecast(
+                        DAY_START, DAY_START + HOUR, engine.plant.forecast_source
+                    )
+                ),
+                apply_bias=False,
+            ),
+            apply_learning=False,
+            is_forecast=False,
+        )
+        assert all(row.fine == () for row in rows)
+
     def test_forecast_is_logged_for_later_scoring(
         self, engine: ForecastEngine, seeded_store: Store
     ):

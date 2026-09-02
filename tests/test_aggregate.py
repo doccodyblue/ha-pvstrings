@@ -5,7 +5,12 @@ from __future__ import annotations
 import pytest
 
 from core.aggregate import (
+    SPLIT_FINE,
+    SPLIT_HOURLY,
     closed_interval,
+    hour_share_ahead,
+    remaining_kwh,
+    split_source,
     Sample,
     SampleBuffer,
     hourly_from_5min,
@@ -215,3 +220,80 @@ class TestMergeHourly:
     def test_floating_point_noise_does_not_accumulate(self):
         merged = merge_hourly([[(0, 0.1)]] * 3)
         assert merged == [(0, 0.3)]
+
+
+NOON = 12 * 3600
+#: A rising hour, as a morning one really is -- the point of using the
+#: five-minute series rather than pro-rating the hourly value linearly.
+RISING = [(NOON + i * 300, (i + 1) / 100.0) for i in range(12)]
+
+
+class TestSplittingTheRunningHour:
+    """The hour that has already started is a subset of the day, and counting
+    it whole reported roughly a third too much at half past a bright hour."""
+
+    HOUR = NOON
+    FINE = RISING
+    TOTAL = sum(value for _ts, value in RISING)
+
+    def test_at_the_top_of_the_hour_all_of_it_is_ahead(self):
+        assert hour_share_ahead(self.FINE, self.HOUR) == pytest.approx(1.0)
+
+    def test_at_the_last_second_almost_none_of_it_is(self):
+        """One second before the hour closes, only that second of the final
+        interval is still ahead."""
+        share = hour_share_ahead(self.FINE, self.HOUR + 3599)
+        assert 0.0 < share < 0.001
+
+    def test_a_rising_hour_has_more_than_half_left_at_half_past(self):
+        """Linear pro-rating would say 0.5; the shape says otherwise, and near
+        sunrise the difference is a factor, not a rounding."""
+        share = hour_share_ahead(self.FINE, self.HOUR + 1800)
+        assert share == pytest.approx(sum(v for _t, v in self.FINE[6:]) / self.TOTAL)
+        assert share > 0.5
+
+    def test_inside_an_interval_the_split_is_linear(self):
+        share = hour_share_ahead(self.FINE, self.HOUR + 150)
+        ahead = self.FINE[0][1] * 0.5 + sum(v for _t, v in self.FINE[1:])
+        assert share == pytest.approx(ahead / self.TOTAL)
+
+    def test_a_dark_hour_does_not_divide_by_zero(self):
+        assert hour_share_ahead([(self.HOUR, 0.0)], self.HOUR) == 0.0
+
+    def test_no_detail_is_not_a_zero_share(self):
+        """It has to be distinguishable, because the fallback is the old bug."""
+        assert hour_share_ahead([], self.HOUR) is None
+        assert hour_share_ahead(self.FINE, self.HOUR + 7200) is None
+
+    def test_the_source_is_named_either_way(self):
+        assert split_source(0.4) == SPLIT_FINE
+        assert split_source(None) == SPLIT_HOURLY
+
+    def test_whole_hours_ahead_are_added_untouched(self):
+        hourly = [(self.HOUR, 1.0), (self.HOUR + 3600, 2.0), (self.HOUR + 7200, 3.0)]
+        assert remaining_kwh(hourly, self.HOUR + 1800, self.HOUR + 10800, 0.25) == (
+            pytest.approx(0.25 + 2.0 + 3.0)
+        )
+
+    def test_a_missing_share_counts_the_hour_whole(self):
+        hourly = [(self.HOUR, 1.0), (self.HOUR + 3600, 2.0)]
+        assert remaining_kwh(
+            hourly, self.HOUR + 1800, self.HOUR + 7200, None
+        ) == pytest.approx(3.0)
+
+    def test_hours_past_the_end_of_the_day_are_not_counted(self):
+        hourly = [(self.HOUR, 1.0), (self.HOUR + 3600, 2.0)]
+        assert remaining_kwh(
+            hourly, self.HOUR + 1800, self.HOUR + 3600, 0.5
+        ) == pytest.approx(0.5)
+
+    def test_elapsed_plus_remaining_is_the_day(self):
+        """The invariant the sensor attributes promise."""
+        hourly = [(self.HOUR + i * 3600, 1.0 + i) for i in range(4)]
+        today = sum(value for _ts, value in hourly)
+        now = self.HOUR + 1800
+        remaining = remaining_kwh(
+            hourly, now, self.HOUR + 4 * 3600, hour_share_ahead(self.FINE, now)
+        )
+        assert round(today, 3) == round((today - remaining) + remaining, 3)
+        assert 0 < remaining < today

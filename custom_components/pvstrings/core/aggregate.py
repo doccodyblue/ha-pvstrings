@@ -296,3 +296,83 @@ def merge_hourly(
         for ts, value in one:
             merged[ts] = merged.get(ts, 0.0) + value
     return sorted((ts, round(value, 4)) for ts, value in merged.items())
+
+
+# --------------------------------------------------------------------------- #
+# what is still ahead inside the hour that has already started
+# --------------------------------------------------------------------------- #
+
+#: The split was made on the five-minute series the forecast was built from.
+SPLIT_FINE = "fine"
+#: No five-minute rows for the hour in question -- the whole hour is counted
+#: as still to come, which is what every release before this one did. Named
+#: rather than silent: it is the old error, and a controller reading it should
+#: be able to tell.
+SPLIT_HOURLY = "hourly_stale"
+
+HOUR_SECONDS = 3600
+
+
+def hour_share_ahead(
+    fine: Sequence[tuple[int, float]], now_ts: int
+) -> float | None:
+    """Fraction of the current hour's energy that has not happened yet.
+
+    ``fine`` is the five-minute series the hourly value was folded from, keyed
+    on interval start.  Pro-rating the hourly value linearly instead would be
+    wrong in exactly the place it matters -- near sunrise and sunset the
+    clear-sky curve moves by a factor of several inside one hour, which is why
+    the forecast is computed on the five-minute grid in the first place.
+
+    ``None`` when the hour has no five-minute rows: the caller then has to say
+    so rather than quietly guess, because the guess is the old bug.
+
+    Inside one interval the split is linear.  Five minutes is short enough
+    that the shape within it cannot matter, and the alternative is a value
+    that steps every five minutes.
+    """
+    hour = int(now_ts // HOUR_SECONDS) * HOUR_SECONDS
+    rows = [(ts, value) for ts, value in fine if hour <= ts < hour + HOUR_SECONDS]
+    if not rows:
+        return None
+    total = sum(value for _ts, value in rows)
+    if total <= 0:
+        # A dark hour is entirely ahead of us in the only sense that matters:
+        # nothing is coming either way, and 0/0 must not become a division.
+        return 0.0
+    ahead = 0.0
+    for ts, value in rows:
+        end = ts + INTERVAL_SECONDS
+        if end <= now_ts:
+            continue
+        if ts >= now_ts:
+            ahead += value
+        else:
+            ahead += value * (end - now_ts) / INTERVAL_SECONDS
+    return ahead / total
+
+
+def remaining_kwh(
+    hourly: Sequence[tuple[int, float]],
+    now_ts: int,
+    end_ts: int,
+    share: float | None,
+) -> float:
+    """Whole hours still to come, plus the part of this one that is left.
+
+    ``share`` comes from ``hour_share_ahead`` on the *same* series' five-minute
+    data -- or from the DC series for a converted one, where the hourly
+    efficiency is constant inside the hour by construction, so the shape is
+    identical.  ``None`` counts the current hour whole.
+    """
+    hour = int(now_ts // HOUR_SECONDS) * HOUR_SECONDS
+    total = sum(
+        value for ts, value in hourly if hour + HOUR_SECONDS <= ts < end_ts
+    )
+    current = sum(value for ts, value in hourly if ts == hour and ts < end_ts)
+    return total + current * (1.0 if share is None else share)
+
+
+def split_source(share: float | None) -> str:
+    """Name the basis of a remaining value, for the sensor to publish."""
+    return SPLIT_HOURLY if share is None else SPLIT_FINE

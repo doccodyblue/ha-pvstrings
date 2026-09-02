@@ -50,6 +50,7 @@ from .const import (
     SUBENTRY_STRING,
 )
 from .coordinator import PvStringsCoordinator, PvStringsData
+from .core.aggregate import SPLIT_HOURLY, split_source
 from .core.forecast import DAY_AHEAD_ISSUE_HOUR_LOCAL, floor_hour
 from .core.weather import OPEN_METEO_ATTRIBUTION, SOURCE_OPEN_METEO
 from .core import units
@@ -165,6 +166,34 @@ def _score_attrs(
     return attrs
 
 
+_REMAINING_SEMANTICS = (
+    "A subset of the day's forecast, not a second summand: forecast today = "
+    "forecast elapsed + this. The hour that has already started is split on "
+    "the five-minute series the forecast was built from, so half past a "
+    "bright hour reports half of it, not all of it."
+)
+_STALE_SPLIT_NOTE = (
+    "split_source is hourly_stale: no five-minute detail for the running "
+    "hour, so it is counted whole and this value is too high until the next "
+    "refresh."
+)
+
+
+def _remaining_attrs(today: float, remaining: float, source: str) -> dict[str, Any]:
+    """The relationship spelled out, because two users read it as a sum."""
+    out: dict[str, Any] = {
+        "forecast_today_kwh": round(today, 3),
+        # Named for what it is: the forecast for the hours that have passed,
+        # not what the plant measured in them.
+        "forecast_elapsed_kwh": round(today - remaining, 3),
+        "split_source": source,
+        "semantics": _REMAINING_SEMANTICS,
+    }
+    if source == SPLIT_HOURLY:
+        out["note"] = _STALE_SPLIT_NOTE
+    return out
+
+
 _DELIVERED_SEMANTICS = (
     "Valued on delivered energy, not on DC production: each group's measured "
     "DC energy is multiplied by its conversion factor -- measured where an AC "
@@ -180,7 +209,6 @@ PLANT_SENSORS: tuple[PlantSensorDescription, ...] = (
         key="forecast_today",
         translation_key="forecast_today",
         device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         suggested_display_precision=2,
         value_fn=lambda data, _c: round(data.today_kwh, 3),
@@ -200,16 +228,19 @@ PLANT_SENSORS: tuple[PlantSensorDescription, ...] = (
         key="forecast_remaining",
         translation_key="forecast_remaining",
         device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         suggested_display_precision=2,
         value_fn=lambda data, _c: round(data.remaining_kwh(_now_ts()), 3),
+        attrs_fn=lambda data, _c: _remaining_attrs(
+            data.today_kwh,
+            data.remaining_kwh(_now_ts()),
+            split_source(data.share_ahead(_now_ts())),
+        ),
     ),
     PlantSensorDescription(
         key="forecast_tomorrow",
         translation_key="forecast_tomorrow",
         device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         suggested_display_precision=2,
         value_fn=lambda data, _c: (
@@ -231,7 +262,6 @@ PLANT_SENSORS: tuple[PlantSensorDescription, ...] = (
         key="forecast_day_after",
         translation_key="forecast_day_after",
         device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         suggested_display_precision=2,
         value_fn=lambda data, _c: (
@@ -253,7 +283,6 @@ PLANT_SENSORS: tuple[PlantSensorDescription, ...] = (
         key="forecast_next_hour",
         translation_key="forecast_next_hour",
         device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         suggested_display_precision=3,
         value_fn=lambda data, _c: round(data.next_hour_kwh(_now_ts()), 3),
@@ -605,7 +634,6 @@ STRING_SENSORS: tuple[StringSensorDescription, ...] = (
         key="forecast_today",
         translation_key="string_forecast_today",
         device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         suggested_display_precision=2,
         value_fn=lambda data, sid: round(
@@ -623,18 +651,21 @@ STRING_SENSORS: tuple[StringSensorDescription, ...] = (
         key="forecast_remaining",
         translation_key="string_forecast_remaining",
         device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         suggested_display_precision=2,
         value_fn=lambda data, sid: round(
-            data.strings[sid].sum_between(floor_hour(_now_ts()), data.day_end), 3
+            data.strings[sid].remaining_kwh(_now_ts(), data.day_end), 3
+        ),
+        attrs_fn=lambda data, sid: _remaining_attrs(
+            data.strings[sid].sum_between(data.day_start, data.day_end),
+            data.strings[sid].remaining_kwh(_now_ts(), data.day_end),
+            split_source(data.strings[sid].share_ahead(_now_ts())),
         ),
     ),
     StringSensorDescription(
         key="forecast_tomorrow",
         translation_key="string_forecast_tomorrow",
         device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         suggested_display_precision=2,
         value_fn=lambda data, sid: round(
@@ -787,7 +818,6 @@ class GroupForecastSensor(PvStringsEntity):
     """
 
     _attr_device_class = SensorDeviceClass.ENERGY
-    _attr_state_class = SensorStateClass.TOTAL
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
     _attr_suggested_display_precision = 2
     _attr_translation_key = "group_forecast_remaining"
@@ -818,7 +848,10 @@ class GroupForecastSensor(PvStringsEntity):
         if group is None:
             return None
         data = self.coordinator.data
-        return round(group.sum_between(_now_ts(), data.day_end), 3)
+        # Was summed from now_ts against hour-start keys, which dropped the
+        # running hour whole -- the plant and string sensors had the opposite
+        # error and counted it whole.
+        return round(group.remaining_kwh(_now_ts(), data.day_end), 3)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
@@ -826,7 +859,7 @@ class GroupForecastSensor(PvStringsEntity):
         if group is None:
             return None
         data = self.coordinator.data
-        return {
+        out = {
             "today_kwh": round(group.sum_between(data.day_start, data.day_end), 3),
             "tomorrow_kwh": round(
                 group.sum_between(data.tomorrow_start, data.tomorrow_end), 3
@@ -838,6 +871,14 @@ class GroupForecastSensor(PvStringsEntity):
                 "in no such total, so the groups need not add up to the plant."
             ),
         }
+        out.update(
+            _remaining_attrs(
+                group.sum_between(data.day_start, data.day_end),
+                group.remaining_kwh(_now_ts(), data.day_end),
+                split_source(group.share_ahead(_now_ts())),
+            )
+        )
+        return out
 
 
 _AC_SEMANTICS = (
@@ -862,7 +903,6 @@ class GroupConversionSensor(PvStringsEntity):
     """Converted forecast for one group: AC (direct) or battery charge."""
 
     _attr_device_class = SensorDeviceClass.ENERGY
-    _attr_state_class = SensorStateClass.TOTAL
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
     _attr_suggested_display_precision = 2
 
@@ -901,7 +941,10 @@ class GroupConversionSensor(PvStringsEntity):
         if group is None or group.converted is None:
             return None
         return round(
-            group.converted_sum_between(_now_ts(), self.coordinator.data.day_end), 3
+            group.converted_remaining_kwh(
+                _now_ts(), self.coordinator.data.day_end
+            ),
+            3,
         )
 
     @property
@@ -948,7 +991,6 @@ class PlantAcForecastSensor(PvStringsEntity):
     referenced figure (stable unique_id) a controller may consume."""
 
     _attr_device_class = SensorDeviceClass.ENERGY
-    _attr_state_class = SensorStateClass.TOTAL
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
     _attr_suggested_display_precision = 2
 

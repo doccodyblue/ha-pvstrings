@@ -45,7 +45,7 @@ Per plant:
 
 | Sensor | Notes |
 |---|---|
-| Forecast today / remaining / tomorrow | hourly detail in the `forecast` attribute |
+| Forecast today / remaining / tomorrow | hourly detail in the `forecast` attribute; *remaining* is a **subset of today**, see below |
 | Forecast next hour, peak hour today | |
 | Produced today | measured, from the integration's own 5-minute data |
 | Deviation yesterday | what the evening-before forecast said, vs. actual |
@@ -66,8 +66,28 @@ what a controller needs to decide whether a surplus is about to be thrown away,
 and it cannot be derived from the plant total. Plants without groups get none of
 this.
 
-All energy sensors carry proper `device_class` and `state_class`, so they work
-in the Energy dashboard and in long-term statistics.
+### Remaining is part of today, not a second summand
+
+Two users on two installations independently added *forecast today* and
+*remaining today* expecting the day's total. It is not: `today = elapsed +
+remaining`, and every remaining sensor now says so in its attributes
+(`forecast_today_kwh`, `forecast_elapsed_kwh`).
+
+The hour that has already started is **split at the minute**, on the
+five-minute series the forecast was built from — not pro-rated linearly, which
+near sunrise and sunset is off by a factor rather than a rounding. The
+attribute `split_source` names which of the two happened: `fine` for the real
+split, `hourly_stale` when a refresh was missed and the running hour had to be
+counted whole.
+
+### Measured sensors carry a `state_class`, forecasts do not
+
+The measured ones — produced today, the savings figures — do, so they work in
+the Energy dashboard and in long-term statistics. The forecast sensors
+deliberately do not: a prediction that rises and falls through the day is not a
+meter reading, and letting the recorder accumulate statistics from it produces
+a number with no meaning. Home Assistant's own solar-forecast integration does
+the same.
 
 ### Reading it back out
 
