@@ -15,6 +15,8 @@ from core.economics import (
     MODE_FEED_IN,
     MODE_NET_METERING,
     MODE_SELF_CONSUMPTION,
+    REFUSED_IMPLAUSIBLE,
+    REFUSED_TOO_FEW,
     DeliveryFactor,
     amortisation,
     annual_estimate,
@@ -401,13 +403,23 @@ class TestDeliveryFactor:
         result = delivery_factor(
             "direct", measured=(1000.0, 940.0, 500), curve_factor=0.96
         )
-        assert result == DeliveryFactor(0.94, BASIS_MEASURED, 500)
+        assert result == DeliveryFactor(0.94, BASIS_MEASURED, 500, 0.94, None)
 
     def test_too_few_pairs_fall_back_to_the_curve(self):
         result = delivery_factor(
             "direct", measured=(1000.0, 940.0, 12), curve_factor=0.96
         )
-        assert result == DeliveryFactor(0.96, BASIS_CURVE)
+        assert (result.factor, result.basis) == (0.96, BASIS_CURVE)
+
+    def test_a_refused_measurement_stays_visible(self):
+        """A group sitting on its curve with an AC sensor wired up is a
+        question somebody will ask."""
+        result = delivery_factor(
+            "direct", measured=(1000.0, 940.0, 12), curve_factor=0.96
+        )
+        assert result.measured_ratio == 0.94
+        assert result.samples == 12
+        assert result.refused == REFUSED_TOO_FEW
 
     def test_an_impossible_measurement_is_refused_not_applied(self):
         """A mis-scaled AC sensor reading 1.4x would otherwise pay for energy
@@ -415,10 +427,17 @@ class TestDeliveryFactor:
         result = delivery_factor(
             "direct", measured=(1000.0, 1400.0, 900), curve_factor=0.96
         )
-        assert result == DeliveryFactor(0.96, BASIS_CURVE)
+        assert (result.factor, result.basis) == (0.96, BASIS_CURVE)
+        assert result.refused == REFUSED_IMPLAUSIBLE
+        assert result.measured_ratio == 1.4
 
     def test_no_curve_and_no_evidence_stays_at_dc(self):
         assert delivery_factor("direct") == DeliveryFactor(1.0, BASIS_DC)
+
+    def test_a_refused_measurement_without_a_curve_still_stays_at_dc(self):
+        result = delivery_factor("direct", measured=(1000.0, 300.0, 900))
+        assert (result.factor, result.basis) == (1.0, BASIS_DC)
+        assert result.refused == REFUSED_IMPLAUSIBLE
 
     def test_storage_counts_charge_and_discharge(self):
         result = delivery_factor("storage", configured_factor=0.97 * 0.96 * 0.96)

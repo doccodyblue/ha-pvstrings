@@ -1002,6 +1002,13 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
             }
             if factor.samples:
                 entry["samples"] = factor.samples
+            # Visible even when it lost: a group on its curve with an AC
+            # sensor wired up is a question, and the refused measurement is
+            # the answer.
+            if factor.measured_ratio is not None:
+                entry["measured_ratio"] = factor.measured_ratio
+            if factor.refused is not None:
+                entry["measurement_refused"] = factor.refused
             groups[group.name] = entry
         return {
             "groups": groups,

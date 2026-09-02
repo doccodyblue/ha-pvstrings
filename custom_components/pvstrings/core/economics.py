@@ -61,15 +61,26 @@ MAX_FACTOR = 1.0
 MIN_EVIDENCE_ROWS = 200
 
 
+#: Why measured evidence was not used, when there was some.
+REFUSED_TOO_FEW = "too_few_pairs"
+REFUSED_IMPLAUSIBLE = "outside_plausible_band"
+
+
 @dataclass(frozen=True, slots=True)
 class DeliveryFactor:
     """What one group's DC energy has to be multiplied by, and on what basis."""
 
     factor: float
     basis: str
-    #: Measured pairs behind a ``measured`` factor, for display.  Zero
-    #: everywhere else, where there is no evidence to count.
+    #: Measured pairs behind the evidence, for display.  Zero where there was
+    #: none to count.
     samples: int = 0
+    #: What the measurement said, even when it was not used.  A group sitting
+    #: on its curve while an AC sensor is wired up is a question somebody will
+    #: ask, and "0.71 from 43 pairs, refused" answers it where a bare basis
+    #: label cannot.
+    measured_ratio: float | None = None
+    refused: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,14 +130,32 @@ def delivery_factor(
         return DeliveryFactor(1.0, BASIS_DC)
 
     if output_path == "direct":
+        ratio: float | None = None
+        rows = 0
+        refused: str | None = None
         if measured is not None:
             in_w, out_w, rows = measured
-            if rows >= min_samples and in_w > 0:
-                ratio = out_w / in_w
-                if _plausible(ratio):
-                    return DeliveryFactor(round(ratio, 4), BASIS_MEASURED, rows)
+            if in_w > 0:
+                ratio = round(out_w / in_w, 4)
+                if rows < min_samples:
+                    refused = REFUSED_TOO_FEW
+                elif not _plausible(ratio):
+                    refused = REFUSED_IMPLAUSIBLE
+                else:
+                    return DeliveryFactor(
+                        ratio, BASIS_MEASURED, rows, measured_ratio=ratio
+                    )
         if curve_factor is not None and _plausible(curve_factor):
-            return DeliveryFactor(round(curve_factor, 4), BASIS_CURVE)
+            return DeliveryFactor(
+                round(curve_factor, 4),
+                BASIS_CURVE,
+                rows,
+                measured_ratio=ratio,
+                refused=refused,
+            )
+        return DeliveryFactor(
+            1.0, BASIS_DC, rows, measured_ratio=ratio, refused=refused
+        )
 
     return DeliveryFactor(1.0, BASIS_DC)
 

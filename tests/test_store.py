@@ -1124,6 +1124,33 @@ class TestEnergyPerString:
     def test_an_empty_window_is_empty(self, store: Store):
         assert store.energy_kwh_by_string(0, 900) == {}
 
+    def test_one_folded_string_does_not_hide_a_raw_sibling(self, store: Store):
+        """A string whose data arrived after its hour was folded has no
+        aggregate row while its siblings do.  Judging the hour rather than the
+        string and hour together would drop it without a trace."""
+        hour = 3600
+        store.upsert_5min(
+            [self._raw(hour + i * 300, "s1", 100.0) for i in range(12)]
+            + [self._raw(hour + i * 300, "s2", 50.0) for i in range(12)]
+        )
+        store.upsert_hourly(
+            [(hour, "s1", 1.2, 1.0, 0.0, None, None, None, "measured", "exact")]
+        )
+        split = store.energy_kwh_by_string(hour, hour + 3600)
+        assert split["s1"] == pytest.approx(1.2)
+        assert split["s2"] == pytest.approx(0.6)
+
+    def test_a_folded_hour_is_not_counted_twice(self, store: Store):
+        """Raw rows survive alongside the aggregate until compaction runs."""
+        hour = 3600
+        store.upsert_5min(
+            [self._raw(hour + i * 300, "s1", 100.0) for i in range(12)]
+        )
+        store.upsert_hourly(
+            [(hour, "s1", 1.2, 1.0, 0.0, None, None, None, "measured", "exact")]
+        )
+        assert store.energy_kwh_by_string(hour, hour + 3600)["s1"] == pytest.approx(1.2)
+
 
 class TestConversionTotals:
     def test_the_ratio_is_the_load_weighted_efficiency(self, store: Store):
@@ -1153,3 +1180,16 @@ class TestConversionTotals:
 
     def test_an_unmeasured_scope_reports_nothing(self, store: Store):
         assert store.conversion_totals("g9", "inverter") == (0.0, 0.0, 0)
+
+    def test_thin_pairs_are_left_out(self, store: Store):
+        """With samples missing on one side the two means cover different
+        parts of the interval, and the ratio is an efficiency the stage never
+        had."""
+        store.upsert_5min(
+            [(300, "s1", 50.0, 600.0, 1.0, 10, None, 0, "measured")]
+        )
+        store.upsert_conversion(
+            [(300, "g1", "inverter", 600.0, 570.0, 0.4, "s1", 0)]
+        )
+        store.mark_conversion_censored(0, 1000)
+        assert store.conversion_totals("g1", "inverter") == (0.0, 0.0, 0)

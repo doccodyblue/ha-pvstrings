@@ -22,6 +22,10 @@ from typing import Any, Iterable, Iterator, Mapping, Sequence
 from .config import INTERVAL_SECONDS, GeometrySegment
 
 HOUR = 3600
+#: A conversion pair thinner than this describes the gaps, not the stage: the
+#: two sides are then averaged over different parts of the interval.  The same
+#: floor the interval statistics use.
+MIN_PAIR_COVERAGE = 0.8
 from .quality import VALUE_MEASURED
 
 #: Shading observations older than this are thinned to a quarter of their
@@ -590,12 +594,20 @@ class Store:
     def energy_kwh_by_string(self, start_ts: int, end_ts: int) -> dict[str, float]:
         """The same window as ``energy_kwh_between``, split per string.
 
-        Same folding rule -- hourly aggregates where they exist, raw rows for
-        the hours nobody has folded yet -- but one query instead of one per
-        string.  The split is what the savings calculation needs: each string
-        leaves the plant through its group's own path, and a plant total
-        cannot be converted after the fact without assuming they all share
-        one.
+        Hourly aggregates where they exist, raw rows where they do not -- but
+        the "where" is decided per *string and hour*, not per hour.  A string
+        whose data arrived after its hour was folded (a late backfill, a
+        sensor that came back) has no aggregate row while its siblings do, and
+        judging by the hour alone would drop it silently.
+
+        Two queries rather than one per hour: the raw table only ever holds
+        the retention window, so reading all of it at once is bounded by what
+        compaction has left, while the per-hour loop grew with the length of
+        the window and ran thousands of queries for a lifetime total.
+
+        The split is what the savings calculation needs -- each string leaves
+        the plant through its group's own path, and a plant total cannot be
+        converted after the fact without assuming they all share one.
         """
         first_hour, last_hour_end = self._hour_split(start_ts, end_ts)
         if last_hour_end <= first_hour:
@@ -607,20 +619,27 @@ class Store:
             }
 
         totals: dict[str, float] = {}
-        folded_hours: set[int] = set()
+        folded: set[tuple[int, str]] = set()
         for row in self._query(
             "SELECT ts_utc, string_id, COALESCE(SUM(energy_kwh), 0) AS kwh "
             "FROM string_hourly WHERE ts_utc >= ? AND ts_utc < ? "
             "GROUP BY ts_utc, string_id",
             (first_hour, last_hour_end),
         ):
-            folded_hours.add(int(row["ts_utc"]))
             key = str(row["string_id"])
+            folded.add((int(row["ts_utc"]), key))
             totals[key] = totals.get(key, 0.0) + float(row["kwh"])
 
-        for hour in range(first_hour, last_hour_end, HOUR):
-            if hour not in folded_hours:
-                self._add_wh(totals, self._raw_energy_wh_by_string(hour, hour + HOUR))
+        for row in self._query(
+            "SELECT CAST(ts_utc / ? AS INTEGER) * ? AS hour, string_id, "
+            "COALESCE(SUM(energy_wh), 0) AS wh FROM string_5min "
+            "WHERE ts_utc >= ? AND ts_utc < ? GROUP BY hour, string_id",
+            (HOUR, HOUR, first_hour, last_hour_end),
+        ):
+            key = str(row["string_id"])
+            if (int(row["hour"]), key) not in folded:
+                totals[key] = totals.get(key, 0.0) + float(row["wh"]) / 1000.0
+
         self._add_wh(totals, self._raw_energy_wh_by_string(start_ts, first_hour))
         self._add_wh(totals, self._raw_energy_wh_by_string(last_hour_end, end_ts))
         return totals
@@ -650,17 +669,23 @@ class Store:
 
         Watt-means, not energy: every row covers the same interval, so the
         interval length cancels in the ratio of the two sums and what is left
-        is the load-weighted efficiency the stage actually ran at.  Censored
-        rows stay out for the same reason the curve fit leaves them out -- a
-        curtailed interval says what the limit did, not what the stage does.
+        is the load-weighted efficiency the stage actually ran at.
+
+        Two filters, both for the same reason -- a pair has to describe the
+        stage rather than something that happened to it.  Censored rows stay
+        out because a curtailed interval measures the limit, and thin rows
+        stay out because the two sides are averaged over different parts of
+        the interval when either side is missing samples, which shows up as
+        an efficiency the stage never had.  ``coverage`` is already the
+        thinner of the two halves (the collector stores the minimum).
         """
         row = self._query(
             "SELECT COALESCE(SUM(in_w), 0) AS in_w, "
             "COALESCE(SUM(out_w), 0) AS out_w, COUNT(*) AS rows "
             "FROM conversion_5min WHERE scope_id = ? AND stage = ? "
             "AND in_w > 0 AND out_w IS NOT NULL AND out_w >= 0 "
-            "AND COALESCE(censored, 1) = 0",
-            (scope_id, stage),
+            "AND coverage >= ? AND COALESCE(censored, 1) = 0",
+            (scope_id, stage, MIN_PAIR_COVERAGE),
         )[0]
         return float(row["in_w"]), float(row["out_w"]), int(row["rows"])
 
