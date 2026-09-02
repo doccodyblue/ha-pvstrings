@@ -1,0 +1,60 @@
+name: The numbers look wrong
+description: The forecast, a metric or a savings figure does not match reality
+labels: ["forecast quality"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Two things worth checking before filing, because both come up often:
+
+        - **"Forecast today" is not a day-end value.** Past hours are frozen as they
+          were predicted, and only the remaining hours still move. It never catches
+          up with reality retroactively, by design — otherwise the accuracy figures
+          would be worthless. Judge the day-ahead accuracy sensors instead.
+        - **"Remaining today" is a subset of "forecast today"**, not a second
+          summand. Today = elapsed + remaining.
+  - type: textarea
+    id: what
+    attributes:
+      label: Which sensor, what it said, what actually happened
+      description: Entity id, the value, and the measurement you are comparing it against.
+    validations:
+      required: true
+  - type: input
+    id: running_since
+    attributes:
+      label: How long has the plant been collecting
+      description: >
+        The learning layer needs weeks of evidence per weather class. A forecast
+        three days after setup is bare physics and is expected to be rougher.
+      placeholder: "since 2026-07-14"
+    validations:
+      required: true
+  - type: dropdown
+    id: irradiance
+    attributes:
+      label: Do you have an irradiance sensor
+      description: A horizontal one, feeding the plant's irradiance entity.
+      options:
+        - "Yes"
+        - "No"
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: PV Strings version
+      placeholder: "1.20.5"
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: >
+        Settings → Devices & services → PV Strings → ⋮ → *Download diagnostics*.
+        It carries the geometry history, the model state and the collector
+        counters — which is what tells "the forecast is wrong" apart from "the
+        data going in is wrong". Coordinates are redacted.
+    validations:
+      required: true

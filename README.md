@@ -2,7 +2,7 @@
 
 # PV Strings
 
-*Version 1.20.1 · Home Assistant 2025.9 or newer · MIT*
+*Home Assistant 2025.9 or newer · MIT*
 
 A Home Assistant integration that forecasts and evaluates PV yield **per string**,
 not per plant.
@@ -93,8 +93,12 @@ it draws nothing the integration does not already publish.
 
 ### HACS (recommended)
 
-Add this repository as a custom repository of type *Integration*, install, then
-restart Home Assistant.
+Search for **PV Strings** in HACS, install, then restart Home Assistant.
+
+Not there yet? The repository is awaiting inclusion in the HACS default store,
+which takes a while. Until then add it by hand: HACS → ⋮ → *Custom
+repositories* → `https://github.com/doccodyblue/ha-pvstrings`, type
+*Integration*.
 
 ### Manual
 

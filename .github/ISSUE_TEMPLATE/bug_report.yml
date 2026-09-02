@@ -1,0 +1,55 @@
+name: Bug report
+description: Something is broken — an error, an entity that will not come up, a setup that fails
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The **diagnostics download** answers most of the questions below on its own:
+        Settings → Devices & services → PV Strings → ⋮ → *Download diagnostics*.
+        Coordinates are redacted; entity ids and the geometry history are not, so
+        look it over before you attach it.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what you got instead.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: PV Strings version
+      placeholder: "1.20.5"
+    validations:
+      required: true
+  - type: input
+    id: ha_version
+    attributes:
+      label: Home Assistant version
+      placeholder: "2026.8.1"
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How it was installed
+      options:
+        - HACS
+        - Manual copy into custom_components
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log output
+      description: >
+        Settings → System → Logs, filtered for `pvstrings`. Enable debug logging
+        first if there is nothing there — a stack trace usually decides the
+        question on its own.
+      render: text
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: Attach the downloaded file, or paste the relevant part.
