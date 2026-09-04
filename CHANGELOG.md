@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **The forecast error is split into the weather service's share and ours.**
+  Until now every published number was end to end, and its variance came almost
+  entirely from an input nobody here controls -- which made it impossible to
+  read whether a change to the model had helped, because good and bad weeks
+  differ by weather. Each closed hour is now run through the chain a second
+  time with the irradiance the sensor **measured** in place of the one that was
+  forecast: same physics, same sky map, same learned correction. The distance
+  from that to reality is ours, the distance from the published forecast to it
+  is the source's.
+
+  New diagnostic sensor **chain error 7 days**, carrying the source and
+  end-to-end figures for 7 and 30 days as attributes, all on the same hours.
+  The parts are absolute errors and do not add up to the whole -- an over- and
+  an under-shoot cancel in the total and must not cancel in the split. The
+  chain figure flatters itself slightly, because the correction inside it was
+  fitted on those hours; it is a regression signal, not a claim about unseen
+  days.
+
+  **Nothing changes for a plant without an irradiance sensor.** No
+  counterfactual is computed, no extra work is done, and the sensor says which
+  of the two ordinary reasons applies -- no sensor configured, or not enough
+  hours yet -- instead of showing an empty tile. Schema 7 adds one nullable
+  column to `string_hourly`; existing databases gain it in place and keep every
+  row.
+
 ## v1.20.7 — 2026-09-02
 
 ### Fixed

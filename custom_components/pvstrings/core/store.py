@@ -35,7 +35,7 @@ SHADING_THIN_DAYS = 120
 
 _LOGGER = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS string_geometry (
@@ -147,6 +147,13 @@ CREATE TABLE IF NOT EXISTS string_hourly (
     limit_mean_w       REAL,
     value_kind         TEXT    NOT NULL,
     quality            TEXT    NOT NULL,
+    -- What the chain would have said for this hour had it known the
+    -- irradiance that actually occurred: the same physics, the same map, the
+    -- same learned correction, fed the measured GHI instead of the forecast
+    -- one.  NULL wherever no measurement covers the hour, which is every hour
+    -- on a plant without an irradiance sensor.  It is what separates "the
+    -- weather forecast was wrong" from "our chain was wrong".
+    chain_kwh          REAL,
     PRIMARY KEY (ts_utc, string_id)
 );
 CREATE INDEX IF NOT EXISTS ix_string_hourly_string ON string_hourly (string_id, ts_utc);
@@ -332,6 +339,14 @@ class Store:
                 )
             if "beam" not in columns:
                 self._conn.execute("ALTER TABLE shading_obs ADD COLUMN beam REAL")
+            hourly_columns = {
+                row[1]
+                for row in self._conn.execute("PRAGMA table_info(string_hourly)")
+            }
+            if "chain_kwh" not in hourly_columns:
+                self._conn.execute(
+                    "ALTER TABLE string_hourly ADD COLUMN chain_kwh REAL"
+                )
         if pending is not None and pending < 3:
             # ``CREATE TABLE IF NOT EXISTS`` in _SCHEMA only shapes a *new*
             # database; an existing one keeps its old columns and every insert
@@ -786,6 +801,26 @@ class Store:
             )
         return len(payload)
 
+    def update_chain_potential(self, rows: Iterable[tuple[float, int, str]]) -> int:
+        """``(chain_kwh, ts_utc, string_id)`` onto hours that already exist.
+
+        An UPDATE rather than part of the hourly upsert: the fold writes what
+        was measured, this writes what the chain would have said about it, and
+        the two are computed at different points of the cycle.  Hours the fold
+        has not written yet are simply not matched -- they get their value on
+        the next pass, when they exist.
+        """
+        payload = list(rows)
+        if not payload:
+            return 0
+        with self._tx() as conn:
+            conn.executemany(
+                "UPDATE string_hourly SET chain_kwh = ? "
+                "WHERE ts_utc = ? AND string_id = ?",
+                payload,
+            )
+        return len(payload)
+
     def hourly_range(
         self, start_ts: int, end_ts: int, string_id: str | None = None
     ) -> list[HourlyRow]:
@@ -1106,7 +1141,7 @@ class Store:
     #: identical, or the two scores would stop being comparable.
     _FORECAST_VS_ACTUAL_SQL = """
         SELECT h.ts_utc, h.string_id, h.energy_kwh, h.quality, h.value_kind,
-               h.curtailed_fraction, h.coverage,
+               h.curtailed_fraction, h.coverage, h.chain_kwh,
                (SELECT f.potential_kwh FROM forecast_log f
                  WHERE f.ts_utc = h.ts_utc
                    AND f.string_id = h.string_id

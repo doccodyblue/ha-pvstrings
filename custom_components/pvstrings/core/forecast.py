@@ -159,6 +159,35 @@ class HourForecast:
         )
 
 
+#: An hour counts towards the attribution only if the irradiance sensor really
+#: covered it.  ``_actual_conditions`` falls back to the shortest-horizon
+#: forecast run where the measurement is missing -- right for learning, useless
+#: here, because it would compare a forecast against itself and report a source
+#: error of zero.
+CHAIN_MIN_MEASURED_SHARE = 0.8
+
+#: Below this the split is arithmetic on a handful of hours.  Roughly two days
+#: of daylight, the same order the other scores wait for.
+ATTRIBUTION_MIN_HOURS = 24
+
+#: Why the split cannot be shown.  Both are ordinary states, not failures, and
+#: saying which one applies is the difference between an empty tile and an
+#: answer.
+REASON_NO_IRRADIANCE_SENSOR = "no_irradiance_sensor"
+REASON_COLLECTING = "collecting"
+
+
+@dataclass(slots=True)
+class _Attribution:
+    """Sums behind the split of one score into source and chain."""
+
+    end_to_end: float = 0.0
+    chain: float = 0.0
+    source: float = 0.0
+    actual: float = 0.0
+    hours: int = 0
+
+
 def _day_ahead_history(
     tally: "_ScoreTally",
     running: tuple[str, dict[str, float]] | None = None,
@@ -221,6 +250,10 @@ class _ScoreTally:
     #: asks for it.  The day-ahead score publishes its days; the rolling one
     #: has no reader for them.
     daily_by_string: dict[str, dict[str, list[float]]] = field(default_factory=dict)
+    #: The same hours again, split into what the irradiance input cost and
+    #: what the chain did with it.  Only hours the sensor covered enter here,
+    #: so it is a subset of the score above and never replaces it.
+    attribution: _Attribution = field(default_factory=lambda: _Attribution())
 
 
 @dataclass(slots=True)
@@ -235,6 +268,9 @@ class LearnStats:
     reconstructed_intervals: int = 0
     #: Conversion curves whose evidence has moved at least one point.
     curves_learned: int = 0
+    #: Hours the chain was re-run for against the measured irradiance.  Zero
+    #: on every plant without an irradiance sensor, which is not a fault.
+    chain_hours: int = 0
     #: Why observations were skipped.  A bare count says an hour was not used
     #: and leaves you guessing which of four quite different reasons applied --
     #: which is exactly how a plant can sit at zero learned observations for
@@ -1531,6 +1567,10 @@ class ForecastEngine:
         # the limit, not the stage.
         self.store.mark_conversion_censored(start, end)
         stats.hours_materialised = self.materialise_hourly(start, end)
+        # After the fold, because it writes onto those rows -- and outside the
+        # learning gate below, because this is a measurement of the chain, not
+        # a correction to it.
+        stats.chain_hours = self.store_chain_potential(start, end)
         # Must exist before compaction is allowed to drop the raw rows.
         self.store.materialise_plant_hourly(start, end)
         self._learn_ghi_bias(start, end, stats)
@@ -1811,12 +1851,13 @@ class ForecastEngine:
             self._tally(
                 self.store.forecast_vs_actual_before(day_start, day_end, cutoff),
                 tally,
-                by_string=True,
+                detailed=True,
             )
 
         result = self._scored(tally)
         result["issue_hour_local"] = DAY_AHEAD_ISSUE_HOUR_LOCAL
         result["history"] = _day_ahead_history(tally, self._running_day_ahead(now_ts))
+        result["attribution"] = self._attribution(tally)
         if result["days_scored"] < MIN_SCORED_DAYS:
             # Silent about the number, honest about the basis: the counts stay
             # as they are so the attributes can show how far off publishing is.
@@ -1826,6 +1867,109 @@ class ForecastEngine:
             for bucket in ("uncensored", "all_hours"):
                 result[bucket] = {**result[bucket], **blank}
         return result
+
+    def store_chain_potential(self, start_ts: int, end_ts: int) -> int:
+        """Re-run the chain over closed hours with the irradiance that occurred.
+
+        The published forecast carries two errors at once -- the irradiance it
+        was handed, and what the chain made of it -- and no score can tell them
+        apart from the outside.  Feeding the same physics, the same sky map and
+        the same learned correction with the *measured* irradiance gives the
+        third number that separates them: the distance to this is ours, the
+        distance from the forecast to this is the source's.
+
+        Only hours the sensor genuinely covered are written.  Without a sensor
+        nothing is: ``_actual_conditions`` would fall back to the shortest
+        forecast run, and the split would compare a forecast against itself and
+        report a source error of nought.
+        """
+        measured = self._measured_ghi(start_ts, end_ts)
+        if measured is None or measured.empty:
+            return 0
+        index = self._midpoint_index(start_ts, end_ts)
+        if len(index) == 0:
+            return 0
+        conditions = self._actual_conditions(index, start_ts, end_ts)
+        if conditions is None:
+            return 0
+
+        epochs = np.array(
+            [int(value.timestamp()) - INTERVAL_SECONDS // 2 for value in index]
+        )
+        known = measured.reindex(epochs).notna().to_numpy()
+        hour_keys = conditions["hour"].to_numpy()
+        covered = {
+            hour
+            for hour in {int(value) for value in hour_keys}
+            if known[hour_keys == hour].mean() >= CHAIN_MIN_MEASURED_SHARE
+        }
+        if not covered:
+            return 0
+
+        per_interval, _beams = self._interval_power(index, conditions)
+        for string in self.plant.strings:
+            values = per_interval.get(string.string_id)
+            if not (string.max_power_w and values):
+                continue
+            # The published forecast respects the tracker ceiling.  A
+            # counterfactual that did not would blame the chain for power the
+            # channel could never have carried.
+            for ts, power in values.items():
+                values[ts] = min(power, string.max_power_w)
+
+        classes = self._classify_hours(conditions)
+        rows: list[tuple[float, int, str]] = []
+        for string_id, hours in self._fold_hourly(per_interval).items():
+            for hour, physics_kwh in hours.items():
+                if hour not in covered:
+                    continue
+                correction = 1.0
+                if self.plant.learning_enabled and physics_kwh > 0:
+                    weather, part = classes.get(hour, ("partly_cloudy", "midday"))
+                    correction = self.model.factor(string_id, weather, part)
+                rows.append((round(physics_kwh * correction, 4), hour, string_id))
+        return self.store.update_chain_potential(rows)
+
+    def _attribution(self, tally: "_ScoreTally") -> dict[str, Any]:
+        """Split the score into "the forecast was wrong" and "we were wrong".
+
+        Three ratios on one set of hours, all against the measured energy the
+        way ``wmape`` is: what the published forecast cost end to end, what the
+        chain costs when the irradiance is known, and how far the irradiance
+        input alone moved the answer. They are absolute errors, so the two
+        parts do not add up to the whole -- an over- and an under-shoot can
+        cancel in the total and cannot cancel here.
+
+        The chain figure flatters itself slightly: the learned correction it
+        contains was fitted on these very hours. It is a regression signal for
+        development, not a claim of accuracy on unseen days.
+        """
+        split = tally.attribution
+        base: dict[str, Any] = {
+            "hours": split.hours,
+            "hours_scored": len(tally.every),
+            "kwh_actual": round(split.actual, 3),
+        }
+        if split.hours < ATTRIBUTION_MIN_HOURS or split.actual <= 0:
+            return {
+                **base,
+                "wmape_end_to_end": None,
+                "wmape_chain": None,
+                "wmape_source": None,
+                "reason": (
+                    REASON_COLLECTING
+                    if self.plant.weather_sources.ghi_entity
+                    or self.plant.weather_sources.illuminance_entity
+                    else REASON_NO_IRRADIANCE_SENSOR
+                ),
+            }
+        return {
+            **base,
+            "wmape_end_to_end": split.end_to_end / split.actual,
+            "wmape_chain": split.chain / split.actual,
+            "wmape_source": split.source / split.actual,
+            "reason": None,
+        }
 
     def _running_day_ahead(self, now_ts: int) -> tuple[str, dict[str, float]] | None:
         """Per string, what was announced for the day that is still running.
@@ -1887,9 +2031,14 @@ class ForecastEngine:
             )
 
     def _tally(
-        self, rows: Iterable[Any], tally: "_ScoreTally", by_string: bool = False
+        self, rows: Iterable[Any], tally: "_ScoreTally", detailed: bool = False
     ) -> None:
-        """Fold paired hours into a running tally, in place."""
+        """Fold paired hours into a running tally, in place.
+
+        ``detailed`` additionally keeps what only the day-ahead score has a
+        reader for: the days per string, and the split of the error into the
+        irradiance input and the chain.
+        """
         for row in rows:
             actual = row["energy_kwh"]
             predicted = row["potential_kwh"]
@@ -1904,11 +2053,21 @@ class ForecastEngine:
             tally.daily_all.setdefault(day, [0.0, 0.0])
             tally.daily_all[day][0] += predicted
             tally.daily_all[day][1] += actual
-            if by_string:
+            if detailed:
                 per_day = tally.daily_by_string.setdefault(str(row["string_id"]), {})
                 bucket = per_day.setdefault(day, [0.0, 0.0])
                 bucket[0] += predicted
                 bucket[1] += actual
+                chain = row["chain_kwh"]
+                if chain is not None:
+                    # All three on the same hours, or the numbers would answer
+                    # different questions and still be read side by side.
+                    attribution = tally.attribution
+                    attribution.end_to_end += abs(predicted - actual)
+                    attribution.chain += abs(float(chain) - actual)
+                    attribution.source += abs(predicted - float(chain))
+                    attribution.actual += actual
+                    attribution.hours += 1
             if row["value_kind"] == VALUE_MEASURED and not row["curtailed_fraction"]:
                 tally.uncensored.append((predicted, actual))
                 tally.daily_uncensored.setdefault(day, [0.0, 0.0])

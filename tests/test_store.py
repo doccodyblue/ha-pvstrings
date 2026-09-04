@@ -1193,3 +1193,74 @@ class TestConversionTotals:
         )
         store.mark_conversion_censored(0, 1000)
         assert store.conversion_totals("g1", "inverter") == (0.0, 0.0, 0)
+
+
+class TestMigrationToTheChainColumn:
+    """Schema v7: string_hourly grows the counterfactual the error split needs.
+
+    The same trap as every column before it -- ``CREATE TABLE IF NOT EXISTS``
+    leaves an existing table alone -- with one addition that matters more than
+    usual: the column is written by an UPDATE, so a missing column would fail
+    on every learn cycle of an upgraded plant rather than on first insert.
+    """
+
+    V6_TABLE = """
+    CREATE TABLE string_hourly (
+        ts_utc             INTEGER NOT NULL,
+        string_id          TEXT    NOT NULL,
+        energy_kwh         REAL,
+        coverage           REAL    NOT NULL,
+        curtailed_fraction REAL    NOT NULL,
+        limit_min_w        REAL,
+        limit_max_w        REAL,
+        limit_mean_w       REAL,
+        value_kind         TEXT    NOT NULL,
+        quality            TEXT    NOT NULL,
+        PRIMARY KEY (ts_utc, string_id)
+    );
+    """
+
+    def _v6_database(self, tmp_path):
+        import sqlite3
+
+        path = tmp_path / "v6.db"
+        conn = sqlite3.connect(path)
+        conn.executescript(self.V6_TABLE)
+        conn.execute(
+            "INSERT INTO string_hourly VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (3600, "s1", 1.2, 1.0, 0.0, None, None, None, "measured", "exact"),
+        )
+        conn.execute("PRAGMA user_version=6")
+        conn.commit()
+        conn.close()
+        return path
+
+    def test_the_history_survives_and_the_column_appears(self, tmp_path):
+        store = Store(self._v6_database(tmp_path))
+        store.connect()
+        try:
+            rows = store.hourly_range(3600, 7200)
+            assert [(row.string_id, row.energy_kwh) for row in rows] == [("s1", 1.2)]
+            paired = store.forecast_vs_actual(3600, 7200)
+            assert paired[0]["chain_kwh"] is None
+        finally:
+            store.close()
+
+    def test_the_update_reaches_an_upgraded_row(self, tmp_path):
+        store = Store(self._v6_database(tmp_path))
+        store.connect()
+        try:
+            assert store.update_chain_potential([(0.9, 3600, "s1")]) == 1
+            assert store.forecast_vs_actual(3600, 7200)[0]["chain_kwh"] == 0.9
+        finally:
+            store.close()
+
+    def test_an_hour_that_does_not_exist_yet_is_not_invented(self, tmp_path):
+        """The fold owns the row; this only ever adds a column to it."""
+        store = Store(self._v6_database(tmp_path))
+        store.connect()
+        try:
+            store.update_chain_potential([(0.9, 999_999, "s9")])
+            assert store.hourly_range(999_999, 1_000_000 + 3600) == []
+        finally:
+            store.close()

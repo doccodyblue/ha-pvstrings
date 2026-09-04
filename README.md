@@ -353,6 +353,36 @@ until three of them are in, so a single day's weather cannot masquerade as an
 accuracy figure. Expect the day-ahead number to sit well above the nowcast one:
 that gap is the honest cost of forecasting a day ahead.
 
+### Whose fault was it — the weather service or us?
+
+Any forecast error has two possible culprits: the irradiance the forecast was
+handed, and what this integration made of it. The published numbers mix them,
+which makes them nearly useless as a development signal — a good week and a bad
+week differ mostly by weather.
+
+With an irradiance sensor, the split is measured. Every closed hour is run
+through the chain a second time — same physics, same sky map, same learned
+correction — but fed the irradiance the sensor **measured** instead of the one
+that was forecast. The distance from that to reality is ours; the distance from
+the published forecast to it is the source's:
+
+| Attribute of *chain error 7 days* | Answers |
+|---|---|
+| the sensor's own state | what the chain gets wrong when the irradiance is known |
+| `wmape_source_7d` | how far the irradiance forecast alone moved the answer |
+| `wmape_end_to_end_7d` | both together, on the same hours |
+
+The two parts are absolute errors and deliberately do **not** add up to the
+whole: an over- and an under-shoot cancel in the total and must not cancel
+here. The chain figure also flatters itself slightly, because the learned
+correction inside it was fitted on those very hours — it is a regression signal
+for development, not a claim of accuracy on unseen days.
+
+**Without an irradiance sensor** nothing here changes and nothing breaks: no
+counterfactual is computed, no extra work is done, and the sensor states plainly
+that no sensor is configured rather than showing an empty tile. Everything else
+in the integration works exactly as before.
+
 ---
 
 ## Data collection

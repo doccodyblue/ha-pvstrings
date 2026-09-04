@@ -498,6 +498,9 @@
       },
       "forecast_ac_tomorrow": {
         "name": "Forecast AC tomorrow"
+      },
+      "wmape_chain_7d": {
+        "name": "Chain error 7 days"
       }
     }
   },

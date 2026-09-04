@@ -194,6 +194,60 @@ def _remaining_attrs(today: float, remaining: float, source: str) -> dict[str, A
     return out
 
 
+_ATTRIBUTION_NOTE = (
+    "Splits the day-ahead error into the two culprits it can have. "
+    "chain = what the chain gets wrong when the irradiance is known -- the "
+    "same physics, sky map and learned correction, re-run on the measured "
+    "irradiance. source = how far the irradiance forecast alone moved the "
+    "answer. Both are absolute errors on the same hours, so they do not add "
+    "up to the end-to-end figure: an over- and an under-shoot cancel there "
+    "and cannot cancel here. The chain figure flatters itself slightly, "
+    "because the correction it contains was fitted on these very hours."
+)
+_ATTRIBUTION_REASONS = {
+    "no_irradiance_sensor": (
+        "No irradiance sensor configured, so there is nothing to check the "
+        "chain against. Add a horizontal GHI or illuminance sensor in the "
+        "options to get this split; everything else works without it."
+    ),
+    "collecting": (
+        "Not enough hours with a measured irradiance yet. The split appears "
+        "once about a day of them has accumulated."
+    ),
+}
+
+
+def _attribution(data: PvStringsData, days: int) -> dict[str, Any]:
+    return data.scores_day_ahead.get(days, {}).get("attribution") or {}
+
+
+def _attribution_pct(data: PvStringsData, days: int, field: str) -> Any:
+    value = _attribution(data, days).get(field)
+    return None if value is None else round(value * 100, 2)
+
+
+def _attribution_attrs(data: PvStringsData) -> dict[str, Any]:
+    week, month = _attribution(data, 7), _attribution(data, 30)
+    reason = week.get("reason")
+    out: dict[str, Any] = {
+        "wmape_source_7d": _attribution_pct(data, 7, "wmape_source"),
+        "wmape_end_to_end_7d": _attribution_pct(data, 7, "wmape_end_to_end"),
+        "wmape_chain_30d": _attribution_pct(data, 30, "wmape_chain"),
+        "wmape_source_30d": _attribution_pct(data, 30, "wmape_source"),
+        "wmape_end_to_end_30d": _attribution_pct(data, 30, "wmape_end_to_end"),
+        "hours_split_7d": week.get("hours"),
+        "hours_split_30d": month.get("hours"),
+        # What the day-ahead score saw in total: the gap to hours_split is the
+        # hours no measurement covered.
+        "hours_scored_7d": week.get("hours_scored"),
+        "reason": reason,
+        "semantics": _ATTRIBUTION_NOTE,
+    }
+    if reason:
+        out["note"] = _ATTRIBUTION_REASONS.get(reason, reason)
+    return out
+
+
 _DELIVERED_SEMANTICS = (
     "Valued on delivered energy, not on DC production: each group's measured "
     "DC energy is multiplied by its conversion factor -- measured where an AC "
@@ -430,6 +484,18 @@ PLANT_SENSORS: tuple[PlantSensorDescription, ...] = (
             data, 30, "daily_bias_kwh", censored=False, day_ahead=True
         ),
         attrs_fn=lambda data, _c: _score_attrs(data, 30, day_ahead=True),
+    ),
+    PlantSensorDescription(
+        key="wmape_chain_7d",
+        translation_key="wmape_chain_7d",
+        native_unit_of_measurement="%",
+        suggested_display_precision=1,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        # The published error mixes two culprits: the irradiance the forecast
+        # was handed, and what the chain made of it.  This is the second half
+        # alone -- and the only one a code change can move.
+        value_fn=lambda data, _c: _attribution_pct(data, 7, "wmape_chain"),
+        attrs_fn=lambda data, _c: _attribution_attrs(data),
     ),
     PlantSensorDescription(
         key="savings_today",
