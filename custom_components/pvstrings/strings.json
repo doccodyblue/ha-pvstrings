@@ -606,6 +606,20 @@
           "description": "How far back to look. Hours without statistics are skipped."
         }
       }
+    },
+    "clear_price_history": {
+      "name": "Clear recorded prices",
+      "description": "Forget every tariff price recorded from a date on. Those hours fall back to the fixed price. Use it after pointing at the wrong sensor, or at one reporting a different currency -- a wrong price is recorded, folded and then compacted, and a wrong money figure is not one anybody spots by looking at it.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Plant",
+          "description": "Which plant to clear."
+        },
+        "from_date": {
+          "name": "From",
+          "description": "Prices recorded on this day and later are dropped."
+        }
+      }
     }
   }
 }

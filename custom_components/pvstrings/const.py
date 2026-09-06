@@ -142,6 +142,8 @@ SERVICE_ADD_GEOMETRY: Final = "add_geometry"
 SERVICE_RESET_LEARNING: Final = "reset_learning"
 SERVICE_PURGE: Final = "purge"
 SERVICE_BACKFILL: Final = "backfill_shading"
+SERVICE_CLEAR_PRICES: Final = "clear_price_history"
+ATTR_FROM_DATE: Final = "from_date"
 
 ATTR_STRING_ID: Final = "string_id"
 ATTR_CONFIG_ENTRY_ID: Final = "config_entry_id"

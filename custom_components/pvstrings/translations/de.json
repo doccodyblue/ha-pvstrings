@@ -606,6 +606,20 @@
           "description": "Wie weit zurück gesucht wird. Stunden ohne Statistik werden übersprungen."
         }
       }
+    },
+    "clear_price_history": {
+      "name": "Aufgezeichnete Preise verwerfen",
+      "description": "Vergisst jeden ab einem Datum aufgezeichneten Tarifpreis; die betroffenen Stunden fallen auf den Festpreis zurück. Für den Fall, dass der falsche Sensor eingetragen war oder einer in fremder Währung — ein falscher Preis wird aufgezeichnet, gefaltet und dann kompaktiert, und einen falschen Geldbetrag sieht man ihm nicht an.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Anlage",
+          "description": "Welche Anlage."
+        },
+        "from_date": {
+          "name": "Ab",
+          "description": "Preise ab diesem Tag werden verworfen."
+        }
+      }
     }
   }
 }

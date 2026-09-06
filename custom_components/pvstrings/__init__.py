@@ -92,7 +92,9 @@ from .const import (
     DOMAIN,
     NO_GROUP,
     SERVICE_ADD_GEOMETRY,
+    ATTR_FROM_DATE,
     SERVICE_BACKFILL,
+    SERVICE_CLEAR_PRICES,
     SERVICE_PURGE,
     SERVICE_RECALCULATE,
     SERVICE_RESET_LEARNING,
@@ -138,6 +140,9 @@ ADD_GEOMETRY_SCHEMA = vol.Schema(
 )
 
 ENTRY_SERVICE_SCHEMA = vol.Schema({vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string})
+CLEAR_PRICES_SCHEMA = ENTRY_SERVICE_SCHEMA.extend(
+    {vol.Required(ATTR_FROM_DATE): cv.date}
+)
 
 RESET_LEARNING_SCHEMA = ENTRY_SERVICE_SCHEMA.extend(
     {vol.Optional(ATTR_STRING_ID): cv.string}
@@ -503,6 +508,19 @@ def _async_register_services(hass: HomeAssistant) -> None:
             raise ServiceValidationError(f"unknown string: {string_id}")
         await coordinator.async_reset_learning(string_id)
 
+    async def _clear_prices(call: ServiceCall) -> None:
+        coordinator = _coordinator_for(hass, call.data[ATTR_CONFIG_ENTRY_ID])
+        day = call.data[ATTR_FROM_DATE]
+        from_ts = int(
+            datetime(
+                day.year, day.month, day.day, tzinfo=dt_util.get_default_time_zone()
+            ).timestamp()
+        )
+        await hass.async_add_executor_job(
+            coordinator.store.clear_recorded_prices, from_ts
+        )
+        await coordinator.async_request_refresh()
+
     async def _purge(call: ServiceCall) -> None:
         coordinator = _coordinator_for(hass, call.data[ATTR_CONFIG_ENTRY_ID])
         await hass.async_add_executor_job(
@@ -553,6 +571,9 @@ def _async_register_services(hass: HomeAssistant) -> None:
     )
     hass.services.async_register(
         DOMAIN, SERVICE_PURGE, _purge, schema=ENTRY_SERVICE_SCHEMA
+    )
+    hass.services.async_register(
+        DOMAIN, SERVICE_CLEAR_PRICES, _clear_prices, schema=CLEAR_PRICES_SCHEMA
     )
     hass.services.async_register(
         DOMAIN, SERVICE_ADD_GEOMETRY, _add_geometry, schema=ADD_GEOMETRY_SCHEMA

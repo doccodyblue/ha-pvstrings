@@ -1261,6 +1261,30 @@ class Store:
             )
             return cursor.rowcount
 
+    def clear_recorded_prices(self, from_ts: int) -> int:
+        """Forget every recorded tariff price from ``from_ts`` on.
+
+        The escape hatch for a sensor that turned out to be the wrong one, or
+        to have been quietly reporting a different currency.  A wrong price is
+        recorded, folded, and then the raw rows it came from are compacted
+        away, so there would otherwise be no way back to the truth -- and a
+        wrong money figure is one nobody spots by looking at it.
+
+        Dropped rather than corrected: the hours fall back to the configured
+        flat price, which is a stated approximation, where a rewritten one
+        would be an invention.
+        """
+        with self._tx() as conn:
+            rows = 0
+            for table in ("plant_state_5min", "plant_hourly"):
+                cursor = conn.execute(
+                    f"UPDATE {table} SET import_price_per_kwh = NULL, "
+                    "export_price_per_kwh = NULL WHERE ts_utc >= ?",
+                    (from_ts,),
+                )
+                rows += cursor.rowcount
+            return rows
+
     def battery_soc_series(self, start_ts: int, end_ts: int) -> dict[int, float]:
         """Battery state of charge per five-minute interval.
 

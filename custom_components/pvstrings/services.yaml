@@ -26,6 +26,18 @@ purge:
         config_entry:
           integration: pvstrings
 
+clear_price_history:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: pvstrings
+    from_date:
+      required: true
+      selector:
+        date:
+
 add_geometry:
   fields:
     config_entry_id:

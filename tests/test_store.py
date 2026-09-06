@@ -1542,3 +1542,36 @@ class TestPricedTotals:
         store.materialise_plant_hourly(3600, 7200)
         totals = store.priced_totals(3600, 7200)
         assert totals.self_used_value == pytest.approx(-0.08)
+
+
+class TestClearingRecordedPrices:
+    """The way back from a sensor that turned out to be the wrong one."""
+
+    def _row(self, ts, price):
+        return (ts, 50.0, 0.0, 1200.0, 800.0, price, price / 2)
+
+    def test_prices_from_the_date_on_are_dropped(self, store: Store):
+        store.upsert_plant_state([self._row(0, 0.28), self._row(7200, 28.0)])
+        store.materialise_plant_hourly(0, 10800)
+
+        store.clear_recorded_prices(7200)
+
+        kept, cleared = store._query("SELECT * FROM plant_hourly ORDER BY ts_utc")
+        assert kept["import_price_per_kwh"] == pytest.approx(0.28)
+        assert cleared["import_price_per_kwh"] is None
+
+    def test_the_energy_behind_them_is_untouched(self, store: Store):
+        """Only the interpretation goes; the measurement stays."""
+        store.upsert_plant_state([self._row(7200, 28.0)])
+        store.materialise_plant_hourly(0, 10800)
+        store.clear_recorded_prices(7200)
+        row = store._query("SELECT * FROM plant_hourly WHERE ts_utc = 7200")[0]
+        assert row["imported_kwh"] == pytest.approx(1200 / 12 / 1000)
+
+    def test_the_raw_rows_are_cleared_too(self, store: Store):
+        """Otherwise the next fold would put the wrong price straight back."""
+        store.upsert_plant_state([self._row(7200, 28.0)])
+        store.clear_recorded_prices(7200)
+        store.materialise_plant_hourly(0, 10800)
+        row = store._query("SELECT * FROM plant_hourly WHERE ts_utc = 7200")[0]
+        assert row["import_price_per_kwh"] is None
