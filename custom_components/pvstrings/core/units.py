@@ -22,6 +22,19 @@ ILLUMINANCE: Final = "illuminance"
 PRECIPITATION: Final = "precipitation"
 RATIO: Final = "ratio"
 POWER: Final = "power"
+ENERGY_PRICE: Final = "energy_price"
+
+#: Numerators that mean a hundredth of the major currency.  Deliberately not a
+#: currency table: one would have to list every currency on earth and would
+#: lock out the one it forgot.  Only the numerator's *scale* is decided here --
+#: which currency it is stays the user's business, because nothing in this
+#: integration converts between currencies.
+_MINOR_CURRENCY: Final = frozenset(
+    {"ct", "c", "cent", "cents", "¢", "p", "pence", "öre", "øre", "ore"}
+)
+
+#: Denominators, as a factor onto "per kWh".
+_PER_ENERGY: Final[dict[str, float]] = {"kwh": 1.0, "mwh": 0.001, "wh": 1000.0}
 
 #: Multiplicative factors onto the canonical unit, keyed by lowercased symbol.
 _FACTORS: Final[dict[str, dict[str, float]]] = {
@@ -71,6 +84,15 @@ def convert(value: float | None, unit: str | None, quantity: str) -> float | Non
         return None
     if quantity == TEMPERATURE:
         return _temperature(value, unit)
+    if quantity == ENERGY_PRICE:
+        # The one quantity that does *not* pass an unreadable unit through.
+        # Money is asymmetric: a price whose scale cannot be read is a factor
+        # of a hundred or a thousand away from the truth and looks entirely
+        # plausible on a savings sensor, while "unknown" merely falls back to
+        # the configured flat price.  The config flow refuses such an entity
+        # up front; this is what happens if the unit changes afterwards.
+        factor = parse_energy_price_unit(unit)
+        return None if factor is None else value * factor
     if unit is None:
         return value
     factor = _FACTORS.get(quantity, {}).get(unit.strip().lower())
@@ -88,6 +110,29 @@ def _temperature(value: float, unit: str | None) -> float:
     return value
 
 
+def parse_energy_price_unit(unit: str | None) -> float | None:
+    """Factor from ``unit`` onto major currency per kWh, or ``None``.
+
+    ``None`` means the symbol is not a price per energy at all -- "EUR" with no
+    denominator, a bare "kWh", an empty string.  Callers use that to refuse an
+    entity rather than to guess, which is the whole point: ct/kWh read as
+    EUR/kWh is a factor of a hundred, both numbers look ordinary on a savings
+    sensor, and nobody re-checks a figure that was never obviously wrong.
+
+    Shared on purpose between the config flow, which blocks on ``None``, and
+    the collector, which converts with the factor.  Two implementations of
+    this rule would eventually disagree about which units are acceptable, and
+    the disagreement would be silent.
+    """
+    if not unit:
+        return None
+    numerator, _, denominator = unit.strip().lower().partition("/")
+    per_energy = _PER_ENERGY.get(denominator.strip())
+    if per_energy is None:
+        return None
+    return per_energy * (0.01 if numerator.strip() in _MINOR_CURRENCY else 1.0)
+
+
 def canonical_unit(quantity: str) -> str:
     return {
         TEMPERATURE: "°C",
@@ -98,4 +143,7 @@ def canonical_unit(quantity: str) -> str:
         PRECIPITATION: "mm",
         POWER: "W",
         RATIO: "%",
+        # The currency is the user's -- this integration never converts between
+        # them -- so only the denominator can be named here.
+        ENERGY_PRICE: "/kWh",
     }[quantity]

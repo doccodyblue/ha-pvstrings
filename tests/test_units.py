@@ -112,3 +112,64 @@ class TestCollectorScaling:
 
     def test_missing_unit_leaves_the_reading_alone(self):
         assert units.convert(1.0, None, units.POWER) == pytest.approx(1.0)
+
+
+class TestEnergyPrice:
+    """Every symbol below is one a real tariff integration publishes.  The
+    factor of a hundred between EUR/kWh and ct/kWh is the whole reason this
+    quantity is parsed rather than passed through: both readings look ordinary
+    on a savings sensor, and only one of them is money."""
+
+    def test_major_currency_per_kwh_passes_through(self):
+        """Tibber publishes EUR/kWh, and so does the configured flat price."""
+        assert units.convert(0.285, "EUR/kWh", units.ENERGY_PRICE) == pytest.approx(0.285)
+
+    def test_any_currency_is_taken_at_face_value(self):
+        """Nothing here converts between currencies, so SEK is just a number."""
+        assert units.convert(1.42, "SEK/kWh", units.ENERGY_PRICE) == pytest.approx(1.42)
+        assert units.convert(0.29, "$/kWh", units.ENERGY_PRICE) == pytest.approx(0.29)
+
+    def test_cents_become_the_major_unit(self):
+        """Nord Pool offers c/kWh; German sources write ct/kWh."""
+        for symbol in ("ct/kWh", "c/kWh", "Cent/kWh", "cents/kWh", "¢/kWh"):
+            assert units.convert(28.5, symbol, units.ENERGY_PRICE) == pytest.approx(0.285)
+
+    def test_pence_and_ore_are_minor_units_too(self):
+        """Octopus bills in p/kWh, the Nordics in öre."""
+        assert units.convert(24.0, "p/kWh", units.ENERGY_PRICE) == pytest.approx(0.24)
+        assert units.convert(24.0, "öre/kWh", units.ENERGY_PRICE) == pytest.approx(0.24)
+        assert units.convert(24.0, "ore/kWh", units.ENERGY_PRICE) == pytest.approx(0.24)
+
+    def test_per_megawatt_hour_is_a_thousandth(self):
+        """Day-ahead auctions quote per MWh."""
+        assert units.convert(85.0, "EUR/MWh", units.ENERGY_PRICE) == pytest.approx(0.085)
+
+    def test_minor_units_per_megawatt_hour_compose(self):
+        assert units.convert(8500.0, "ct/MWh", units.ENERGY_PRICE) == pytest.approx(0.085)
+
+    def test_case_and_padding_do_not_matter(self):
+        assert units.convert(28.5, " CT/KWH ", units.ENERGY_PRICE) == pytest.approx(0.285)
+
+    def test_a_negative_price_keeps_its_sign(self):
+        """A spot market below zero is a real state, not an error to clamp."""
+        assert units.convert(-4.2, "ct/kWh", units.ENERGY_PRICE) == pytest.approx(-0.042)
+
+    def test_an_unreadable_unit_yields_nothing_rather_than_a_guess(self):
+        """The one quantity that does not pass an unknown unit through: an
+        unreadable price would be stored a hundredfold wrong and look fine,
+        while nothing at all falls back to the configured flat price."""
+        for symbol in ("EUR", "kWh", "Zorkmid", "", None):
+            assert units.convert(28.5, symbol, units.ENERGY_PRICE) is None
+
+    def test_the_parser_reports_what_it_could_not_read(self):
+        """Shared with the config flow, which blocks on None rather than
+        storing prices it cannot scale."""
+        assert units.parse_energy_price_unit("EUR/kWh") == pytest.approx(1.0)
+        assert units.parse_energy_price_unit("ct/kWh") == pytest.approx(0.01)
+        assert units.parse_energy_price_unit("EUR/MWh") == pytest.approx(0.001)
+        assert units.parse_energy_price_unit("EUR/Wh") == pytest.approx(1000.0)
+        for symbol in ("EUR", "kWh", "", None, "EUR/fortnight"):
+            assert units.parse_energy_price_unit(symbol) is None
+
+    def test_the_canonical_unit_names_only_the_denominator(self):
+        assert units.canonical_unit(units.ENERGY_PRICE) == "/kWh"
