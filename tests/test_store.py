@@ -254,8 +254,8 @@ class TestPlantState:
     def test_grid_split_into_import_and_export(self, store: Store):
         store.upsert_plant_state(
             [
-                (0, 50.0, 0.0, 1200.0, 1200.0),
-                (300, 50.0, 0.0, -600.0, 0.0),
+                (0, 50.0, 0.0, 1200.0, 1200.0, None, None),
+                (300, 50.0, 0.0, -600.0, 0.0, None, None),
             ]
         )
         imported, exported = store.grid_energy_kwh(0, 600)
@@ -358,7 +358,8 @@ class TestLongRangeTotals:
         now = 200 * 86400
         hour = now - 200 * 3600
         store.upsert_plant_state(
-            [(hour + i * 300, 50.0, 0.0, 1200.0 if i < 6 else -600.0, 800.0)
+            [(hour + i * 300, 50.0, 0.0, 1200.0 if i < 6 else -600.0, 800.0,
+              None, None)
              for i in range(12)]
         )
         store.materialise_plant_hourly(hour, hour + 3600)
@@ -374,7 +375,8 @@ class TestLongRangeTotals:
         very different tariff outcomes."""
         hour = 0
         store.upsert_plant_state(
-            [(i * 300, None, None, 600.0 if i < 6 else -600.0, None) for i in range(12)]
+            [(i * 300, None, None, 600.0 if i < 6 else -600.0, None, None, None)
+             for i in range(12)]
         )
         store.materialise_plant_hourly(hour, hour + 3600)
         imported, exported = store.grid_energy_kwh(hour, hour + 3600)
@@ -1264,3 +1266,148 @@ class TestMigrationToTheChainColumn:
             assert store.hourly_range(999_999, 1_000_000 + 3600) == []
         finally:
             store.close()
+
+
+class TestMigrationToPriceColumns:
+    """Schema v8: the plant tables grow the tariff the hour ran under.
+
+    Same trap as every column before it, with the twist that made the chain
+    column dangerous: the hourly fold names these columns in an INSERT, so a
+    missing column would fail on every learn cycle of an upgraded plant rather
+    than on first insert.
+    """
+
+    V7_TABLES = """
+    CREATE TABLE plant_state_5min (
+        ts_utc          INTEGER PRIMARY KEY,
+        battery_soc_pct REAL,
+        battery_power_w REAL,
+        grid_power_w    REAL,
+        house_load_w    REAL
+    );
+    CREATE TABLE plant_hourly (
+        ts_utc          INTEGER PRIMARY KEY,
+        imported_kwh    REAL,
+        exported_kwh    REAL,
+        house_kwh       REAL,
+        battery_soc_pct REAL
+    );
+    """
+
+    def _v7_database(self, tmp_path):
+        import sqlite3
+
+        path = tmp_path / "v7.db"
+        conn = sqlite3.connect(path)
+        conn.executescript(self.V7_TABLES)
+        conn.execute(
+            "INSERT INTO plant_state_5min VALUES (?,?,?,?,?)",
+            (300, 50.0, 0.0, 1200.0, 800.0),
+        )
+        conn.execute(
+            "INSERT INTO plant_hourly VALUES (?,?,?,?,?)", (0, 0.1, 0.2, 0.3, 50.0)
+        )
+        conn.execute("PRAGMA user_version=7")
+        conn.commit()
+        conn.close()
+        return path
+
+    def test_the_history_survives_and_the_columns_appear(self, tmp_path):
+        store = Store(self._v7_database(tmp_path))
+        store.connect()
+        try:
+            assert store.grid_energy_kwh(0, 3600) == pytest.approx((0.1, 0.2))
+            row = store._query("SELECT * FROM plant_hourly WHERE ts_utc = 0")[0]
+            assert row["import_price_per_kwh"] is None
+        finally:
+            store.close()
+
+    def test_the_writer_accepts_the_wider_row(self, tmp_path):
+        store = Store(self._v7_database(tmp_path))
+        store.connect()
+        try:
+            store.upsert_plant_state([(600, 50.0, 0.0, 1200.0, 800.0, 0.285, 0.05)])
+            row = store._query("SELECT * FROM plant_state_5min WHERE ts_utc = 600")[0]
+            assert row["import_price_per_kwh"] == pytest.approx(0.285)
+        finally:
+            store.close()
+
+    def test_the_fold_reaches_an_upgraded_row(self, tmp_path):
+        """The failure that would otherwise hit every learn cycle."""
+        store = Store(self._v7_database(tmp_path))
+        store.connect()
+        try:
+            store.upsert_plant_state([(300, 50.0, 0.0, 1200.0, 800.0, 0.285, 0.05)])
+            store.materialise_plant_hourly(0, 3600)
+            row = store._query("SELECT * FROM plant_hourly WHERE ts_utc = 0")[0]
+            assert row["import_price_per_kwh"] == pytest.approx(0.285)
+            assert row["export_price_per_kwh"] == pytest.approx(0.05)
+        finally:
+            store.close()
+
+
+class TestRecordedPrices:
+    def _row(self, ts, price=None, export_price=None, grid_w=1200.0):
+        return (ts, 50.0, 0.0, grid_w, 800.0, price, export_price)
+
+    def test_a_momentarily_unreadable_sensor_does_not_erase_a_price(
+        self, store: Store
+    ):
+        """The COALESCE contract: prices change rarely, and a single
+        unavailable moment would otherwise punch holes in the record."""
+        store.upsert_plant_state([self._row(300, price=0.285)])
+        store.upsert_plant_state([self._row(300, price=None)])
+        row = store._query("SELECT * FROM plant_state_5min WHERE ts_utc = 300")[0]
+        assert row["import_price_per_kwh"] == pytest.approx(0.285)
+
+    def test_the_fold_takes_the_hour_s_mean_and_skips_gaps(self, store: Store):
+        store.upsert_plant_state(
+            [self._row(i * 300, price=0.2 if i < 6 else 0.4) for i in range(12)]
+        )
+        store.upsert_plant_state([self._row(3600, price=None, grid_w=0.0)])
+        store.materialise_plant_hourly(0, 7200)
+        first, second = store._query("SELECT * FROM plant_hourly ORDER BY ts_utc")
+        assert first["import_price_per_kwh"] == pytest.approx(0.3)
+        assert second["import_price_per_kwh"] is None
+
+    def test_a_negative_price_is_recorded_as_it_arrived(self, store: Store):
+        """A spot market below zero is a state, not an error to clamp."""
+        store.upsert_plant_state([self._row(300, price=-0.04)])
+        store.materialise_plant_hourly(0, 3600)
+        row = store._query("SELECT * FROM plant_hourly WHERE ts_utc = 0")[0]
+        assert row["import_price_per_kwh"] == pytest.approx(-0.04)
+
+    def test_prices_survive_compaction(self, store: Store):
+        now = 200 * 86400
+        hour = now - 200 * 3600
+        store.upsert_plant_state(
+            [self._row(hour + i * 300, price=0.285) for i in range(12)]
+        )
+        store.materialise_plant_hourly(hour, hour + 3600)
+        store.compact(now_ts=now, raw_days=0)
+        row = store._query("SELECT * FROM plant_hourly WHERE ts_utc = ?", (hour,))[0]
+        assert row["import_price_per_kwh"] == pytest.approx(0.285)
+
+    def test_refolding_after_compaction_does_not_clobber(self, store: Store):
+        """Safe by a property rather than a guard: the fold's SELECT only
+        produces rows for hours that still have raw data, so an hour whose raw
+        rows are gone is never touched."""
+        now = 200 * 86400
+        hour = now - 200 * 3600
+        store.upsert_plant_state(
+            [self._row(hour + i * 300, price=0.285) for i in range(12)]
+        )
+        store.materialise_plant_hourly(hour, hour + 3600)
+        store.compact(now_ts=now, raw_days=0)
+        store.materialise_plant_hourly(hour, hour + 3600)
+        row = store._query("SELECT * FROM plant_hourly WHERE ts_utc = ?", (hour,))[0]
+        assert row["import_price_per_kwh"] == pytest.approx(0.285)
+        assert row["imported_kwh"] == pytest.approx(1.2)
+
+    def test_the_diagnostics_count_says_whether_anything_is_recorded(
+        self, store: Store
+    ):
+        assert store.statistics()["price_hours"] == 0
+        store.upsert_plant_state([self._row(300, price=0.285)])
+        store.materialise_plant_hourly(0, 3600)
+        assert store.statistics()["price_hours"] == 1

@@ -360,7 +360,7 @@ class TestCurtailmentEvaluation:
     def _soc(self, store: Store, pct: float) -> None:
         store.upsert_plant_state(
             [
-                (ts, pct, 0.0, 0.0, 400.0)
+                (ts, pct, 0.0, 0.0, 400.0, None, None)
                 for ts in range(NOON, NOON + HOUR, INTERVAL_SECONDS)
             ]
         )

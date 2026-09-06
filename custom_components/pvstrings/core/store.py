@@ -35,7 +35,7 @@ SHADING_THIN_DAYS = 120
 
 _LOGGER = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS string_geometry (
@@ -125,7 +125,15 @@ CREATE TABLE IF NOT EXISTS plant_state_5min (
     battery_soc_pct REAL,
     battery_power_w REAL,
     grid_power_w    REAL,
-    house_load_w    REAL
+    house_load_w    REAL,
+    -- Major currency per kWh, as the tariff stood while this interval ran.
+    -- Recorded rather than derived: an hour valued at today's price is not
+    -- what that hour cost.  NULL means no price sensor covered it, which is
+    -- every hour on a plant with a fixed tariff and every hour before one was
+    -- configured; those fall back to the configured price.  Negative is a real
+    -- market state and is stored as it arrived.
+    import_price_per_kwh REAL,
+    export_price_per_kwh REAL
 );
 
 CREATE TABLE IF NOT EXISTS plant_hourly (
@@ -133,7 +141,13 @@ CREATE TABLE IF NOT EXISTS plant_hourly (
     imported_kwh    REAL,
     exported_kwh    REAL,
     house_kwh       REAL,
-    battery_soc_pct REAL
+    battery_soc_pct REAL,
+    -- The hour's time-mean of the two above.  The hour is the resolution of
+    -- the record: a tariff that switches price on the half hour is valued at
+    -- the hour's mean, and the additive way out would be a price_15min
+    -- aggregate on this same pattern.
+    import_price_per_kwh REAL,
+    export_price_per_kwh REAL
 );
 
 CREATE TABLE IF NOT EXISTS string_hourly (
@@ -347,6 +361,16 @@ class Store:
                 self._conn.execute(
                     "ALTER TABLE string_hourly ADD COLUMN chain_kwh REAL"
                 )
+            for table in ("plant_state_5min", "plant_hourly"):
+                plant_columns = {
+                    row[1]
+                    for row in self._conn.execute(f"PRAGMA table_info({table})")
+                }
+                for column in ("import_price_per_kwh", "export_price_per_kwh"):
+                    if column not in plant_columns:
+                        self._conn.execute(
+                            f"ALTER TABLE {table} ADD COLUMN {column} REAL"
+                        )
         if pending is not None and pending < 3:
             # ``CREATE TABLE IF NOT EXISTS`` in _SCHEMA only shapes a *new*
             # database; an existing one keeps its old columns and every insert
@@ -993,6 +1017,14 @@ class Store:
     # -- plant state ------------------------------------------------------- #
 
     def upsert_plant_state(self, rows: Iterable[tuple[Any, ...]]) -> None:
+        """``(ts, soc, battery_w, grid_w, house_w, import_price, export_price)``.
+
+        Every column merges with COALESCE: a flush in which one sensor was
+        briefly unreadable must not erase what an earlier flush already knew
+        about the same interval.  That matters most for the prices, which
+        change rarely and would otherwise be punched full of holes by a single
+        unavailable moment.
+        """
         payload = list(rows)
         if not payload:
             return
@@ -1001,13 +1033,17 @@ class Store:
                 """
                 INSERT INTO plant_state_5min
                     (ts_utc, battery_soc_pct, battery_power_w, grid_power_w,
-                     house_load_w)
-                VALUES (?, ?, ?, ?, ?)
+                     house_load_w, import_price_per_kwh, export_price_per_kwh)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (ts_utc) DO UPDATE SET
                     battery_soc_pct = COALESCE(excluded.battery_soc_pct, battery_soc_pct),
                     battery_power_w = COALESCE(excluded.battery_power_w, battery_power_w),
                     grid_power_w    = COALESCE(excluded.grid_power_w, grid_power_w),
-                    house_load_w    = COALESCE(excluded.house_load_w, house_load_w)
+                    house_load_w    = COALESCE(excluded.house_load_w, house_load_w),
+                    import_price_per_kwh =
+                        COALESCE(excluded.import_price_per_kwh, import_price_per_kwh),
+                    export_price_per_kwh =
+                        COALESCE(excluded.export_price_per_kwh, export_price_per_kwh)
                 """,
                 payload,
             )
@@ -1025,6 +1061,14 @@ class Store:
         migration needs -- an install upgrading from schema 1 has months of
         plant state and no aggregate, and reading that as zero export would
         silently rewrite its lifetime savings.
+
+        The tariff prices ride along in the same statement rather than in a
+        second one, and that is a compaction requirement rather than a matter
+        of taste: ``compact`` drops raw plant rows as soon as an hourly row
+        exists for them, so a separate price fold could arrive to find its
+        source already deleted.  ``AVG`` skips NULLs, so an hour with one
+        unreadable sample still gets the mean of the rest and an hour with no
+        price at all stays NULL.
         """
         where, params = "", []
         if start_ts is not None:
@@ -1038,12 +1082,15 @@ class Store:
             cursor = conn.execute(
                 f"""
                 INSERT INTO plant_hourly
-                    (ts_utc, imported_kwh, exported_kwh, house_kwh, battery_soc_pct)
+                    (ts_utc, imported_kwh, exported_kwh, house_kwh,
+                     battery_soc_pct, import_price_per_kwh, export_price_per_kwh)
                 SELECT ts_utc / {HOUR} * {HOUR} AS hour,
                        SUM(CASE WHEN grid_power_w > 0 THEN grid_power_w ELSE 0 END) * ?,
                        -SUM(CASE WHEN grid_power_w < 0 THEN grid_power_w ELSE 0 END) * ?,
                        SUM(COALESCE(house_load_w, 0)) * ?,
-                       AVG(battery_soc_pct)
+                       AVG(battery_soc_pct),
+                       AVG(import_price_per_kwh),
+                       AVG(export_price_per_kwh)
                   FROM plant_state_5min
                  WHERE 1=1{where}
                  GROUP BY hour
@@ -1051,7 +1098,9 @@ class Store:
                     imported_kwh    = excluded.imported_kwh,
                     exported_kwh    = excluded.exported_kwh,
                     house_kwh       = excluded.house_kwh,
-                    battery_soc_pct = excluded.battery_soc_pct
+                    battery_soc_pct = excluded.battery_soc_pct,
+                    import_price_per_kwh = excluded.import_price_per_kwh,
+                    export_price_per_kwh = excluded.export_price_per_kwh
                 """,
                 (hours_, hours_, hours_, *params),
             )
@@ -1783,6 +1832,7 @@ class Store:
     def statistics(self) -> dict[str, Any]:
         out: dict[str, Any] = {"path": str(self.path), "schema_version": SCHEMA_VERSION}
         for table in (
+            "plant_hourly",
             "string_5min",
             "string_hourly",
             "weather_forecast",
@@ -1795,6 +1845,16 @@ class Store:
             "exclusions",
         ):
             out[table] = int(self._query(f"SELECT COUNT(*) AS n FROM {table}")[0]["n"])
+        # The one number that answers "is the tariff sensor actually being
+        # recorded" from a diagnostics download, without asking anybody to
+        # read a database.
+        out["price_hours"] = int(
+            self._query(
+                "SELECT COUNT(*) AS n FROM plant_hourly "
+                "WHERE import_price_per_kwh IS NOT NULL "
+                "   OR export_price_per_kwh IS NOT NULL"
+            )[0]["n"]
+        )
         try:
             out["size_bytes"] = self.path.stat().st_size
         except OSError:  # pragma: no cover - file may be gone during shutdown
