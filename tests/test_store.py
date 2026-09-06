@@ -1411,3 +1411,134 @@ class TestRecordedPrices:
         store.upsert_plant_state([self._row(300, price=0.285)])
         store.materialise_plant_hourly(0, 3600)
         assert store.statistics()["price_hours"] == 1
+
+
+class TestPricedTotals:
+    """The window valuation, and above all that it counts exactly the same
+    energy the savings path has always counted."""
+
+    HOUR_ = 3600
+
+    def _raw(self, ts, sid, wh):
+        return (ts, sid, wh, wh * 12, 1.0, 10, None, None, "measured")
+
+    def _hourly(self, ts, sid, kwh):
+        return (ts, sid, kwh, 1.0, 0.0, None, None, None, "measured", "exact")
+
+    def _plant(self, ts, grid_w=0.0, p_in=None, p_out=None):
+        return (ts, 50.0, 0.0, grid_w, 0.0, p_in, p_out)
+
+    def _delivered_the_old_way(self, store, start, end, factors):
+        split = store.energy_kwh_by_string(start, end)
+        return sum(kwh * factors.get(sid, 1.0) for sid, kwh in split.items())
+
+    def test_it_counts_what_the_old_path_counts(self, store: Store):
+        """The invariant that guards the fallback rule being written twice --
+        once in Python, once in SQL.  A folded hour, an unfolded one, and an
+        hour where one string is folded while its sibling is not."""
+        h1, h2, h3 = 3600, 7200, 10800
+        store.upsert_hourly(
+            [self._hourly(h1, "s1", 1.0), self._hourly(h1, "s2", 0.5),
+             self._hourly(h3, "s1", 2.0)]
+        )
+        store.upsert_5min(
+            [self._raw(h1 + i * 300, "s1", 100.0) for i in range(12)]
+            + [self._raw(h2 + i * 300, "s1", 50.0) for i in range(12)]
+            + [self._raw(h3 + i * 300, "s2", 25.0) for i in range(12)]
+        )
+        factors = {"s1": 0.9, "s2": 0.8}
+
+        for start, end in ((h1, h3 + self.HOUR_), (h1, h2), (h2, h3 + self.HOUR_)):
+            assert store.priced_totals(start, end, factors).delivered_kwh == (
+                pytest.approx(self._delivered_the_old_way(store, start, end, factors))
+            )
+
+    def test_a_folded_row_wins_even_when_it_reads_zero(self, store: Store):
+        """A folded aggregate is authoritative; falling back to raw because the
+        hour happened to sum to nothing would double-count it."""
+        store.upsert_hourly([self._hourly(3600, "s1", 0.0)])
+        store.upsert_5min([self._raw(3600 + i * 300, "s1", 100.0) for i in range(12)])
+        assert store.priced_totals(3600, 7200).delivered_kwh == pytest.approx(0.0)
+        assert store.energy_kwh_by_string(3600, 7200)["s1"] == pytest.approx(0.0)
+
+    def test_ragged_ends_are_read_raw_like_the_old_path(self, store: Store):
+        """Half an hour of window may not take a whole hour's aggregate."""
+        store.upsert_hourly([self._hourly(3600, "s1", 1.2)])
+        store.upsert_5min([self._raw(3600 + i * 300, "s1", 100.0) for i in range(12)])
+        start, end = 3600 + 1800, 7200
+        assert store.priced_totals(start, end).delivered_kwh == pytest.approx(
+            self._delivered_the_old_way(store, start, end, {})
+        )
+
+    def test_factors_are_applied_and_a_stranger_counts_whole(self, store: Store):
+        store.upsert_hourly(
+            [self._hourly(3600, "s1", 1.0), self._hourly(3600, "gone", 1.0)]
+        )
+        totals = store.priced_totals(3600, 7200, {"s1": 0.5})
+        assert totals.delivered_kwh == pytest.approx(1.5)
+
+    def test_no_factors_at_all_is_not_broken_sql(self, store: Store):
+        """VALUES () is a syntax error, so the empty case takes another path."""
+        store.upsert_hourly([self._hourly(3600, "s1", 1.0)])
+        assert store.priced_totals(3600, 7200, {}).delivered_kwh == pytest.approx(1.0)
+
+    def test_export_is_capped_within_the_hour(self, store: Store):
+        """The hour with the export is not the hour with the production, so a
+        window-level cap would let one pay for the other."""
+        store.upsert_hourly(
+            [self._hourly(3600, "s1", 10.0), self._hourly(7200, "s1", 0.0)]
+        )
+        store.upsert_plant_state(
+            [self._plant(7200 + i * 300, grid_w=-2400.0) for i in range(12)]
+        )
+        store.materialise_plant_hourly(3600, 10800)
+        totals = store.priced_totals(3600, 10800)
+
+        assert totals.delivered_kwh == pytest.approx(10.0)
+        assert totals.export_kwh == pytest.approx(0.0)      # nothing made that hour
+        assert totals.dropped_export_kwh == pytest.approx(2.4)
+        assert totals.self_used_kwh == pytest.approx(10.0)
+
+    def test_recorded_prices_split_the_sums(self, store: Store):
+        store.upsert_hourly(
+            [self._hourly(3600, "s1", 2.0), self._hourly(7200, "s1", 3.0)]
+        )
+        store.upsert_plant_state(
+            [self._plant(3600 + i * 300, grid_w=-1200.0, p_in=0.30, p_out=0.08)
+             for i in range(12)]
+        )
+        store.materialise_plant_hourly(3600, 10800)
+        totals = store.priced_totals(3600, 10800)
+
+        # First hour priced (1.2 kWh exported of 2.0 delivered), second not.
+        assert totals.hours == 2
+        assert totals.hours_priced == 1
+        assert totals.export_kwh == pytest.approx(1.2)
+        assert totals.export_priced_kwh == pytest.approx(1.2)
+        assert totals.export_value == pytest.approx(1.2 * 0.08)
+        assert totals.self_used_priced_kwh == pytest.approx(0.8)
+        assert totals.self_used_value == pytest.approx(0.8 * 0.30)
+        assert totals.delivered_priced_in_kwh == pytest.approx(2.0)
+        assert totals.delivered_value_in == pytest.approx(2.0 * 0.30)
+
+    def test_the_running_hour_is_priced_from_the_raw_rows(self, store: Store):
+        """materialise_plant_hourly never folds the hour in progress, and that
+        is exactly the hour somebody with a free midday is looking at."""
+        store.upsert_hourly([self._hourly(3600, "s1", 2.0)])
+        store.upsert_plant_state(
+            [self._plant(3600 + i * 300, grid_w=-1200.0, p_in=0.0, p_out=0.05)
+             for i in range(12)]
+        )
+        totals = store.priced_totals(3600, 7200)
+        assert totals.hours_priced == 1
+        assert totals.self_used_value == pytest.approx(0.0)   # free hour
+        assert totals.export_value == pytest.approx(1.2 * 0.05)
+
+    def test_a_negative_price_survives_into_the_sums(self, store: Store):
+        store.upsert_hourly([self._hourly(3600, "s1", 2.0)])
+        store.upsert_plant_state(
+            [self._plant(3600 + i * 300, p_in=-0.04) for i in range(12)]
+        )
+        store.materialise_plant_hourly(3600, 7200)
+        totals = store.priced_totals(3600, 7200)
+        assert totals.self_used_value == pytest.approx(-0.08)

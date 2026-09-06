@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 from .config import INTERVAL_SECONDS, GeometrySegment
+from .pricing import PricedTotals
 
 HOUR = 3600
 #: A conversion pair thinner than this describes the gaps, not the stage: the
@@ -727,6 +728,160 @@ class Store:
             (scope_id, stage, MIN_PAIR_COVERAGE),
         )[0]
         return float(row["in_w"]), float(row["out_w"]), int(row["rows"])
+
+    def priced_totals(
+        self,
+        start_ts: int,
+        end_ts: int,
+        factors: Mapping[str, float] | None = None,
+    ) -> PricedTotals:
+        """Delivered energy and what it was worth, summed over a window.
+
+        The clamp is the reason this happens in SQL.  ``min(export_h,
+        delivered_h)`` summed over hours is not recoverable from window totals,
+        and it is what a time-of-use split needs: an hour's self-consumption is
+        what the strings made in *that* hour minus what left in *that* hour.
+        Doing it per hour in Python would mean pulling years times 8760 rows on
+        every refresh, because the lifetime window reaches back to
+        commissioning; here SQLite clamps, multiplies and returns one row.
+
+        Prices are never substituted here.  An hour the sensor did not cover
+        comes back as unpriced energy, and ``economics`` decides that the
+        configured tariff applies -- so the fallback rule sits next to the
+        prose explaining it rather than buried in a query.
+
+        ``factors`` maps string ids to their delivery factor.  A string that is
+        missing counts at 1.0, mirroring ``delivered``: history outlives
+        configuration, and dropping a removed string would shrink the lifetime
+        figure rather than merely leave it unconverted.
+
+        The hourly-or-raw rule is the same one ``energy_kwh_by_string`` applies
+        in Python, decided per *(hour, string)*, plus raw for the two ragged
+        ends.  It is written twice on purpose: the rule is load-bearing and was
+        recently corrected, and a shared fragment would make both callers
+        hostage to one refactor.  The equality of the two is pinned by test.
+        """
+        first_hour, last_hour_end = self._hour_split(start_ts, end_ts)
+        pairs = list((factors or {}).items())
+        params: list[Any] = []
+        if pairs:
+            values = ", ".join("(?, ?)" for _ in pairs)
+            factor_cte = f"factor(string_id, f) AS (VALUES {values}),"
+            factor_join = "LEFT JOIN factor fa ON fa.string_id = %s.string_id"
+            factor_col = "COALESCE(fa.f, 1.0)"
+            for string_id, value in pairs:
+                params.extend((string_id, float(value)))
+        else:
+            factor_cte = ""
+            factor_join = ""
+            factor_col = "1.0"
+
+        # A raw row counts when its hour was never folded, or when the hour
+        # lies outside the whole-hour span at all -- the two ragged ends, whose
+        # aggregate would cover time outside the window.
+        unfolded = (
+            "(r.ts_utc / {hour} * {hour} < ? OR r.ts_utc / {hour} * {hour} >= ? "
+            " OR NOT EXISTS (SELECT 1 FROM {table} f2 "
+            "WHERE f2.ts_utc = r.ts_utc / {hour} * {hour}{extra}))"
+        )
+        watt_to_kwh = INTERVAL_SECONDS / 3600.0 / 1000.0
+
+        sql = f"""
+            WITH {factor_cte}
+            dc(hour, kwh) AS (
+                SELECT hour, SUM(kwh) AS kwh FROM (
+                    SELECT h.ts_utc AS hour,
+                           COALESCE(SUM(h.energy_kwh), 0) * {factor_col} AS kwh
+                      FROM string_hourly h
+                      {factor_join % "h" if factor_join else ""}
+                     WHERE h.ts_utc >= ? AND h.ts_utc < ?
+                     GROUP BY h.ts_utc, h.string_id
+                    UNION ALL
+                    SELECT r.ts_utc / {HOUR} * {HOUR} AS hour,
+                           COALESCE(SUM(r.energy_wh), 0) / 1000.0 * {factor_col} AS kwh
+                      FROM string_5min r
+                      {factor_join % "r" if factor_join else ""}
+                     WHERE r.ts_utc >= ? AND r.ts_utc < ?
+                       AND {unfolded.format(hour=HOUR, table="string_hourly",
+                                            extra=" AND f2.string_id = r.string_id")}
+                     GROUP BY hour, r.string_id
+                ) GROUP BY hour
+            ),
+            plant(hour, exported, p_in, p_out) AS (
+                SELECT ts_utc AS hour, exported_kwh,
+                       import_price_per_kwh, export_price_per_kwh
+                  FROM plant_hourly
+                 WHERE ts_utc >= ? AND ts_utc < ?
+                UNION ALL
+                SELECT r.ts_utc / {HOUR} * {HOUR} AS hour,
+                       -SUM(CASE WHEN r.grid_power_w < 0
+                                 THEN r.grid_power_w ELSE 0 END) * {watt_to_kwh},
+                       AVG(r.import_price_per_kwh), AVG(r.export_price_per_kwh)
+                  FROM plant_state_5min r
+                 WHERE r.ts_utc >= ? AND r.ts_utc < ?
+                   AND {unfolded.format(hour=HOUR, table="plant_hourly", extra="")}
+                 GROUP BY hour
+            ),
+            hours(hour) AS (
+                SELECT hour FROM dc UNION SELECT hour FROM plant
+            ),
+            per_hour AS (
+                SELECT COALESCE(d.kwh, 0.0) AS d,
+                       COALESCE(p.exported, 0.0) AS e,
+                       p.p_in AS p_in, p.p_out AS p_out
+                  FROM hours h
+                  LEFT JOIN dc d ON d.hour = h.hour
+                  LEFT JOIN plant p ON p.hour = h.hour
+            )
+            SELECT
+                COALESCE(SUM(d), 0)                                AS delivered,
+                COALESCE(SUM(MIN(d, e)), 0)                        AS exported,
+                COALESCE(SUM(d - MIN(d, e)), 0)                    AS self_used,
+                COALESCE(SUM(MAX(0.0, e - d)), 0)                  AS dropped,
+                COUNT(*)                                           AS hours,
+                COALESCE(SUM(CASE WHEN p_in IS NOT NULL OR p_out IS NOT NULL
+                                  THEN 1 ELSE 0 END), 0)           AS hours_priced,
+                COALESCE(SUM(CASE WHEN p_in IS NOT NULL
+                                  THEN d - MIN(d, e) ELSE 0 END), 0)      AS su_kwh,
+                COALESCE(SUM(CASE WHEN p_in IS NOT NULL
+                                  THEN (d - MIN(d, e)) * p_in ELSE 0 END), 0) AS su_val,
+                COALESCE(SUM(CASE WHEN p_out IS NOT NULL
+                                  THEN MIN(d, e) ELSE 0 END), 0)          AS ex_kwh,
+                COALESCE(SUM(CASE WHEN p_out IS NOT NULL
+                                  THEN MIN(d, e) * p_out ELSE 0 END), 0)  AS ex_val,
+                COALESCE(SUM(CASE WHEN p_in IS NOT NULL THEN d ELSE 0 END), 0) AS din_kwh,
+                COALESCE(SUM(CASE WHEN p_in IS NOT NULL
+                                  THEN d * p_in ELSE 0 END), 0)           AS din_val,
+                COALESCE(SUM(CASE WHEN p_out IS NOT NULL THEN d ELSE 0 END), 0) AS dout_kwh,
+                COALESCE(SUM(CASE WHEN p_out IS NOT NULL
+                                  THEN d * p_out ELSE 0 END), 0)          AS dout_val
+              FROM per_hour
+        """
+        params.extend(
+            (
+                first_hour, last_hour_end,                       # folded strings
+                start_ts, end_ts, first_hour, last_hour_end,     # raw strings
+                first_hour, last_hour_end,                       # folded plant
+                start_ts, end_ts, first_hour, last_hour_end,     # raw plant
+            )
+        )
+        row = self._query(sql, params)[0]
+        return PricedTotals(
+            delivered_kwh=float(row["delivered"]),
+            export_kwh=float(row["exported"]),
+            self_used_kwh=float(row["self_used"]),
+            dropped_export_kwh=float(row["dropped"]),
+            hours=int(row["hours"]),
+            hours_priced=int(row["hours_priced"]),
+            self_used_priced_kwh=float(row["su_kwh"]),
+            self_used_value=float(row["su_val"]),
+            export_priced_kwh=float(row["ex_kwh"]),
+            export_value=float(row["ex_val"]),
+            delivered_priced_in_kwh=float(row["din_kwh"]),
+            delivered_value_in=float(row["din_val"]),
+            delivered_priced_out_kwh=float(row["dout_kwh"]),
+            delivered_value_out=float(row["dout_val"]),
+        )
 
     def update_curtailment_flags(
         self, rows: Iterable[tuple[int | None, int, str]]

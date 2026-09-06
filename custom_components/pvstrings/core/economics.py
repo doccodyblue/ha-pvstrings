@@ -26,11 +26,17 @@ Two mistakes this module exists to avoid:
 from __future__ import annotations
 
 import calendar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Mapping
 
 from .config import Economics
+from .pricing import (
+    PRICE_CONFIGURED,
+    PRICE_RECORDED,
+    PricedTotals,
+    flat_totals,
+)
 
 MODE_NET_METERING = "net_metering"
 MODE_SELF_CONSUMPTION = "self_consumption"
@@ -194,16 +200,107 @@ class SavingsResult:
     self_used_kwh: float
     saved_eur: float
     mode: str
+    #: Grid export the strings did not make in the same hour -- battery,
+    #: second generator, reversed meter.  Zero for most plants, and the one
+    #: number that says whether the per-hour cap changed anything here.
+    dropped_export_kwh: float = 0.0
+    #: Delivered kWh behind the money, split by where its price came from.
+    #: Sums to ``delivered_kwh`` by construction.
+    by_price_basis_kwh: dict[str, float] = field(default_factory=dict)
+    hours: int = 0
+    hours_priced: int = 0
+    #: Energy-weighted mean of the prices actually applied, per side, in the
+    #: same unit as ``price_per_kwh``.  ``None`` where the active mode does not
+    #: use that side, or where nothing was recorded.  The number to look at
+    #: when a unit is suspected: 0.21 is a tariff, 21 is a hundredfold slip.
+    import_eur_per_kwh: float | None = None
+    export_eur_per_kwh: float | None = None
 
     @property
     def eur_per_kwh(self) -> float:
         return self.saved_eur / self.delivered_kwh if self.delivered_kwh > 0 else 0.0
 
 
+def _mean(value: float, energy: float) -> float | None:
+    """Energy-weighted mean price, or ``None`` when nothing was priced."""
+    return value / energy if energy > 0 else None
+
+
+def savings_priced(totals: PricedTotals, economics: Economics) -> SavingsResult:
+    """Monetary value of a window whose hours were valued as they happened.
+
+    Each side is the sum of energy times its recorded price, plus whatever
+    energy no price covered valued at the configured tariff.  That fallback is
+    what makes the feature additive: an install with no price sensor has
+    nothing recorded, every term falls back, and the arithmetic collapses to
+    exactly what this module did before there was a series at all.
+
+    Backward-looking by construction -- a window exists only because hours
+    happened.  Nothing here values a forecast and nothing here decides when to
+    run anything; that stays in the user's automations, where the knowledge
+    about the house lives.
+
+    Negative recorded prices are applied as they stand.  Self-consumption
+    during a market glut really is worth less than nothing, and clamping it at
+    zero would hide the one hour a reader most wants to find.
+    """
+    price, feed_in = economics.price_per_kwh, economics.feed_in_tariff
+
+    if economics.mode == MODE_NET_METERING:
+        # The meter runs backwards: every exported kWh really does displace an
+        # imported one.  True today, temporary by construction.
+        saved = totals.delivered_value_in + (
+            totals.delivered_kwh - totals.delivered_priced_in_kwh
+        ) * price
+        recorded = totals.delivered_priced_in_kwh
+        import_mean = _mean(totals.delivered_value_in, totals.delivered_priced_in_kwh)
+        export_mean = None
+    elif economics.mode == MODE_FEED_IN:
+        saved = totals.delivered_value_out + (
+            totals.delivered_kwh - totals.delivered_priced_out_kwh
+        ) * feed_in
+        recorded = totals.delivered_priced_out_kwh
+        import_mean = None
+        export_mean = _mean(
+            totals.delivered_value_out, totals.delivered_priced_out_kwh
+        )
+    else:
+        saved = (
+            totals.self_used_value
+            + (totals.self_used_kwh - totals.self_used_priced_kwh) * price
+            + totals.export_value
+            + (totals.export_kwh - totals.export_priced_kwh) * feed_in
+        )
+        recorded = totals.self_used_priced_kwh + totals.export_priced_kwh
+        import_mean = _mean(totals.self_used_value, totals.self_used_priced_kwh)
+        export_mean = _mean(totals.export_value, totals.export_priced_kwh)
+
+    basis: dict[str, float] = {}
+    if recorded > 0:
+        basis[PRICE_RECORDED] = round(recorded, 3)
+    configured = totals.delivered_kwh - recorded
+    if configured > 0:
+        basis[PRICE_CONFIGURED] = round(configured, 3)
+
+    return SavingsResult(
+        delivered_kwh=totals.delivered_kwh,
+        export_kwh=totals.export_kwh,
+        self_used_kwh=totals.self_used_kwh,
+        saved_eur=saved,
+        mode=economics.mode,
+        dropped_export_kwh=totals.dropped_export_kwh,
+        by_price_basis_kwh=basis,
+        hours=totals.hours,
+        hours_priced=totals.hours_priced,
+        import_eur_per_kwh=import_mean,
+        export_eur_per_kwh=export_mean,
+    )
+
+
 def savings(
     delivered_kwh: float, export_kwh: float | None, economics: Economics
 ) -> SavingsResult:
-    """Monetary value of ``delivered_kwh``.
+    """Monetary value of ``delivered_kwh`` at the configured flat tariff.
 
     Delivered, not produced: the caller passes energy that has already been
     through ``delivered``, so both sides of the self-consumption split are on
@@ -217,39 +314,29 @@ def savings(
     configured; in that case everything is treated as self-consumed, which is
     the correct assumption for a small balcony plant behind the house load and
     is stated as such in the diagnostics.
+
+    One window is one bucket with nothing priced, so this is the same
+    arithmetic as before the tariff series existed -- expressed through it
+    rather than beside it, which is why the two cannot drift apart.
     """
-    exported = max(0.0, export_kwh or 0.0)
-    exported = min(exported, delivered_kwh)
-    self_used = max(0.0, delivered_kwh - exported)
+    return savings_priced(flat_totals(delivered_kwh, export_kwh), economics)
 
-    if economics.mode == MODE_NET_METERING:
-        # The meter runs backwards: every exported kWh really does displace an
-        # imported one.  True today, temporary by construction.
-        saved = delivered_kwh * economics.price_per_kwh
-    elif economics.mode == MODE_FEED_IN:
-        saved = delivered_kwh * economics.feed_in_tariff
-    else:
-        saved = (
-            self_used * economics.price_per_kwh + exported * economics.feed_in_tariff
-        )
 
-    return SavingsResult(
-        delivered_kwh=delivered_kwh,
-        export_kwh=exported,
-        self_used_kwh=self_used,
-        saved_eur=saved,
-        mode=economics.mode,
-    )
+def scenarios_priced(
+    totals: PricedTotals, economics: Economics
+) -> dict[str, SavingsResult]:
+    """The same window valued under every tariff model."""
+    return {
+        mode: savings_priced(totals, economics.with_mode(mode))
+        for mode in (MODE_NET_METERING, MODE_SELF_CONSUMPTION, MODE_FEED_IN)
+    }
 
 
 def scenarios(
     delivered_kwh: float, export_kwh: float | None, economics: Economics
 ) -> dict[str, SavingsResult]:
     """The same production valued under every tariff model."""
-    return {
-        mode: savings(delivered_kwh, export_kwh, economics.with_mode(mode))
-        for mode in (MODE_NET_METERING, MODE_SELF_CONSUMPTION, MODE_FEED_IN)
-    }
+    return scenarios_priced(flat_totals(delivered_kwh, export_kwh), economics)
 
 
 # --------------------------------------------------------------------------- #
