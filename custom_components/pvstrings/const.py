@@ -33,6 +33,8 @@ CONF_PRICE: Final = "price_per_kwh"
 CONF_FEED_IN: Final = "feed_in_tariff"
 CONF_INVESTMENT: Final = "investment_eur"
 CONF_COMMISSIONING: Final = "commissioning_date"
+CONF_IMPORT_PRICE_ENTITY: Final = "import_price_entity"
+CONF_EXPORT_PRICE_ENTITY: Final = "export_price_entity"
 
 # -- plant state entities --------------------------------------------------- #
 

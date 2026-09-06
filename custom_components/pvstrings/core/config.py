@@ -321,6 +321,14 @@ class Economics:
     feed_in_tariff: float = 0.08
     investment_eur: float = 0.0
     commissioning_date: date | None = None
+    #: Sensors carrying the current price per kWh, if the tariff varies.  Empty
+    #: means every hour is valued at the two figures above, which is what this
+    #: integration did before a series existed at all.  They live here rather
+    #: than with the plant-state entities because they are tariff, not
+    #: telemetry: the fallback rule has to read the series and the fixed price
+    #: out of one object.
+    import_price_entity: str | None = None
+    export_price_entity: str | None = None
 
     def __post_init__(self) -> None:
         if self.mode not in ECONOMICS_MODES:
@@ -471,6 +479,12 @@ class PlantConfig:
                 state.grid_power_entity,
                 state.house_load_entity,
             )
+            if e
+        )
+        econ = self.economics
+        out.extend(
+            e
+            for e in (econ.import_price_entity, econ.export_price_entity)
             if e
         )
         weather = self.weather_sources

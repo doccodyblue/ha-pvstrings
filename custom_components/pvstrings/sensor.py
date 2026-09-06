@@ -248,6 +248,43 @@ def _attribution_attrs(data: PvStringsData) -> dict[str, Any]:
     return out
 
 
+_PRICE_SEMANTICS = (
+    "Each hour is valued at the price recorded while it ran, not at today's "
+    "tariff. Hours from before the price sensor was configured, and any gap in "
+    "it, fall back to the fixed price; price.by_basis_kwh says how much of the "
+    "total rests on which. The hour is the resolution of the record, so a "
+    "tariff switching price inside an hour is valued at that hour's mean. "
+    "Negative prices are applied as they stand -- an hour with a negative "
+    "import price makes self-consumption worth less than nothing, and the "
+    "figure says so."
+)
+_CAP_NOTE = (
+    "export_dropped_kwh is grid export the strings did not make in the same "
+    "hour: a battery discharging, a second generator behind the meter, or a "
+    "reversed meter sign. It is not credited to PV."
+)
+_TOU_ANNUAL_NOTE = (
+    "The annual estimate scales the observed money by this site's clear-sky "
+    "seasonality, which assumes a kilowatt-hour is worth the same in December "
+    "as in June. Under a time-varying tariff it is not, so the figure is "
+    "marked while less than a full year has been observed; once a year is on "
+    "the record the weighting stops mattering and the mark disappears."
+)
+
+
+def _price_attrs(data: PvStringsData, window: str) -> dict[str, Any]:
+    """The tariff provenance, only where there is any."""
+    block = data.savings.get(window, {})
+    out: dict[str, Any] = {}
+    if block.get("price") is not None:
+        out["price"] = block["price"]
+        out["semantics"] = _PRICE_SEMANTICS
+    if block.get("export_dropped_kwh") is not None:
+        out["export_dropped_kwh"] = block["export_dropped_kwh"]
+        out["cap_note"] = _CAP_NOTE
+    return out
+
+
 _DELIVERED_SEMANTICS = (
     "Valued on delivered energy, not on DC production: each group's measured "
     "DC energy is multiplied by its conversion factor -- measured where an AC "
@@ -504,6 +541,14 @@ PLANT_SENSORS: tuple[PlantSensorDescription, ...] = (
         state_class=SensorStateClass.TOTAL,
                 suggested_display_precision=2,
         value_fn=lambda data, _c: data.savings.get("today", {}).get("eur"),
+        # Today is where somebody on a time-of-use tariff actually looks, and
+        # it had no attributes at all until there was something to say.
+        attrs_fn=lambda data, _c: {
+            "kwh": data.savings.get("today", {}).get("kwh"),
+            "export_kwh": data.savings.get("today", {}).get("export_kwh"),
+            "eur_per_kwh": data.savings.get("today", {}).get("eur_per_kwh"),
+            **_price_attrs(data, "today"),
+        },
     ),
     PlantSensorDescription(
         key="savings_month",
@@ -529,10 +574,28 @@ PLANT_SENSORS: tuple[PlantSensorDescription, ...] = (
             "annual_estimate_eur": data.savings.get("annual_estimate_eur"),
             "delivery": data.savings.get("delivery"),
             "scenario_eur": data.scenarios,
+            "annual_estimate_caveat": data.savings.get("annual_estimate_caveat"),
             "semantics": _DELIVERED_SEMANTICS,
             "note": (
                 "Scenarios value the same measured production under every tariff "
                 "model, so the cost of a meter swap is visible before it happens."
+            ),
+            **{
+                key: value
+                for key, value in _price_attrs(data, "total").items()
+                # The delivery semantics own that key here; the tariff prose is
+                # appended rather than replacing it.
+                if key != "semantics"
+            },
+            **(
+                {"semantics": f"{_DELIVERED_SEMANTICS} {_PRICE_SEMANTICS}"}
+                if data.savings.get("total", {}).get("price") is not None
+                else {}
+            ),
+            **(
+                {"annual_estimate_note": _TOU_ANNUAL_NOTE}
+                if data.savings.get("annual_estimate_caveat")
+                else {}
             ),
         },
     ),

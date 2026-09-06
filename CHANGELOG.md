@@ -1,5 +1,55 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **A tariff that changes through the day is now valued as one.** Two optional
+  fields take a sensor carrying the current price -- import and feed-in --
+  and every hour is valued at the price recorded while it ran. Point them at
+  Tibber, aWATTar, Octopus or Nord Pool, or build a template helper for a fixed
+  schedule; the README has the recipe. Leave them empty and nothing changes.
+
+  This is a correctness fix disguised as a feature. Reported by a user whose
+  import price is **zero between 11:00 and 14:00** -- exactly on his production
+  peak -- where the integration was crediting him the full retail price for
+  energy that saved him nothing. The error was not random; it sat on the
+  sunniest hours of the day.
+
+  The unit is read from the sensor and understood as `EUR/kWh`, `ct/kWh`,
+  `p/kWh`, `öre/kWh`, `EUR/MWh` and so on. A sensor whose unit cannot be read
+  as a price per energy is refused during setup, because EUR/kWh mistaken for
+  ct/kWh is a factor of a hundred and looks entirely plausible on a savings
+  sensor. Hours from before the sensor existed, and any gap in it, fall back to
+  the fixed price; `price.by_basis_kwh` says how much of the total rests on
+  which. Negative prices are applied as they stand.
+
+### Changed
+
+- **Export is now capped against the same hour's production, not the whole
+  window.** This follows from valuing hours individually and it changes
+  existing figures, so it is worth stating plainly: the old cap let a big
+  export hour be offset by a low-production one, which overstated the
+  self-consumed share for anyone whose export and production do not coincide --
+  a battery discharging to the grid at night, a second generator behind the
+  meter, a reversed meter sign. Every plant whose export tracks its production
+  is unaffected to the digit.
+
+  Where it does bite, the amount is published rather than absorbed:
+  `export_dropped_kwh` is grid export the strings did not make in the same
+  hour. Note this is not the same quantity as the change in the reported
+  figure; the two coincide only while total export stays below total delivery.
+- The annual estimate scales money by the site's clear-sky seasonality, which
+  assumes a kilowatt-hour is worth the same all year. With a time-varying
+  tariff it is not, so while less than a full year has been observed the
+  estimate carries `annual_estimate_caveat: time_of_use`. It disappears by
+  itself once a year is on the record.
+- Emptying an optional entity field in the options dialog now actually clears
+  it. Two things were in the way: such a field is *absent* from the submission
+  when blanked rather than blank, and options are merged over the original
+  setup data, so removing the key resurrected the old value. Fixed for the
+  tariff fields and, with them, for the commissioning date.
+
 ## v1.21.0 — 2026-09-04
 
 ### Added

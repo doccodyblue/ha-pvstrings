@@ -440,6 +440,49 @@ rather than an assumption. An implausible factor — a mis-scaled AC sensor
 reading above 1.0, say — is refused rather than applied, and the next rung
 down is used instead.
 
+### A tariff that changes through the day
+
+Two optional fields take a sensor carrying your current price — one for import,
+one for feed-in. Point them at Tibber, aWATTar, Octopus, Nord Pool or anything
+else that publishes a price, and every hour is then valued at the price that
+was recorded while it ran, rather than at one number for all of them.
+
+Leave them empty and nothing changes: the fixed prices below are used for
+everything, exactly as before.
+
+On a fixed schedule rather than a market tariff, build one template helper per
+side (Settings → Devices & services → Helpers → Template → Template a sensor),
+with the unit set to your currency per kWh:
+
+```jinja
+{% set h = now().hour %}
+{% if h < 6 %}0.165
+{% elif 11 <= h < 14 %}0.00
+{% elif 15 <= h < 21 %}0.625
+{% else %}0.285{% endif %}
+```
+
+Home Assistant re-evaluates templates containing `now()` every minute, so
+nothing else is needed. The unit is read from the sensor — `EUR/kWh`, `ct/kWh`,
+`p/kWh`, `EUR/MWh` are all understood, and a sensor whose unit cannot be read
+as a price per energy is refused during setup rather than silently valued a
+hundredfold wrong.
+
+Three things worth knowing about the result:
+
+- Hours from before the sensor was configured, and any gap in it, fall back to
+  the fixed price. `price.by_basis_kwh` in the savings attributes says how much
+  of the total rests on which.
+- The hour is the resolution of the record. A tariff switching price on the
+  half hour is valued at that hour's mean.
+- Negative prices are applied as they stand. An hour with a negative import
+  price makes self-consumption worth less than nothing, and the figure says so.
+
+Export is capped at what the strings delivered **in the same hour**. Anything
+beyond that — a battery discharging to the grid, a second generator behind the
+meter, a reversed meter sign — is reported as `export_dropped_kwh` instead of
+being credited to PV.
+
 ### Tariff models
 
 Three, and all three are always computed side by side:
@@ -459,6 +502,12 @@ Annual figures are extrapolated using the site's **own clear-sky seasonality**,
 derived from your strings' geometry — not `savings_so_far / days × 365`. Measured
 from spring, that linear form runs straight over the yield peak and overstates
 the year badly.
+
+That weighting assumes a kilowatt-hour is worth the same in December as in
+June, which stops being true under a time-varying tariff. While a price sensor
+is recording and less than a full year has been observed, the estimate carries
+`annual_estimate_caveat: time_of_use`; once a year is on the record the
+weighting is a no-op and the mark disappears on its own.
 
 Amortisation runs on the same delivered energy, so its target date moves out by
 however much your conversion losses are — typically 4–6 % for a direct path,
@@ -531,6 +580,10 @@ repairs.
   unaffected.
 - No neural networks or tree ensembles, no champion/challenger, no multi-source
   blending, no snow model.
+- The tariff layer values the past and nothing else. No forecast is priced, and
+  nothing here decides when to charge a battery because power is cheap at
+  noon — that is an automation, and it belongs where the knowledge about your
+  house lives.
 
 ---
 

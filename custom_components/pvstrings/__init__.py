@@ -46,6 +46,8 @@ from .const import (
     CONF_BATTERY_POWER,
     CONF_BATTERY_SOC,
     CONF_COMMISSIONING,
+    CONF_EXPORT_PRICE_ENTITY,
+    CONF_IMPORT_PRICE_ENTITY,
     CONF_ECONOMICS_MODE,
     CONF_ELEVATION,
     CONF_ENERGY_ENTITY,
@@ -254,6 +256,8 @@ def build_plant_config(hass: HomeAssistant, entry: ConfigEntry) -> PlantConfig:
         feed_in_tariff=float(config.get(CONF_FEED_IN, 0.08)),
         investment_eur=float(config.get(CONF_INVESTMENT, 0.0)),
         commissioning_date=_parse_date(config.get(CONF_COMMISSIONING)),
+        import_price_entity=config.get(CONF_IMPORT_PRICE_ENTITY) or None,
+        export_price_entity=config.get(CONF_EXPORT_PRICE_ENTITY) or None,
     )
 
     return PlantConfig(
@@ -372,8 +376,11 @@ async def async_migrate_entry(
     """
     if entry.version > 1:
         return False
-    if entry.minor_version < 2:
-        hass.config_entries.async_update_entry(entry, minor_version=2)
+    if entry.minor_version < 3:
+        # Minor 3 adds the optional tariff entities.  Purely additive: they are
+        # read with .get() and default to absent, so nothing is rewritten and
+        # the stamp exists only so HA stops calling this hook.
+        hass.config_entries.async_update_entry(entry, minor_version=3)
     return True
 
 

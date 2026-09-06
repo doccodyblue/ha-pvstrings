@@ -69,6 +69,8 @@ from .const import (
     CONF_BATTERY_POWER,
     CONF_BATTERY_SOC,
     CONF_COMMISSIONING,
+    CONF_EXPORT_PRICE_ENTITY,
+    CONF_IMPORT_PRICE_ENTITY,
     CONF_ECONOMICS_MODE,
     CONF_ELEVATION,
     CONF_ENERGY_ENTITY,
@@ -121,6 +123,7 @@ from .const import (
     SUBENTRY_STRING,
 )
 from .core.curtailment import CHARGER_FREE_STATES, CHARGER_LIMITING_STATES
+from .core import units
 from .core.config import (
     DEFAULT_ALBEDO,
     DEFAULT_SYSTEM_EFFICIENCY,
@@ -325,6 +328,16 @@ def economics_schema(
                 CONF_INVESTMENT, default=values.get(CONF_INVESTMENT, 0)
             ): _number(0, 1_000_000, 1, currency),
             _optional(CONF_COMMISSIONING, values.get(CONF_COMMISSIONING)): DateSelector(),
+            # No device_class filter on purpose.  A price per kWh has no
+            # reliable one -- Tibber happens to declare "monetary", a
+            # hand-built template helper will not -- so filtering would hide
+            # exactly the entity a fixed-schedule user was told to build.
+            _optional(
+                CONF_IMPORT_PRICE_ENTITY, values.get(CONF_IMPORT_PRICE_ENTITY)
+            ): EntitySelector(EntitySelectorConfig(domain=["sensor"])),
+            _optional(
+                CONF_EXPORT_PRICE_ENTITY, values.get(CONF_EXPORT_PRICE_ENTITY)
+            ): EntitySelector(EntitySelectorConfig(domain=["sensor"])),
         }
     )
 
@@ -592,6 +605,37 @@ def _parse_curve(text: str) -> list[list[float]] | None:
     return points
 
 
+def price_entity_errors(hass: Any, data: dict[str, Any]) -> dict[str, str]:
+    """Refuse a tariff sensor whose price cannot be scaled.
+
+    The only setup mistake here that cannot be caught later: EUR/kWh and
+    ct/kWh are a factor of a hundred apart, both readings look ordinary on a
+    savings sensor, and the wrong one is written into the record hour after
+    hour.  The limit entities get a soft concern for a *wrong* unit; a
+    missing or unreadable one here is a refusal, because there is nothing to
+    fall back on and nothing that would ever look suspicious.
+
+    Three keys rather than one: "Home Assistant has never heard of this",
+    "this has no unit" and "this unit is not a price per energy" have three
+    different fixes.  Judged with the same parser the collector converts with,
+    so the form cannot accept a unit the recorder would then refuse.
+    """
+    errors: dict[str, str] = {}
+    for key in (CONF_IMPORT_PRICE_ENTITY, CONF_EXPORT_PRICE_ENTITY):
+        entity_id = data.get(key)
+        if not entity_id:
+            continue
+        if hass.states.get(entity_id) is None:
+            errors[key] = "price_entity_unknown"
+            continue
+        unit = _unit_of(hass, entity_id)
+        if unit is None:
+            errors[key] = "price_unit_missing"
+        elif units.parse_energy_price_unit(unit) is None:
+            errors[key] = "price_unit_unreadable"
+    return errors
+
+
 def _efficiency_out_of_range(data: dict[str, Any]) -> bool:
     """A per-string efficiency override below 0.5 is a percent-vs-fraction mixup.
 
@@ -814,8 +858,8 @@ class PvStringsConfigFlow(ConfigFlow, domain=DOMAIN):
     """Plant-level setup."""
 
     VERSION = 1
-    #: Minor 2: conversion-layer group fields (additive, upgrade.md).
-    MINOR_VERSION = 2
+    #: Minor 3: optional tariff price entities (additive, read via .get()).
+    MINOR_VERSION = 3
 
     def __init__(self) -> None:
         self._data: dict[str, Any] = {}
@@ -842,14 +886,20 @@ class PvStringsConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_economics(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
         if user_input is not None:
-            self._data.update(_clean(user_input))
-            return self.async_create_entry(
-                title=self._data.get(CONF_NAME, "PV Strings"), data=self._data
-            )
+            errors = price_entity_errors(self.hass, user_input)
+            if not errors:
+                self._data.update(_clean(user_input))
+                return self.async_create_entry(
+                    title=self._data.get(CONF_NAME, "PV Strings"), data=self._data
+                )
         return self.async_show_form(
             step_id="economics",
-            data_schema=economics_schema(currency=self._currency()),
+            # Re-shown with what was typed: a blocked submit that also empties
+            # the form makes the user retype four figures to fix one entity.
+            data_schema=economics_schema(user_input, self._currency()),
+            errors=errors,
         )
 
     @staticmethod
@@ -896,11 +946,24 @@ class PvStringsOptionsFlow(OptionsFlow):
     async def async_step_economics(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
         if user_input is not None:
-            return self._save(user_input)
+            errors = price_entity_errors(self.hass, user_input)
+            if not errors:
+                return self._save(
+                    user_input,
+                    clearable=(
+                        CONF_IMPORT_PRICE_ENTITY,
+                        CONF_EXPORT_PRICE_ENTITY,
+                        CONF_COMMISSIONING,
+                    ),
+                )
         return self.async_show_form(
             step_id="economics",
-            data_schema=economics_schema(self._current(), self._currency()),
+            data_schema=economics_schema(
+                {**self._current(), **(user_input or {})}, self._currency()
+            ),
+            errors=errors,
         )
 
     async def async_step_entities(
@@ -934,8 +997,22 @@ class PvStringsOptionsFlow(OptionsFlow):
         )
 
     def _save(
-        self, user_input: dict[str, Any], allow_clear: bool = False
+        self,
+        user_input: dict[str, Any],
+        allow_clear: bool = False,
+        clearable: tuple[str, ...] = (),
     ) -> ConfigFlowResult:
+        """Persist a step's input, and let it clear the fields it owns.
+
+        ``clearable`` exists because neither of the obvious approaches works.
+        A field declared with :func:`_optional` is *absent* from the submission
+        when the user empties it, not present and blank, so "drop what arrived
+        empty" never fires.  And options are merged over the original entry
+        data, so simply removing a key would resurrect whatever was stored at
+        setup time.  A step therefore names the keys it owns, and anything it
+        owns and did not send is written back as an empty string -- which
+        ``config.get(key) or None`` reads as absent, everywhere.
+        """
         options = {**self.config_entry.options}
         if allow_clear:
             # An emptied entity selector must actually clear the setting, so
@@ -947,6 +1024,9 @@ class PvStringsOptionsFlow(OptionsFlow):
                     options.pop(key, None)
         else:
             options.update(_clean(user_input))
+        for key in clearable:
+            if not user_input.get(key):
+                options[key] = ""
         return self.async_create_entry(title="", data=options)
 
 

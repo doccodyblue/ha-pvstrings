@@ -24,7 +24,15 @@ from core.economics import (
     delivery_factor,
     period_share,
     savings,
+    savings_priced,
     scenarios,
+    scenarios_priced,
+)
+from core.pricing import (
+    PRICE_CONFIGURED,
+    PRICE_RECORDED,
+    PricedTotals,
+    without_export,
 )
 from core.weather import (
     RADIATION_LABEL_OFFSET_S,
@@ -508,3 +516,170 @@ class TestSavingsRunOnDeliveredEnergy:
         result = savings(9.5, 7.0, self._econ())
         assert result.self_used_kwh == pytest.approx(2.5)
         assert result.saved_eur == pytest.approx(2.5 * 0.32 + 7 * 0.08)
+
+
+# --------------------------------------------------------------------------- #
+# time-of-use
+# --------------------------------------------------------------------------- #
+
+
+def totals_from_hours(hours) -> PricedTotals:
+    """Reduce ``(delivered, exported, p_in, p_out)`` hours the way SQL does.
+
+    A deliberate second implementation of the store's arithmetic: if the two
+    ever disagree, one of them is wrong about the clamp, and that is exactly
+    the thing worth catching.
+    """
+    kw: dict[str, float] = {}
+    counted = priced = 0
+    for delivered, exported, p_in, p_out in hours:
+        clamped = min(delivered, exported)
+        self_used = delivered - clamped
+        counted += 1
+        priced += 1 if (p_in is not None or p_out is not None) else 0
+        kw["delivered_kwh"] = kw.get("delivered_kwh", 0.0) + delivered
+        kw["export_kwh"] = kw.get("export_kwh", 0.0) + clamped
+        kw["self_used_kwh"] = kw.get("self_used_kwh", 0.0) + self_used
+        kw["dropped_export_kwh"] = kw.get("dropped_export_kwh", 0.0) + max(
+            0.0, exported - delivered
+        )
+        if p_in is not None:
+            kw["self_used_priced_kwh"] = kw.get("self_used_priced_kwh", 0.0) + self_used
+            kw["self_used_value"] = kw.get("self_used_value", 0.0) + self_used * p_in
+            kw["delivered_priced_in_kwh"] = (
+                kw.get("delivered_priced_in_kwh", 0.0) + delivered
+            )
+            kw["delivered_value_in"] = kw.get("delivered_value_in", 0.0) + delivered * p_in
+        if p_out is not None:
+            kw["export_priced_kwh"] = kw.get("export_priced_kwh", 0.0) + clamped
+            kw["export_value"] = kw.get("export_value", 0.0) + clamped * p_out
+            kw["delivered_priced_out_kwh"] = (
+                kw.get("delivered_priced_out_kwh", 0.0) + delivered
+            )
+            kw["delivered_value_out"] = (
+                kw.get("delivered_value_out", 0.0) + delivered * p_out
+            )
+    return PricedTotals(hours=counted, hours_priced=priced, **kw)
+
+
+class TestFlatTariffIsUnchanged:
+    """With nothing recorded, the hourly path must answer exactly what the
+    window path always answered -- otherwise every existing installation gets
+    a silent step in its lifetime figure."""
+
+    def _econ(self, mode=MODE_SELF_CONSUMPTION):
+        return Economics(mode=mode, price_per_kwh=0.32, feed_in_tariff=0.08)
+
+    #: A day whose export never exceeds what was made in the same hour, which
+    #: is every plant without a battery.
+    ORDINARY = [(2.0, 1.0, None, None), (3.0, 0.5, None, None), (1.0, 1.0, None, None)]
+
+    @pytest.mark.parametrize(
+        "mode", [MODE_NET_METERING, MODE_SELF_CONSUMPTION, MODE_FEED_IN]
+    )
+    def test_the_hourly_path_matches_the_window_path(self, mode):
+        totals = totals_from_hours(self.ORDINARY)
+        delivered = sum(hour[0] for hour in self.ORDINARY)
+        exported = sum(hour[1] for hour in self.ORDINARY)
+        assert savings_priced(totals, self._econ(mode)).saved_eur == pytest.approx(
+            savings(delivered, exported, self._econ(mode)).saved_eur
+        )
+
+    def test_the_difference_is_not_the_convenient_formula(self):
+        """Where total export exceeds total delivery the old cap bit on the
+        window, so the change is min(Σe, Σd) − Σ min(e, d) -- not the sum of
+        the per-hour excess, which is the equality an earlier draft claimed."""
+        hours = [(10.0, 0.0, None, None), (0.0, 20.0, None, None)]
+        totals = totals_from_hours(hours)
+        econ = self._econ()
+
+        old_export = min(20.0, 10.0)
+        assert totals.export_kwh == pytest.approx(0.0)
+        assert totals.dropped_export_kwh == pytest.approx(20.0)
+        assert old_export - totals.export_kwh == pytest.approx(10.0)
+        assert totals.dropped_export_kwh != pytest.approx(10.0)
+
+        new = savings_priced(totals, econ).saved_eur
+        old = savings(10.0, 20.0, econ).saved_eur
+        assert new - old == pytest.approx(10.0 * (0.32 - 0.08))
+
+    def test_a_plant_without_a_meter_is_all_self_used(self):
+        totals = without_export(totals_from_hours(self.ORDINARY))
+        result = savings_priced(totals, self._econ())
+        assert result.export_kwh == 0.0
+        assert result.self_used_kwh == pytest.approx(6.0)
+        assert result.saved_eur == pytest.approx(6.0 * 0.32)
+
+
+class TestTimeOfUse:
+    def _econ(self, mode=MODE_SELF_CONSUMPTION):
+        return Economics(mode=mode, price_per_kwh=0.30, feed_in_tariff=0.05)
+
+    #: The reporting user's shape: three free hours sitting on the production
+    #: peak, three ordinary ones.
+    FREE_MIDDAY = [(2.0, 0.0, 0.0, 0.05)] * 3 + [(2.0, 0.0, 0.30, 0.05)] * 3
+
+    def test_free_power_at_noon_saves_nothing(self):
+        result = savings_priced(totals_from_hours(self.FREE_MIDDAY), self._econ())
+        assert result.saved_eur == pytest.approx(3 * 2.0 * 0.30)
+
+    def test_and_the_flat_price_would_have_doubled_it(self):
+        """The error this feature exists to remove, as one number."""
+        flat = savings(12.0, 0.0, self._econ()).saved_eur
+        priced = savings_priced(totals_from_hours(self.FREE_MIDDAY), self._econ()).saved_eur
+        assert flat == pytest.approx(3.60)
+        assert priced == pytest.approx(1.80)
+
+    def test_a_negative_hour_is_worth_less_than_nothing(self):
+        totals = totals_from_hours([(2.0, 0.0, -0.04, 0.05)])
+        assert savings_priced(totals, self._econ()).saved_eur == pytest.approx(-0.08)
+
+    def test_unpriced_hours_fall_back_and_say_so(self):
+        totals = totals_from_hours(
+            [(2.0, 0.0, 0.10, 0.05), (3.0, 0.0, None, None)]
+        )
+        result = savings_priced(totals, self._econ())
+        assert result.saved_eur == pytest.approx(2.0 * 0.10 + 3.0 * 0.30)
+        assert result.by_price_basis_kwh == {
+            PRICE_RECORDED: 2.0,
+            PRICE_CONFIGURED: 3.0,
+        }
+
+    def test_the_basis_split_always_adds_up_to_what_was_delivered(self):
+        result = savings_priced(
+            totals_from_hours([(2.0, 1.0, 0.10, None), (3.0, 0.0, None, 0.04)]),
+            self._econ(),
+        )
+        assert sum(result.by_price_basis_kwh.values()) == pytest.approx(
+            result.delivered_kwh
+        )
+
+    def test_the_basis_follows_the_mode(self):
+        """Net metering never looks at the export price, so an hour with only
+        an import price recorded is fully priced for it -- and not for the
+        self-consumption split, which needs both sides."""
+        hours = [(2.0, 1.0, 0.10, None)]
+        net = savings_priced(totals_from_hours(hours), self._econ(MODE_NET_METERING))
+        split = savings_priced(totals_from_hours(hours), self._econ())
+        assert net.by_price_basis_kwh == {PRICE_RECORDED: 2.0}
+        assert split.by_price_basis_kwh[PRICE_CONFIGURED] == pytest.approx(1.0)
+
+    def test_the_mean_price_is_weighted_by_energy(self):
+        """A cheap hour with a lot of energy must not average out against an
+        expensive hour with almost none."""
+        totals = totals_from_hours([(9.0, 0.0, 0.10, None), (1.0, 0.0, 0.50, None)])
+        result = savings_priced(totals, self._econ())
+        assert result.import_eur_per_kwh == pytest.approx((9 * 0.10 + 0.50) / 10.0)
+
+    def test_every_scenario_uses_the_recorded_prices(self):
+        scenarios = scenarios_priced(
+            totals_from_hours(self.FREE_MIDDAY), self._econ()
+        )
+        assert set(scenarios) == {
+            MODE_NET_METERING,
+            MODE_SELF_CONSUMPTION,
+            MODE_FEED_IN,
+        }
+        assert scenarios[MODE_SELF_CONSUMPTION].saved_eur == pytest.approx(1.80)
+        assert scenarios[MODE_NET_METERING].saved_eur == pytest.approx(1.80)
+        assert scenarios[MODE_FEED_IN].saved_eur == pytest.approx(12.0 * 0.05)

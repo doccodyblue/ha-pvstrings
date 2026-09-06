@@ -20,31 +20,43 @@
       },
       "economics": {
         "title": "Tariffs",
-        "description": "Net metering means the meter physically runs backwards, so every exported kWh saves an imported one. That is temporary by nature -- the integration keeps calculating all three models side by side so you can see what a meter swap will cost.",
+        "description": "Net metering means the meter physically runs backwards, so every exported kWh saves an imported one. That is temporary by nature -- the integration keeps calculating all three models side by side so you can see what a meter swap will cost. Hours are valued at the price recorded while they ran; hours before the sensor was configured, and any gap in it, use the fixed price above.",
         "data": {
           "economics_mode": "Tariff model",
           "price_per_kwh": "Electricity price",
           "feed_in_tariff": "Feed-in tariff",
           "investment_eur": "Investment",
-          "commissioning_date": "Commissioning date"
+          "commissioning_date": "Commissioning date",
+          "import_price_entity": "Import price sensor",
+          "export_price_entity": "Feed-in price sensor"
         },
         "data_description": {
           "price_per_kwh": "Per kWh in your currency, e.g. 0.30 -- not in cents.",
           "feed_in_tariff": "Per kWh in your currency, e.g. 0.0786 -- not in cents.",
           "investment_eur": "Total system cost; the amortisation sensors divide it by the running savings.",
-          "commissioning_date": "Start of the savings total and the amortisation clock. Empty means counting starts today."
+          "commissioning_date": "Start of the savings total and the amortisation clock. Empty means counting starts today.",
+          "import_price_entity": "Sensor carrying your current import price -- Tibber, aWATTar, Octopus and the like. Any currency per kWh or MWh; the unit is read from the sensor. Leave empty for a fixed price. On a fixed schedule, build a template sensor returning the price for the current hour.",
+          "export_price_entity": "The same for what you are paid. Leave empty to value every exported kWh at the feed-in tariff above."
         }
       }
     },
     "error": {
       "weather_entity_required": "Pick a weather entity when using the Home Assistant weather source.",
-      "helper_overlaps": "This helper aggregates entities that another string already uses. Point each string at its physical channel instead -- otherwise one channel is counted twice and another is dropped."
+      "helper_overlaps": "This helper aggregates entities that another string already uses. Point each string at its physical channel instead -- otherwise one channel is counted twice and another is dropped.",
+      "price_unit_missing": "This sensor has no unit of measurement. EUR/kWh and ct/kWh are a factor of a hundred apart and nothing can tell them apart without it -- set a unit on the sensor, or point at one that has it.",
+      "price_unit_unreadable": "This unit is not a price per energy. Expected something like EUR/kWh, ct/kWh or EUR/MWh -- a bare currency or a bare energy unit cannot be scaled.",
+      "price_entity_unknown": "Home Assistant does not know this entity. Check the id, or wait until the integration providing it has loaded."
     },
     "abort": {
       "already_configured": "This plant is already configured."
     }
   },
   "options": {
+    "error": {
+      "price_unit_missing": "This sensor has no unit of measurement. EUR/kWh and ct/kWh are a factor of a hundred apart and nothing can tell them apart without it -- set a unit on the sensor, or point at one that has it.",
+      "price_unit_unreadable": "This unit is not a price per energy. Expected something like EUR/kWh, ct/kWh or EUR/MWh -- a bare currency or a bare energy unit cannot be scaled.",
+      "price_entity_unknown": "Home Assistant does not know this entity. Check the id, or wait until the integration providing it has loaded."
+    },
     "step": {
       "init": {
         "title": "PV Strings options",
@@ -62,13 +74,17 @@
           "price_per_kwh": "Electricity price",
           "feed_in_tariff": "Feed-in tariff",
           "investment_eur": "Investment",
-          "commissioning_date": "Commissioning date"
+          "commissioning_date": "Commissioning date",
+          "import_price_entity": "Import price sensor",
+          "export_price_entity": "Feed-in price sensor"
         },
         "data_description": {
           "price_per_kwh": "Per kWh in your currency, e.g. 0.30 -- not in cents.",
           "feed_in_tariff": "Per kWh in your currency, e.g. 0.0786 -- not in cents.",
           "investment_eur": "Total system cost; the amortisation sensors divide it by the running savings.",
-          "commissioning_date": "Start of the savings total and the amortisation clock. Empty means counting starts today."
+          "commissioning_date": "Start of the savings total and the amortisation clock. Empty means counting starts today.",
+          "import_price_entity": "Sensor carrying your current import price -- Tibber, aWATTar, Octopus and the like. Any currency per kWh or MWh; the unit is read from the sensor. Leave empty for a fixed price. On a fixed schedule, build a template sensor returning the price for the current hour.",
+          "export_price_entity": "The same for what you are paid. Leave empty to value every exported kWh at the feed-in tariff above."
         }
       },
       "entities": {

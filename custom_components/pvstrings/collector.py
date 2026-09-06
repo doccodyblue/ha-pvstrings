@@ -549,11 +549,23 @@ class Collector:
 
     def _build_plant_row(self, start: int, end: int) -> tuple[Any, ...] | None:
         state = self.plant.plant_state
+        econ = self.plant.economics
         values = (
             self._mean_entity(state.battery_soc_entity, start, end),
             self._mean_entity(state.battery_power_entity, start, end),
             self._mean_entity(state.grid_power_entity, start, end),
             self._mean_entity(state.house_load_entity, start, end),
+            # The tariff belongs with the telemetry rather than with the
+            # configuration: what an hour cost is a fact about that hour, and
+            # re-reading it from today's price later would answer a different
+            # question.  A sensor that only updates hourly still lands in every
+            # interval, because the watchdog snapshots each tracked entity.
+            self._mean_entity(
+                econ.import_price_entity, start, end, units.ENERGY_PRICE
+            ),
+            self._mean_entity(
+                econ.export_price_entity, start, end, units.ENERGY_PRICE
+            ),
         )
         if all(value is None for value in values):
             return None

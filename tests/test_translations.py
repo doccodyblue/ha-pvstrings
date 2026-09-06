@@ -94,3 +94,72 @@ def test_two_sensors_never_share_a_name():
             assert not clashes, (
                 f"{label}: {kind} sensors share a name: {clashes} ({duplicates})"
             )
+
+
+# --------------------------------------------------------------------------- #
+# flow errors
+# --------------------------------------------------------------------------- #
+
+FILES = {"strings.json": STRINGS, "en.json": ENGLISH, "de.json": GERMAN}
+
+
+def _raised_error_keys() -> set[str]:
+    """Every literal assigned into an ``errors`` dict in the config flow."""
+    tree = ast.parse((ROOT / "config_flow.py").read_text())
+    keys: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if (
+                isinstance(target, ast.Subscript)
+                and isinstance(target.value, ast.Name)
+                and target.value.id == "errors"
+                and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)
+            ):
+                keys.add(node.value.value)
+    return keys
+
+
+def _error_blocks(data: dict) -> dict[str, dict]:
+    """Every ``error`` block, keyed by where it sits."""
+    blocks: dict[str, dict] = {}
+    for section in ("config", "options"):
+        if "error" in data.get(section, {}):
+            blocks[f"{section}.error"] = data[section]["error"]
+    for name, sub in data.get("config_subentries", {}).items():
+        if "error" in sub:
+            blocks[f"config_subentries.{name}.error"] = sub["error"]
+    return blocks
+
+
+@pytest.mark.parametrize("key", sorted(_raised_error_keys()))
+@pytest.mark.parametrize("filename", sorted(FILES))
+def test_every_flow_error_key_is_translated(filename: str, key: str):
+    """An untranslated error key is not an error anywhere -- Home Assistant
+    simply shows the raw key to the user, in a dialog that was already
+    refusing to save."""
+    resolved = any(key in block for block in _error_blocks(FILES[filename]).values())
+    assert resolved, f"{key} has no message in {filename}"
+
+
+@pytest.mark.parametrize("filename", sorted(set(FILES) - {"strings.json"}))
+def test_the_translations_carry_the_same_error_blocks(filename: str):
+    assert _error_blocks(FILES[filename]).keys() == _error_blocks(STRINGS).keys()
+    for path, block in _error_blocks(STRINGS).items():
+        assert _error_blocks(FILES[filename])[path].keys() == block.keys()
+
+
+@pytest.mark.parametrize("filename", sorted(FILES))
+def test_a_price_can_be_refused_in_both_dialogs(filename: str):
+    """The price checks fire in the setup wizard and in the options dialog,
+    and the options section had no error block at all before they existed."""
+    blocks = _error_blocks(FILES[filename])
+    for section in ("config.error", "options.error"):
+        for key in (
+            "price_unit_missing",
+            "price_unit_unreadable",
+            "price_entity_unknown",
+        ):
+            assert key in blocks[section], f"{key} missing from {section} in {filename}"

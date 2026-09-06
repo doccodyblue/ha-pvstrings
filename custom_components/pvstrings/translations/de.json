@@ -20,31 +20,43 @@
       },
       "economics": {
         "title": "Tarife",
-        "description": "Rückwärtslaufender Zähler heißt: jede eingespeiste kWh spart tatsächlich eine bezogene. Das ist naturgemäß befristet — die Integration rechnet alle drei Modelle parallel, damit sichtbar ist, was der Zählertausch kostet.",
+        "description": "Rückwärtslaufender Zähler heißt: jede eingespeiste kWh spart tatsächlich eine bezogene. Das ist naturgemäß befristet — die Integration rechnet alle drei Modelle parallel, damit sichtbar ist, was der Zählertausch kostet. Jede Stunde wird mit dem Preis bewertet, der während ihr galt; Stunden vor der Einrichtung des Sensors und jede Lücke darin nehmen den Festpreis oben.",
         "data": {
           "economics_mode": "Tarifmodell",
           "price_per_kwh": "Strompreis",
           "feed_in_tariff": "Einspeisevergütung",
           "investment_eur": "Investition",
-          "commissioning_date": "Inbetriebnahme"
+          "commissioning_date": "Inbetriebnahme",
+          "import_price_entity": "Preissensor Bezug",
+          "export_price_entity": "Preissensor Einspeisung"
         },
         "data_description": {
           "price_per_kwh": "Je kWh in Landeswährung, z. B. 0.30 — nicht in Cent.",
           "feed_in_tariff": "Je kWh in Landeswährung, z. B. 0.0786 — nicht in Cent.",
           "investment_eur": "Gesamtkosten der Anlage; die Amortisations-Sensoren teilen sie durch die laufende Ersparnis.",
-          "commissioning_date": "Startpunkt für Gesamtersparnis und Amortisationsuhr. Leer heißt: die Zählung beginnt heute."
+          "commissioning_date": "Startpunkt für Gesamtersparnis und Amortisationsuhr. Leer heißt: die Zählung beginnt heute.",
+          "import_price_entity": "Sensor mit deinem aktuellen Bezugspreis — Tibber, aWATTar, Octopus und Ähnliche. Beliebige Währung pro kWh oder MWh; die Einheit wird vom Sensor gelesen. Bei Festpreis leer lassen. Bei fester Staffel einen Template-Sensor bauen, der den Preis der aktuellen Stunde liefert.",
+          "export_price_entity": "Dasselbe für das, was du bekommst. Leer lassen, um jede eingespeiste Kilowattstunde mit der Einspeisevergütung oben zu bewerten."
         }
       }
     },
     "error": {
       "weather_entity_required": "Bei der Quelle „Home-Assistant-Wetter“ muss eine Wetter-Entität gewählt werden.",
-      "helper_overlaps": "Dieser Helfer fasst Entitäten zusammen, die bereits ein anderer Strang nutzt. Jeden Strang direkt auf seinen physischen Kanal zeigen lassen — sonst wird ein Kanal doppelt gezählt und ein anderer fällt weg."
+      "helper_overlaps": "Dieser Helfer fasst Entitäten zusammen, die bereits ein anderer Strang nutzt. Jeden Strang direkt auf seinen physischen Kanal zeigen lassen — sonst wird ein Kanal doppelt gezählt und ein anderer fällt weg.",
+      "price_unit_missing": "Dieser Sensor hat keine Einheit. EUR/kWh und ct/kWh liegen Faktor hundert auseinander, und ohne Einheit lässt sich das nicht unterscheiden — trag am Sensor eine Einheit ein oder wähle einen, der eine hat.",
+      "price_unit_unreadable": "Diese Einheit ist kein Preis pro Energie. Erwartet wird etwas wie EUR/kWh, ct/kWh oder EUR/MWh — eine reine Währung oder eine reine Energieeinheit lässt sich nicht skalieren.",
+      "price_entity_unknown": "Home Assistant kennt diese Entity nicht. Prüf die ID, oder warte, bis die Integration geladen ist, die sie liefert."
     },
     "abort": {
       "already_configured": "Diese Anlage ist bereits eingerichtet."
     }
   },
   "options": {
+    "error": {
+      "price_unit_missing": "Dieser Sensor hat keine Einheit. EUR/kWh und ct/kWh liegen Faktor hundert auseinander, und ohne Einheit lässt sich das nicht unterscheiden — trag am Sensor eine Einheit ein oder wähle einen, der eine hat.",
+      "price_unit_unreadable": "Diese Einheit ist kein Preis pro Energie. Erwartet wird etwas wie EUR/kWh, ct/kWh oder EUR/MWh — eine reine Währung oder eine reine Energieeinheit lässt sich nicht skalieren.",
+      "price_entity_unknown": "Home Assistant kennt diese Entity nicht. Prüf die ID, oder warte, bis die Integration geladen ist, die sie liefert."
+    },
     "step": {
       "init": {
         "title": "PV-Strings-Optionen",
@@ -62,13 +74,17 @@
           "price_per_kwh": "Strompreis",
           "feed_in_tariff": "Einspeisevergütung",
           "investment_eur": "Investition",
-          "commissioning_date": "Inbetriebnahme"
+          "commissioning_date": "Inbetriebnahme",
+          "import_price_entity": "Preissensor Bezug",
+          "export_price_entity": "Preissensor Einspeisung"
         },
         "data_description": {
           "price_per_kwh": "Je kWh in Landeswährung, z. B. 0.30 — nicht in Cent.",
           "feed_in_tariff": "Je kWh in Landeswährung, z. B. 0.0786 — nicht in Cent.",
           "investment_eur": "Gesamtkosten der Anlage; die Amortisations-Sensoren teilen sie durch die laufende Ersparnis.",
-          "commissioning_date": "Startpunkt für Gesamtersparnis und Amortisationsuhr. Leer heißt: die Zählung beginnt heute."
+          "commissioning_date": "Startpunkt für Gesamtersparnis und Amortisationsuhr. Leer heißt: die Zählung beginnt heute.",
+          "import_price_entity": "Sensor mit deinem aktuellen Bezugspreis — Tibber, aWATTar, Octopus und Ähnliche. Beliebige Währung pro kWh oder MWh; die Einheit wird vom Sensor gelesen. Bei Festpreis leer lassen. Bei fester Staffel einen Template-Sensor bauen, der den Preis der aktuellen Stunde liefert.",
+          "export_price_entity": "Dasselbe für das, was du bekommst. Leer lassen, um jede eingespeiste Kilowattstunde mit der Einspeisevergütung oben zu bewerten."
         }
       },
       "entities": {
