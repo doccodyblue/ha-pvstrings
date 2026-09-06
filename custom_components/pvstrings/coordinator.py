@@ -31,6 +31,7 @@ from .const import (
     WEATHER_INTERVAL,
 )
 from .core import economics as econ
+from .core import pricing
 from .core import persistence
 from .core.aggregate import (
     hour_share_ahead,
@@ -1112,7 +1113,10 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
 
         out: dict[str, Any] = {}
         has_grid = self.plant.plant_state.grid_power_entity is not None
+        factor_of = {sid: entry.factor for sid, entry in delivery.items()}
         total_delivery: econ.Delivery | None = None
+        total_totals = pricing.PricedTotals()
+        priced = False
         for label, start in (
             ("today", day_start),
             ("week", week_start),
@@ -1122,14 +1126,16 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         ):
             # Valued on what left the plant, not on what the panels made: the
             # strings are measured on their DC side and the conversion losses
-            # are real energy nobody can spend.
+            # are real energy nobody can spend.  The delivery block still needs
+            # the per-string split; the money needs the per-hour one, and the
+            # two agree by construction (pinned in tests/test_store.py).
             supplied = econ.delivered(
                 self.store.energy_kwh_by_string(start, now_ts), delivery
             )
-            _imported, exported = self.store.grid_energy_kwh(start, now_ts)
-            result = econ.savings(
-                supplied.kwh, exported if has_grid else None, economics
-            )
+            totals = self.store.priced_totals(start, now_ts, factor_of)
+            if not has_grid:
+                totals = pricing.without_export(totals)
+            result = econ.savings_priced(totals, economics)
             out[label] = {
                 "kwh": round(supplied.kwh, 3),
                 # The DC side stays alongside it.  "Produced today" is a DC
@@ -1140,17 +1146,37 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
                 "eur": round(result.saved_eur, 2),
                 "eur_per_kwh": round(result.eur_per_kwh, 4),
             }
+            # Only when there is something to say.  A plant with no battery and
+            # a sane meter never sees either key, and its attributes stay
+            # exactly as they were.
+            if result.dropped_export_kwh > 0.0005:
+                out[label]["export_dropped_kwh"] = round(
+                    result.dropped_export_kwh, 3
+                )
+            if result.hours_priced:
+                priced = True
+                out[label]["price"] = {
+                    "by_basis_kwh": result.by_price_basis_kwh,
+                    "hours": result.hours,
+                    "hours_recorded": result.hours_priced,
+                    "import_per_kwh": (
+                        None
+                        if result.import_eur_per_kwh is None
+                        else round(result.import_eur_per_kwh, 4)
+                    ),
+                    "export_per_kwh": (
+                        None
+                        if result.export_eur_per_kwh is None
+                        else round(result.export_eur_per_kwh, 4)
+                    ),
+                }
             if label == "total":
-                total_delivery = supplied
+                total_delivery, total_totals = supplied, totals
 
-        produced_total = out["total"]["kwh"]
-        _imported, exported_total = self.store.grid_energy_kwh(total_start, now_ts)
         out["delivery"] = self._delivery_summary(delivery, total_delivery)
         out["scenarios"] = {
             mode: round(result.saved_eur, 2)
-            for mode, result in econ.scenarios(
-                produced_total, exported_total if has_grid else None, economics
-            ).items()
+            for mode, result in econ.scenarios_priced(total_totals, economics).items()
         }
 
         weights = self._weights()
@@ -1177,6 +1203,13 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         )
         out["measured_from"] = measured_from.isoformat()
         out["annual_estimate_eur"] = round(annual, 2) if annual is not None else None
+        # The estimate scales money by the site's clear-sky seasonality, which
+        # assumes a kilowatt-hour is worth the same in December as in June.
+        # Under a time-varying tariff it is not, so the figure carries a mark
+        # for as long as that matters -- once a full year is on the record the
+        # weighting is a no-op and the mark disappears on its own.
+        if priced and econ.period_share(measured_from, local.date(), weights) < 1.0:
+            out["annual_estimate_caveat"] = "time_of_use"
         out["amortisation"] = econ.amortisation(
             economics.investment_eur,
             out["total"]["eur"],
