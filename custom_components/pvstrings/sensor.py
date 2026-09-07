@@ -237,13 +237,15 @@ def _attribution_attrs(data: PvStringsData) -> dict[str, Any]:
         "wmape_chain_30d": _attribution_pct(data, 30, "wmape_chain"),
         "wmape_source_30d": _attribution_pct(data, 30, "wmape_source"),
         "wmape_end_to_end_30d": _attribution_pct(data, 30, "wmape_end_to_end"),
-        "hours_split_7d": week.get("hours"),
-        "hours_split_30d": month.get("hours"),
         "days_split_7d": week.get("days"),
         "days_split_30d": month.get("days"),
-        # What the day-ahead score saw in total: the gap to hours_split is the
-        # hours no measurement covered.
-        "hours_scored_7d": week.get("hours_scored"),
+        "samples_split_7d": week.get("samples"),
+        "samples_split_30d": month.get("samples"),
+        # What the day-ahead score saw in total: the gap to the split's own
+        # count is what no measured irradiance covered.  Until the record has
+        # filled, the split therefore runs on fewer days than the accuracy
+        # sensors beside it -- days_split says how many.
+        "samples_scored_7d": week.get("samples_scored"),
         "reason": reason,
         "semantics": _ATTRIBUTION_NOTE,
     }

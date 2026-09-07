@@ -19,5 +19,5 @@
   "requirements": [
     "pvlib==0.11.2"
   ],
-  "version": "1.22.1"
+  "version": "1.22.2"
 }

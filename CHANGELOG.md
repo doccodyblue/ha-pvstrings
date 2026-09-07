@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.22.2 — 2026-09-07
+
+### Fixed
+
+- **The error split opened too early and counted the wrong unit.** Its gate
+  was twenty-four rows, and a row is one string in one hour -- so on a
+  five-string plant it opened after a single afternoon, and the first figure a
+  new installation ever saw was one bad day's weather. It now waits for three
+  complete days, the same as every other score here. The counts are named for
+  what they are (`samples_split_*`, string-hours) alongside `days_split_*`,
+  which is what the gate and the reader actually need.
+- While the record is still filling, the split necessarily runs on fewer days
+  than the accuracy sensors beside it -- only days a measured irradiance
+  covered can enter. `days_split_7d` says how many, and the two converge as
+  the column fills. Worth knowing before comparing the two numbers.
+
 ## v1.22.1 — 2026-09-07
 
 ### Fixed

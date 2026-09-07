@@ -166,9 +166,10 @@ class HourForecast:
 #: error of zero.
 CHAIN_MIN_MEASURED_SHARE = 0.8
 
-#: Below this the split is arithmetic on a handful of hours.  Roughly two days
-#: of daylight, the same order the other scores wait for.
-ATTRIBUTION_MIN_HOURS = 24
+#: The split waits for the same number of complete days the scores do.  Days
+#: rather than rows, because a row is one string-hour: on a five-string plant
+#: an hour-based gate would open after a single afternoon, and the first
+#: figure a new installation ever saw would be one bad day's weather.
 
 #: Why the split cannot be shown.  Both are ordinary states, not failures, and
 #: saying which one applies is the difference between an empty tile and an
@@ -1957,6 +1958,11 @@ class ForecastEngine:
         an over- and an under-shoot cancel in the total and cannot cancel
         here.
 
+        Only days a measured irradiance covered enter, so while the record is
+        still filling this is a smaller sample than the accuracy sensors run
+        on -- ``days`` says how much smaller, and the two converge as the
+        column fills.
+
         The chain figure flatters itself slightly: the learned correction it
         contains was fitted on these very hours. It is a regression signal for
         development, not a claim of accuracy on unseen days.
@@ -1964,12 +1970,14 @@ class ForecastEngine:
         split = tally.attribution
         actual = sum(day[2] for day in split.daily.values())
         base: dict[str, Any] = {
-            "hours": split.hours,
-            "hours_scored": len(tally.every),
+            # String-hours, not clock hours: one row is one string in one hour,
+            # which is what the score counts too.
+            "samples": split.hours,
+            "samples_scored": len(tally.every),
             "days": len(split.daily),
             "kwh_actual": round(actual, 3),
         }
-        if split.hours < ATTRIBUTION_MIN_HOURS or actual <= 0:
+        if len(split.daily) < MIN_SCORED_DAYS or actual <= 0:
             return {
                 **base,
                 "wmape_end_to_end": None,

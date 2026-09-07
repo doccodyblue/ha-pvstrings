@@ -12,8 +12,8 @@ import pytest
 
 from core.config import PlantConfig
 from core.forecast import (
-    ATTRIBUTION_MIN_HOURS,
     HOUR,
+    MIN_SCORED_DAYS,
     REASON_COLLECTING,
     REASON_NO_IRRADIANCE_SENSOR,
     ForecastEngine,
@@ -128,8 +128,9 @@ class TestTheSplit:
 
         result = engine.score_day_ahead(3, now_ts)
         assert result["days_scored"] == 3          # the score still sees all three
-        assert result["attribution"]["hours"] == 2 * len(DAYLIGHT)
-        assert result["attribution"]["hours_scored"] == 3 * len(DAYLIGHT)
+        assert result["attribution"]["days"] == 2
+        assert result["attribution"]["samples"] == 2 * len(DAYLIGHT)
+        assert result["attribution"]["samples_scored"] == 3 * len(DAYLIGHT)
 
 
 class TestWhatAPlantWithoutASensorSees:
@@ -142,7 +143,8 @@ class TestWhatAPlantWithoutASensorSees:
 
         assert split["wmape_chain"] is None
         assert split["wmape_source"] is None
-        assert split["hours"] == 0
+        assert split["days"] == 0
+        assert split["samples"] == 0
         assert split["reason"] == REASON_NO_IRRADIANCE_SENSOR
 
     def test_the_ordinary_score_is_untouched(
@@ -174,17 +176,20 @@ class TestWithASensorButTooLittle:
         split = engine.score_day_ahead(3, now_ts)["attribution"]
         assert split["reason"] == REASON_COLLECTING
 
-    def test_a_handful_of_hours_is_not_published(
+    def test_a_single_day_is_not_published(
         self, seeded_store: Store, plant: PlantConfig
     ):
+        """One day of weather is not an accuracy figure, here no more than in
+        the scores -- and the gate counts days, because a row is one string
+        in one hour and five strings would open it in an afternoon."""
         engine = ForecastEngine(with_sensor(plant), seeded_store)
         engine.load_models()
         seed_day(engine, seeded_store, DAY_START, 10.0, 15.0, chain_kwh=10.0)
         now_ts = DAY_START + DAY + 12 * HOUR
 
         split = engine.score_day_ahead(1, now_ts)["attribution"]
-        assert len(DAYLIGHT) < ATTRIBUTION_MIN_HOURS
-        assert split["hours"] == len(DAYLIGHT)
+        assert split["days"] == 1 < MIN_SCORED_DAYS
+        assert split["samples"] == len(DAYLIGHT)
         assert split["wmape_chain"] is None
         assert split["reason"] == REASON_COLLECTING
 
