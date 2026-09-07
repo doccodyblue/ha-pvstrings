@@ -513,6 +513,11 @@ PLANT_SENSORS: tuple[PlantSensorDescription, ...] = (
             # the score, but it is the number a reader looks for in the
             # morning.
             "history": data.scores_day_ahead.get(30, {}).get("history"),
+            # The same pairs folded by local hour of day, plant-wide: where in
+            # the day the error sits. A template summing forecast minus actual
+            # over its own window gets the margin that window needs, which
+            # the daily figures above cannot give it.
+            "hourly_profile": data.scores_day_ahead.get(30, {}).get("hourly_profile"),
         },
     ),
     PlantSensorDescription(

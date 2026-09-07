@@ -202,6 +202,28 @@ class _Attribution:
         self.hours += 1
 
 
+def _hourly_profile(tally: "_ScoreTally") -> list[dict[str, Any]]:
+    """The same scored pairs, folded by local hour of day instead of by day.
+
+    Plant-wide sums over every day in the window, so a reader can see whether
+    the morning runs hot and the afternoon cold -- the shape a daily WMAPE
+    hides completely, and the one that decides how much margin a
+    "charge before 11:00" automation needs.  Not gated on the day count: the
+    ``days`` field says how thin the basis is, and thin is what a fresh
+    install has to work with.  Hours without a scored pair are left out
+    rather than published as zero.
+    """
+    return [
+        {
+            "hour": hour,
+            "forecast_kwh": round(values[0], 3),
+            "actual_kwh": round(values[1], 3),
+            "days": len(values[2]),
+        }
+        for hour, values in sorted(tally.hourly.items())
+    ]
+
+
 def _day_ahead_history(
     tally: "_ScoreTally",
     running: tuple[str, dict[str, float]] | None = None,
@@ -264,6 +286,10 @@ class _ScoreTally:
     #: asks for it.  The day-ahead score publishes its days; the rolling one
     #: has no reader for them.
     daily_by_string: dict[str, dict[str, list[float]]] = field(default_factory=dict)
+    #: ``local hour -> [predicted, actual, {days}]``, plant-wide.  Where in
+    #: the day the error sits, which no daily figure can say and which is the
+    #: question behind "how much margin do I need before 11:00".
+    hourly: dict[int, list[Any]] = field(default_factory=dict)
     #: The same hours again, split into what the irradiance input cost and
     #: what the chain did with it.  Only hours the sensor covered enter here,
     #: so it is a subset of the score above and never replaces it.
@@ -1871,6 +1897,7 @@ class ForecastEngine:
         result = self._scored(tally)
         result["issue_hour_local"] = DAY_AHEAD_ISSUE_HOUR_LOCAL
         result["history"] = _day_ahead_history(tally, self._running_day_ahead(now_ts))
+        result["hourly_profile"] = _hourly_profile(tally)
         result["attribution"] = self._attribution(tally)
         if result["days_scored"] < MIN_SCORED_DAYS:
             # Silent about the number, honest about the basis: the counts stay
@@ -2079,9 +2106,8 @@ class ForecastEngine:
                 continue
             if row["quality"] in (QUALITY_NIGHT, "missing"):
                 continue
-            day = datetime.fromtimestamp(int(row["ts_utc"]), tz=self._tz).strftime(
-                "%Y-%m-%d"
-            )
+            local = datetime.fromtimestamp(int(row["ts_utc"]), tz=self._tz)
+            day = local.strftime("%Y-%m-%d")
             tally.every.append((predicted, actual))
             tally.daily_all.setdefault(day, [0.0, 0.0])
             tally.daily_all[day][0] += predicted
@@ -2091,6 +2117,10 @@ class ForecastEngine:
                 bucket = per_day.setdefault(day, [0.0, 0.0])
                 bucket[0] += predicted
                 bucket[1] += actual
+                slot = tally.hourly.setdefault(local.hour, [0.0, 0.0, set()])
+                slot[0] += predicted
+                slot[1] += actual
+                slot[2].add(day)
                 chain = row["chain_kwh"]
                 if chain is not None:
                     # All three on the same hours, or the numbers would answer

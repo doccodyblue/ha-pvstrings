@@ -165,6 +165,72 @@ class TestWhatAPlantWithoutASensorSees:
         assert engine.store_chain_potential(DAY_START, DAY_START + DAY) == 0
 
 
+class TestTheHourlyProfile:
+    def test_the_same_pairs_folded_by_local_hour(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """Three days of 15 announced against 10 measured, spread over twelve
+        daylight hours: every daylight hour carries three days' worth, the
+        night is absent rather than zero, and the sums add up to the history."""
+        now_ts = three_days(engine, seeded_store, actual_kwh=10.0, predicted_kwh=15.0)
+        result = engine.score_day_ahead(3, now_ts)
+        profile = result["hourly_profile"]
+
+        assert [row["hour"] for row in profile] == DAYLIGHT
+        assert all(row["days"] == 3 for row in profile)
+        assert all(
+            row["forecast_kwh"] == pytest.approx(3 * 15.0 / len(DAYLIGHT), abs=1e-3)
+            and row["actual_kwh"] == pytest.approx(3 * 10.0 / len(DAYLIGHT), abs=1e-3)
+            for row in profile
+        )
+        assert sum(row["forecast_kwh"] for row in profile) == pytest.approx(
+            sum(day[1] for day in result["history"]["plant"] if day[2] is not None),
+            abs=1e-2,
+        )
+
+    def test_a_window_sum_is_what_a_template_would_get(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """The reason it exists: forecast minus actual over one's own window."""
+        now_ts = three_days(engine, seeded_store, actual_kwh=10.0, predicted_kwh=15.0)
+        profile = engine.score_day_ahead(3, now_ts)["hourly_profile"]
+
+        window = [row for row in profile if 5 <= row["hour"] < 11]
+        assert [row["hour"] for row in window] == [6, 7, 8, 9, 10]
+        # Five of twelve daylight hours, three days, 5 kWh a day too high.
+        margin = sum(row["forecast_kwh"] - row["actual_kwh"] for row in window)
+        assert margin == pytest.approx(3 * 5.0 * 5 / 12, abs=1e-2)
+
+    def test_strings_add_up_within_an_hour_and_days_do_not_double(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """Two strings on one day: the hour holds both strings' energy, but
+        it is still one day of evidence, not two."""
+        seed_day(engine, seeded_store, DAY_START, actual_kwh=10.0, predicted_kwh=15.0)
+        seed_day(
+            engine, seeded_store, DAY_START, actual_kwh=4.0, predicted_kwh=6.0,
+            string_id="s2",
+        )
+        profile = engine.score_day_ahead(3, DAY_START + DAY + 12 * HOUR)["hourly_profile"]
+
+        assert len(profile) == len(DAYLIGHT)
+        assert all(row["days"] == 1 for row in profile)
+        assert profile[0]["forecast_kwh"] == pytest.approx(21.0 / 12, abs=1e-3)
+        assert profile[0]["actual_kwh"] == pytest.approx(14.0 / 12, abs=1e-3)
+
+    def test_not_gated_on_the_day_count(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """A fresh install sees where its error sits from the first day; the
+        ``days`` field says how thin that basis is."""
+        seed_day(engine, seeded_store, DAY_START, actual_kwh=10.0, predicted_kwh=15.0)
+        result = engine.score_day_ahead(3, DAY_START + DAY + 12 * HOUR)
+
+        assert result["uncensored"]["wmape"] is None
+        assert len(result["hourly_profile"]) == len(DAYLIGHT)
+        assert all(row["days"] == 1 for row in result["hourly_profile"])
+
+
 class TestWithASensorButTooLittle:
     def test_a_configured_sensor_says_collecting(
         self, seeded_store: Store, plant: PlantConfig

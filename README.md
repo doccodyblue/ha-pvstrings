@@ -136,6 +136,30 @@ day-ahead accuracy sensors: they say how wrong *your* plant's day-ahead
 forecast has been over the last 7 and 30 days, which is the honest margin to
 plan with.
 
+A daily figure cannot say *where in the day* the error sits, and for a window
+that is the whole question — a forecast that runs hot in the morning and cold
+in the afternoon can score a fine day and still leave a battery empty at
+09:00. The 30-day day-ahead sensor therefore also carries an `hourly_profile`:
+the same scored pairs folded by local hour, plant-wide, one entry per hour
+with `forecast_kwh`, `actual_kwh` and the number of `days` behind it. Summed
+over your own window it is the margin that window needs:
+
+```jinja
+{% set profile = state_attr('sensor.YOUR_PLANT_day_ahead_accuracy_30_days', 'hourly_profile') or [] %}
+{% set ns = namespace(forecast=0.0, actual=0.0) %}
+{% for row in profile if 5 <= row.hour < 11 %}
+  {% set ns.forecast = ns.forecast + row.forecast_kwh %}
+  {% set ns.actual = ns.actual + row.actual_kwh %}
+{% endfor %}
+{{ ((ns.forecast - ns.actual) / ns.forecast * 100) | round(1) if ns.forecast > 0 else 'unknown' }}
+```
+
+Positive means the morning was announced too high, by that share; plan with
+it as a discount on tomorrow's window sum. The hours are already local, so no
+`as_local` here. Unlike the accuracy figures, the profile is not held back
+until three days are in — the `days` field says how thin the basis is, and
+thin is what a fresh installation has to work with.
+
 If you would rather see it than query it,
 **[PV Strings Dashboard](https://github.com/doccodyblue/ha-pvstrings-dash)** is a
 separate HACS repository — cards for the sky map, the forecast, the conversion
@@ -388,6 +412,13 @@ read off the dashboard. Only complete days count, and nothing is published
 until three of them are in, so a single day's weather cannot masquerade as an
 accuracy figure. Expect the day-ahead number to sit well above the nowcast one:
 that gap is the honest cost of forecasting a day ahead.
+
+The 30-day day-ahead sensor also publishes the pairs behind its number: a
+`history` of announced-versus-measured per day, plant and per string, and an
+`hourly_profile` of the same pairs folded by local hour of day. The first
+draws the daily chart; the second says whether the error lives in the morning
+or the afternoon, which is what a windowed automation needs to know (see
+[Reading one window out of the hourly series](#reading-one-window-out-of-the-hourly-series)).
 
 ### Whose fault was it — the weather service or us?
 

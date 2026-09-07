@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Where in the day the error sits.** The 30-day day-ahead accuracy sensor
+  carries an `hourly_profile`: the same scored pairs it is computed from,
+  folded by local hour of day, plant-wide -- `forecast_kwh`, `actual_kwh` and
+  the number of `days` per hour. A daily WMAPE cannot tell a morning that runs
+  hot from an afternoon that runs cold, and for an automation that sizes a
+  battery reserve for *its* window that is the whole question. Summed over the
+  window, the profile is the margin that window needs; the README shows the
+  template. Not gated on the day count, unlike the accuracy figures: a fresh
+  installation sees where its error lives from the first complete day, and
+  the `days` field says how thin that basis is. Asked for in #5.
+
 ## v1.22.2 — 2026-09-07
 
 ### Fixed
