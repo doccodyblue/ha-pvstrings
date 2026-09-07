@@ -100,6 +100,42 @@ to come behind one inverter before it decides to throttle or divert.
 That is the intended use: this integration answers *what the plant could
 produce*, and leaves *what to do about it* to your automations.
 
+#### Reading one window out of the hourly series
+
+Every forecast sensor — plant, string and group, today, tomorrow and the day
+after — carries a `forecast` attribute: one entry per hour with `datetime` and
+`potential_kwh`. A window is a template away. This one answers *"how much will
+arrive tomorrow morning before 11:00"*, which is the question a battery
+controller asks the evening before:
+
+```jinja
+{% set hours = state_attr('sensor.YOUR_PLANT_forecast_tomorrow', 'forecast') or [] %}
+{% set ns = namespace(total=0.0) %}
+{% for row in hours %}
+  {% set local = as_local(as_datetime(row.datetime)) %}
+  {% if 5 <= local.hour < 11 %}
+    {% set ns.total = ns.total + row.potential_kwh %}
+  {% endif %}
+{% endfor %}
+{{ ns.total | round(2) }}
+```
+
+Two things to get right. The timestamps are **UTC** — `as_local` is not
+decoration, and skipping it shifts every hour by your offset. And
+`potential_kwh` is the strings' DC potential, before inverter or charge
+losses; where a group has an output path configured, its own sensor publishes
+the converted figure instead.
+
+There are deliberately no per-hour entities. Everybody's window is different —
+sunrise to 11:00, or 14:00 to 18:00 — and a template sensor gives you exactly
+yours, as many as you like, without adding twenty-four entities to everyone
+else's registry.
+
+If the number drives a decision with a cost attached, pair it with the
+day-ahead accuracy sensors: they say how wrong *your* plant's day-ahead
+forecast has been over the last 7 and 30 days, which is the honest margin to
+plan with.
+
 If you would rather see it than query it,
 **[PV Strings Dashboard](https://github.com/doccodyblue/ha-pvstrings-dash)** is a
 separate HACS repository — cards for the sky map, the forecast, the conversion
