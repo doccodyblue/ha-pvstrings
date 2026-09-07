@@ -199,10 +199,12 @@ _ATTRIBUTION_NOTE = (
     "chain = what the chain gets wrong when the irradiance is known -- the "
     "same physics, sky map and learned correction, re-run on the measured "
     "irradiance. source = how far the irradiance forecast alone moved the "
-    "answer. Both are absolute errors on the same hours, so they do not add "
-    "up to the end-to-end figure: an over- and an under-shoot cancel there "
-    "and cannot cancel here. The chain figure flatters itself slightly, "
-    "because the correction it contains was fitted on these very hours."
+    "answer. Computed over daily sums, like the accuracy sensors themselves, "
+    "so the three sit on one scale and the split explains the number next to "
+    "it. They are absolute errors, so the two parts do not add up to the "
+    "end-to-end figure: an over- and an under-shoot cancel in a day and "
+    "cannot cancel between the parts. The chain figure flatters itself "
+    "slightly, because the correction it contains was fitted on these hours."
 )
 _ATTRIBUTION_REASONS = {
     "no_irradiance_sensor": (
@@ -237,6 +239,8 @@ def _attribution_attrs(data: PvStringsData) -> dict[str, Any]:
         "wmape_end_to_end_30d": _attribution_pct(data, 30, "wmape_end_to_end"),
         "hours_split_7d": week.get("hours"),
         "hours_split_30d": month.get("hours"),
+        "days_split_7d": week.get("days"),
+        "days_split_30d": month.get("days"),
         # What the day-ahead score saw in total: the gap to hours_split is the
         # hours no measurement covered.
         "hours_scored_7d": week.get("hours_scored"),

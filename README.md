@@ -408,9 +408,14 @@ the published forecast to it is the source's:
 | `wmape_source_7d` | how far the irradiance forecast alone moved the answer |
 | `wmape_end_to_end_7d` | both together, on the same hours |
 
+All three are ratios of daily sums, exactly like the accuracy sensors
+themselves — a split computed over hours comes out two to three times larger
+for the same data and would read as a worse plant rather than as an
+explanation of one.
+
 The two parts are absolute errors and deliberately do **not** add up to the
-whole: an over- and an under-shoot cancel in the total and must not cancel
-here. The chain figure also flatters itself slightly, because the learned
+whole: an over- and an under-shoot cancel within a day and cannot cancel
+between the parts. The chain figure also flatters itself slightly, because the learned
 correction inside it was fitted on those very hours — it is a regression signal
 for development, not a claim of accuracy on unseen days.
 

@@ -225,3 +225,63 @@ class TestWritingTheCounterfactual:
         write_measured_ghi(engine, seeded_store, noon + 600, factor=0.5, span_s=600)
 
         assert engine.store_chain_potential(noon, noon + HOUR) == 0
+
+
+class TestTheSplitIsOnTheScaleOfWhatItExplains:
+    """The published accuracy is a ratio of *daily* sums.  A split computed
+    over hours comes out two to three times larger for the same data, and read
+    next to the accuracy sensors it says "this plant is much worse than you
+    thought" instead of "here is why it is what it is"."""
+
+    def _mixed_day(self, engine, store, day_start, string_id="s1"):
+        """A day that is wrong in both directions and right on the whole.
+
+        Six hours forecast two kWh too high, six two kWh too low; the day sums
+        to the truth.  Hourly absolute errors cannot cancel, daily ones do.
+        """
+        cutoff = engine.day_ahead_cutoff(day_start)
+        actual, offsets = 4.0, [2.0] * 6 + [-2.0] * 6
+        store.upsert_hourly(
+            [
+                (day_start + h * HOUR, string_id, actual, 1.0, 0.0,
+                 None, None, None, "measured", "exact")
+                for h in DAYLIGHT
+            ]
+        )
+        store.log_forecast(
+            [
+                (cutoff, day_start + h * HOUR, string_id, actual + offset, "physics")
+                for h, offset in zip(DAYLIGHT, offsets)
+            ]
+        )
+        store.update_chain_potential(
+            [(actual, day_start + h * HOUR, string_id) for h in DAYLIGHT]
+        )
+
+    def test_a_day_that_cancels_within_itself_counts_as_right(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        for index in range(3):
+            self._mixed_day(engine, seeded_store, DAY_START + index * DAY)
+        now_ts = DAY_START + 3 * DAY + 12 * HOUR
+
+        split = engine.score_day_ahead(3, now_ts)["attribution"]
+        # Hourly, this day is 50 % wrong; daily, it is exact.
+        assert split["wmape_end_to_end"] == pytest.approx(0.0, abs=1e-9)
+        assert split["wmape_source"] == pytest.approx(0.0, abs=1e-9)
+        assert split["wmape_chain"] == pytest.approx(0.0, abs=1e-9)
+        assert split["days"] == 3
+
+    def test_it_equals_the_published_figure_when_every_hour_is_covered(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """The invariant that makes the two comparable at all: same hours,
+        same granularity, same answer."""
+        now_ts = three_days(
+            engine, seeded_store, actual_kwh=10.0, predicted_kwh=15.0, chain_kwh=10.0
+        )
+        result = engine.score_day_ahead(3, now_ts)
+
+        assert result["attribution"]["wmape_end_to_end"] == pytest.approx(
+            result["uncensored"]["wmape"]
+        )

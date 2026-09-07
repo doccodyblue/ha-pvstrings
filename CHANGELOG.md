@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.22.1 — 2026-09-07
+
+### Fixed
+
+- **The forecast-error split was on a different scale than the number it
+  splits.** `wmape` is published as a ratio of *daily* sums, but the
+  attribution added up hourly absolute errors, which cannot cancel within a
+  day. On a real plant that read as 63 % end-to-end next to a day-ahead
+  accuracy sensor showing 21 % -- the same data, three times apart, and the
+  obvious conclusion from the pair ("almost all of it is our chain") was the
+  opposite of the truth. All three figures are now daily, so the split
+  explains the sensor beside it instead of contradicting it. `days_split_7d`
+  and `days_split_30d` say how many days each rests on.
+
 ## v1.22.0 — 2026-09-06
 
 ### Added

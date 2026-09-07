@@ -179,13 +179,26 @@ REASON_COLLECTING = "collecting"
 
 @dataclass(slots=True)
 class _Attribution:
-    """Sums behind the split of one score into source and chain."""
+    """Sums behind the split of one score into source and chain.
 
-    end_to_end: float = 0.0
-    chain: float = 0.0
-    source: float = 0.0
-    actual: float = 0.0
+    Accumulated per **day**, because that is the granularity ``wmape`` is
+    published at, and a split has to be on the same scale as the number it
+    splits.  Summing hourly absolute errors instead gives figures two to three
+    times larger -- an hour early and an hour late cancel in a day and cannot
+    cancel in an hour -- which read as a far worse plant next to the accuracy
+    sensors rather than as an explanation of them.
+    """
+
+    #: ``day -> [forecast, chain, actual]`` over the hours all three cover.
+    daily: dict[str, list[float]] = field(default_factory=dict)
     hours: int = 0
+
+    def add(self, day: str, predicted: float, chain: float, actual: float) -> None:
+        bucket = self.daily.setdefault(day, [0.0, 0.0, 0.0])
+        bucket[0] += predicted
+        bucket[1] += chain
+        bucket[2] += actual
+        self.hours += 1
 
 
 def _day_ahead_history(
@@ -1933,24 +1946,30 @@ class ForecastEngine:
     def _attribution(self, tally: "_ScoreTally") -> dict[str, Any]:
         """Split the score into "the forecast was wrong" and "we were wrong".
 
-        Three ratios on one set of hours, all against the measured energy the
-        way ``wmape`` is: what the published forecast cost end to end, what the
-        chain costs when the irradiance is known, and how far the irradiance
-        input alone moved the answer. They are absolute errors, so the two
-        parts do not add up to the whole -- an over- and an under-shoot can
-        cancel in the total and cannot cancel here.
+        Three ratios over the same days, against the measured energy and at the
+        same granularity as ``wmape`` itself: what the published forecast cost
+        end to end, what the chain costs when the irradiance is known, and how
+        far the irradiance input alone moved the answer.  Daily rather than
+        hourly on purpose -- a split that is two to three times larger than the
+        number it explains reads as a worse plant instead of as an explanation.
+
+        They are absolute errors, so the two parts do not add up to the whole:
+        an over- and an under-shoot cancel in the total and cannot cancel
+        here.
 
         The chain figure flatters itself slightly: the learned correction it
         contains was fitted on these very hours. It is a regression signal for
         development, not a claim of accuracy on unseen days.
         """
         split = tally.attribution
+        actual = sum(day[2] for day in split.daily.values())
         base: dict[str, Any] = {
             "hours": split.hours,
             "hours_scored": len(tally.every),
-            "kwh_actual": round(split.actual, 3),
+            "days": len(split.daily),
+            "kwh_actual": round(actual, 3),
         }
-        if split.hours < ATTRIBUTION_MIN_HOURS or split.actual <= 0:
+        if split.hours < ATTRIBUTION_MIN_HOURS or actual <= 0:
             return {
                 **base,
                 "wmape_end_to_end": None,
@@ -1965,9 +1984,15 @@ class ForecastEngine:
             }
         return {
             **base,
-            "wmape_end_to_end": split.end_to_end / split.actual,
-            "wmape_chain": split.chain / split.actual,
-            "wmape_source": split.source / split.actual,
+            "wmape_end_to_end": sum(
+                abs(day[0] - day[2]) for day in split.daily.values()
+            ) / actual,
+            "wmape_chain": sum(
+                abs(day[1] - day[2]) for day in split.daily.values()
+            ) / actual,
+            "wmape_source": sum(
+                abs(day[0] - day[1]) for day in split.daily.values()
+            ) / actual,
             "reason": None,
         }
 
@@ -2062,12 +2087,7 @@ class ForecastEngine:
                 if chain is not None:
                     # All three on the same hours, or the numbers would answer
                     # different questions and still be read side by side.
-                    attribution = tally.attribution
-                    attribution.end_to_end += abs(predicted - actual)
-                    attribution.chain += abs(float(chain) - actual)
-                    attribution.source += abs(predicted - float(chain))
-                    attribution.actual += actual
-                    attribution.hours += 1
+                    tally.attribution.add(day, predicted, float(chain), actual)
             if row["value_kind"] == VALUE_MEASURED and not row["curtailed_fraction"]:
                 tally.uncensored.append((predicted, actual))
                 tally.daily_uncensored.setdefault(day, [0.0, 0.0])
