@@ -10,7 +10,7 @@ body:
         - **"Forecast today" is not a day-end value.** Past hours are frozen as they
           were predicted, and only the remaining hours still move. It never catches
           up with reality retroactively, by design — otherwise the accuracy figures
-          would be worthless. Judge the day-ahead accuracy sensors instead.
+          would be worthless. Judge the day-ahead error sensors instead.
         - **"Remaining today" is a subset of "forecast today"**, not a second
           summand. Today = elapsed + remaining.
   - type: textarea

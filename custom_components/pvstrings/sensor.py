@@ -133,7 +133,8 @@ def _score(
 
 _GRANULARITY_NOTE = (
     "wmape and daily_bias_kwh are about whole days; bias, mae_kwh and nmae "
-    "are means over single hours."
+    "are means over single hours. All are errors: 0 would be a perfect "
+    "forecast, lower is better."
 )
 
 _COMPARABILITY_NOTE = (

@@ -438,10 +438,10 @@
         "name": "Bias 7 days"
       },
       "wmape_day_ahead_7d": {
-        "name": "Day-ahead accuracy 7 days"
+        "name": "Day-ahead error 7 days"
       },
       "wmape_day_ahead_30d": {
-        "name": "Day-ahead accuracy 30 days"
+        "name": "Day-ahead error 30 days"
       },
       "bias_day_ahead_30d": {
         "name": "Day-ahead bias 30 days"

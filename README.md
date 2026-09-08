@@ -49,8 +49,8 @@ Per plant:
 | Forecast next hour, peak hour today | |
 | Produced today | measured, from the integration's own 5-minute data |
 | Deviation yesterday | what the evening-before forecast said, vs. actual |
-| Day-ahead accuracy 7 d | how good "tomorrow" actually is; see *Metrics* |
-| Day-ahead accuracy 30 d, day-ahead bias 30 d | diagnostic |
+| Day-ahead error 7 d | how wrong "tomorrow" actually is — 0 % would be perfect; see *Metrics* |
+| Day-ahead error 30 d, day-ahead bias 30 d | diagnostic |
 | WMAPE 7 d / 30 d, Bias 7 d | diagnostic; nowcast quality, see *Metrics* |
 | Savings today / month / total | measured energy, not forecast |
 | Amortisation | progress, months remaining, target date |
@@ -132,7 +132,7 @@ yours, as many as you like, without adding twenty-four entities to everyone
 else's registry.
 
 If the number drives a decision with a cost attached, pair it with the
-day-ahead accuracy sensors: they say how wrong *your* plant's day-ahead
+day-ahead error sensors: they say how wrong *your* plant's day-ahead
 forecast has been over the last 7 and 30 days, which is the honest margin to
 plan with.
 
@@ -145,7 +145,7 @@ with `forecast_kwh`, `actual_kwh` and the number of `days` behind it. Summed
 over your own window it is the margin that window needs:
 
 ```jinja
-{% set profile = state_attr('sensor.YOUR_PLANT_day_ahead_accuracy_30_days', 'hourly_profile') or [] %}
+{% set profile = state_attr('sensor.YOUR_PLANT_day_ahead_error_30_days', 'hourly_profile') or [] %}
 {% set ns = namespace(forecast=0.0, actual=0.0) %}
 {% for row in profile if 5 <= row.hour < 11 %}
   {% set ns.forecast = ns.forecast + row.forecast_kwh %}
@@ -156,9 +156,13 @@ over your own window it is the margin that window needs:
 
 Positive means the morning was announced too high, by that share; plan with
 it as a discount on tomorrow's window sum. The hours are already local, so no
-`as_local` here. Unlike the accuracy figures, the profile is not held back
+`as_local` here. Unlike the error figures, the profile is not held back
 until three days are in — the `days` field says how thin the basis is, and
 thin is what a fresh installation has to work with.
+
+Installations set up before 1.24 keep the entity id they were registered
+with, `sensor.YOUR_PLANT_day_ahead_accuracy_30_days`; only the display name
+changed. Home Assistant never renames an entity id behind your automations.
 
 If you would rather see it than query it,
 **[PV Strings Dashboard](https://github.com/doccodyblue/ha-pvstrings-dash)** is a
@@ -410,8 +414,14 @@ local day against the forecast as it stood at **18:00 local time the evening
 before** — one coherent model run, and exactly the numbers somebody would have
 read off the dashboard. Only complete days count, and nothing is published
 until three of them are in, so a single day's weather cannot masquerade as an
-accuracy figure. Expect the day-ahead number to sit well above the nowcast one:
+error figure. Expect the day-ahead number to sit well above the nowcast one:
 that gap is the honest cost of forecasting a day ahead.
+
+Every figure here is an error: **0 would be a perfect forecast, and lower is
+better.** The day-ahead sensors were called *accuracy* until 1.24, and a
+reader took 31.6 % to mean "about a third right" — the opposite of what it
+says. It means the day-ahead forecasts missed, in total, by a third of what
+came.
 
 The 30-day day-ahead sensor also publishes the pairs behind its number: a
 `history` of announced-versus-measured per day, plant and per string, and an
@@ -439,7 +449,7 @@ the published forecast to it is the source's:
 | `wmape_source_7d` | how far the irradiance forecast alone moved the answer |
 | `wmape_end_to_end_7d` | both together, on the same hours |
 
-All three are ratios of daily sums, exactly like the accuracy sensors
+All three are ratios of daily sums, exactly like the error sensors
 themselves — a split computed over hours comes out two to three times larger
 for the same data and would read as a worse plant rather than as an
 explanation of one.
@@ -671,7 +681,7 @@ has been exercised against a real database.
 sky map, storage and the config-flow schemas — including the parts that only
 fail against a real Home Assistant.
 
-The model does need time, and says so rather than guessing: no accuracy figure is
+The model does need time, and says so rather than guessing: no error figure is
 published for the first three days, because one day of history makes a confident
 percentage out of one day's weather. The sky map learns only the sky the sun has
 actually crossed, so a full year is what it takes to be complete — on a fresh

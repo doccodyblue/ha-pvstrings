@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **The day-ahead sensors are named for what they show.** "Day-ahead accuracy
+  7 days" is now "Day-ahead error 7 days", likewise for 30 days, in both
+  languages. They publish WMAPE, an error where 0 is perfect and lower is
+  better; called *accuracy*, 31.6 % was read as "about a third right", which
+  is the opposite of what it says (#5). Display names only: entity ids are
+  fixed in the registry at first setup, so existing automations, templates
+  and dashboards keep working unchanged. New installations get
+  `..._day_ahead_error_...` ids; the README shows both. The attribute note on
+  every score sensor now says which direction is good.
+
 ## v1.23.0 — 2026-09-08
 
 ### Added
