@@ -7,8 +7,10 @@ body:
       value: |
         The **diagnostics download** answers most of the questions below on its own:
         Settings → Devices & services → PV Strings → ⋮ → *Download diagnostics*.
-        Coordinates are redacted; entity ids and the geometry history are not, so
-        look it over before you attach it.
+        Coordinates and the investment figure are redacted. The plant name, every
+        entity id, the geometry history, and your tariff and feed-in prices are
+        not — if your plant is named after your street, so is the file. Look it
+        over before you attach it to a public issue.
   - type: textarea
     id: what
     attributes:

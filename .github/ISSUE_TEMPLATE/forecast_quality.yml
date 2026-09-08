@@ -55,6 +55,8 @@ body:
         Settings → Devices & services → PV Strings → ⋮ → *Download diagnostics*.
         It carries the geometry history, the model state and the collector
         counters — which is what tells "the forecast is wrong" apart from "the
-        data going in is wrong". Coordinates are redacted.
+        data going in is wrong". Coordinates and the investment figure are
+        redacted; the plant name, entity ids and prices are not, so look it over
+        before attaching it to a public issue.
     validations:
       required: true

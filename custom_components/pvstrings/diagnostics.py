@@ -16,7 +16,11 @@ from homeassistant.util import dt as dt_util
 from . import PvStringsConfigEntry
 from .const import SUBENTRY_GROUP, SUBENTRY_STRING
 
-TO_REDACT = {"latitude", "longitude", "elevation"}
+# Coordinates, and the one figure in the options that support never needs and
+# nobody wants in a public issue.  Prices stay: a tariff question cannot be
+# answered without them.  The plant name and every entity id stay too -- they
+# are what the file is for -- so the issue templates say to look it over.
+TO_REDACT = {"latitude", "longitude", "elevation", "investment_eur"}
 
 
 async def async_get_config_entry_diagnostics(

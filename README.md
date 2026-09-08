@@ -619,6 +619,17 @@ Raw five-minute data is purged after the retention period (default 3 years).
 Hourly aggregates, geometry history and model state are kept indefinitely; they
 are tiny and they are the memory of the system.
 
+### What the diagnostics download contains
+
+Settings → Devices & services → PV Strings → ⋮ → *Download diagnostics*. It is
+deliberately verbose, because it is what tells "the forecast is wrong" apart
+from "the data going in is wrong": the geometry history, the model state, the
+collector counters, the scores, the last twenty-four hours of hourly rows, and
+the configuration. Coordinates, elevation and the investment figure are
+redacted. **The plant name, every entity id, and your tariff and feed-in prices
+are not** — they are what the file is for. If your plant is named after your
+street, so is the file; read it before attaching it to a public issue.
+
 ---
 
 ## Shading, and what the map can and cannot see

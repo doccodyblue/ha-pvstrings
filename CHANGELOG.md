@@ -13,6 +13,11 @@
   and dashboards keep working unchanged. New installations get
   `..._day_ahead_error_...` ids; the README shows both. The attribute note on
   every score sensor now says which direction is good.
+- **The diagnostics download redacts the investment figure.** Support never
+  needs it and nobody wants it in a public issue. Coordinates were already
+  redacted; the plant name, entity ids and prices still are not, because the
+  file is useless without them -- the issue templates and the README now say
+  so plainly, so nobody attaches their street name without meaning to.
 
 ## v1.23.0 — 2026-09-08
 
