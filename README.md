@@ -1,4 +1,4 @@
-![PV Strings](custom_components/pvstrings/brand/icon.png)
+![ha-pvstrings — PV String Monitoring for Home Assistant](docs/banner.png)
 
 # PV Strings
 
