@@ -104,9 +104,15 @@ DAY_AHEAD_ISSUE_HOUR_LOCAL = 18
 #: weather of a single day, which is worse than admitting we do not know yet.
 MIN_SCORED_DAYS = 3
 
-#: Shading observations are only collected above this elevation; below it the
-#: ratio is dominated by the model's own low-sun uncertainty.
-SHADING_MIN_ELEVATION_DEG = 8.0
+#: Shading observations are only collected above this elevation.  Below it
+#: the ratio carries more of the model's own low-sun uncertainty -- but that
+#: is also where the horizon lives.  At eight degrees the first hour after
+#: sunrise was never observed: a hedge, a shed or a neighbour's roof that
+#: takes the low sun was invisible to the map by construction, and the
+#: forecast for that hour stayed unshaded every single day.  Three degrees
+#: keeps the sun out of the refraction band and leaves the noise to the beam
+#: weight and the per-cell observation floor.
+SHADING_MIN_ELEVATION_DEG = 3.0
 
 #: How much the pile of shading observations must grow before the sky map is
 #: worth rebuilding.  Proportional on purpose: a two-day-old map gains half

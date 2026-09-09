@@ -36,6 +36,21 @@
 
 ### Changed
 
+- **The sky map now learns down to 3° of sun, where the horizon lives.**
+  Shading observations were gated at 8° elevation to keep the model's
+  low-sun uncertainty out of the map. That also kept the first hour after
+  sunrise out of it entirely: a hedge, a shed or a neighbour's roof that
+  takes the low sun could never be observed, the map had no cell there, and
+  the forecast for that hour stayed unshaded every day. On the reference
+  plant the day-ahead profile showed it as +41 % and +32 % at 06 and 07
+  local, while an east string with a known low obstacle delivered 35–76 %
+  of its identical twin on every sunny morning and carried a loss of 0. The
+  gate is now 3° -- above the refraction band, below the horizon -- and the
+  beam weight plus the per-cell observation floor deal with the noise. Cells
+  between 3° and 8° fill in over the coming mornings; nothing is refitted
+  retroactively. Watch the hourly profile of the 30-day day-ahead sensor:
+  the 06–08 h errors should shrink within two weeks. If they do not, this is
+  the constant to raise again.
 - **The day-ahead sensors are named for what they show.** "Day-ahead accuracy
   7 days" is now "Day-ahead error 7 days", likewise for 30 days, in both
   languages. They publish WMAPE, an error where 0 is perfect and lower is
