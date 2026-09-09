@@ -473,6 +473,9 @@
       "string_forecast_tomorrow": {
         "name": "Forecast tomorrow"
       },
+      "string_cell_temperature": {
+        "name": "Cell temperature"
+      },
       "string_potential_now": {
         "name": "Potential this hour"
       },

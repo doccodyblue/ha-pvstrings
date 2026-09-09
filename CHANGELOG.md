@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+### Added
+
+- **Heat is reported, not hidden.** Every forecast hour now carries a
+  `thermal` factor in its chain -- the physics over the same physics with the
+  cells held at 25 °C -- next to `source_bias`, `shading` and `model`, plus
+  the `cell_temp_c` that explains it and the `air_temp_c` and `wind_ms` it
+  was computed from. Not a fourth correction: heat was always inside
+  `physics_kwh`, it just never showed. Below 1 the modules lose to heat,
+  above 1 they gain from cold, and a dashboard can finally draw the whole
+  chain. Each string gets a diagnostic **Cell temperature** sensor for the
+  running hour, with the factor, the air and `heat_loss_today_kwh` as
+  attributes. The irradiance forecast sensor reports
+  `station_air_share_today`: the share of today's daylight intervals for
+  which a configured temperature or wind sensor delivered a value, so the
+  fix below can be seen working. No entity ids, units or existing attributes
+  change.
+
+### Fixed
+
+- **Local temperature and wind sensors now reach the physics.** Both were
+  configurable, the collector wrote them to the store every five minutes, and
+  the reconstruction of past hours never read them back: the cell-temperature
+  model kept running on the forecast's air temperature and wind. A still
+  35 °C afternoon was thus reconstructed as a 25 °C breeze, and the few
+  percent the modules actually lost to heat were learned as a weather-class
+  weakness instead. `_actual_conditions` now replaces the forecast
+  temperature and wind interval by interval with the station value where one
+  exists, on the same terms as the measured irradiance: only for sensors
+  configured right now, only inside physical bounds (−40…60 °C, 0…60 m/s),
+  and with a per-interval fallback to the forecast rather than a hole. The
+  forward forecast is unchanged -- there is no station reading for tomorrow.
+
 ### Changed
 
 - **The day-ahead sensors are named for what they show.** "Day-ahead accuracy

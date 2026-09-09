@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 from .config import INTERVAL_SECONDS
 from .quality import VALUE_MEASURED
@@ -376,3 +376,27 @@ def remaining_kwh(
 def split_source(share: float | None) -> str:
     """Name the basis of a remaining value, for the sensor to publish."""
     return SPLIT_HOURLY if share is None else SPLIT_FINE
+
+
+def thermal_loss_kwh(
+    hourly: Sequence[tuple[int, float]],
+    chain: Mapping[int, Mapping[str, Any]],
+    start_ts: int,
+    end_ts: int,
+) -> float:
+    """Energy the forecast attributes to cell temperature inside the window.
+
+    Each hour's ``thermal`` factor is its physics over the same physics with
+    the cells held at 25 degC, so ``value / factor`` is the hour without heat.
+    Positive is energy lost to heat, negative is gained from cold: a clear
+    January morning comes out ahead of the reference.  Hours without a factor
+    -- an older forecast, a dark hour -- count as neutral.
+    """
+    total = 0.0
+    for ts, value in hourly:
+        if not start_ts <= ts < end_ts:
+            continue
+        factor = (chain.get(ts) or {}).get("thermal")
+        if factor:
+            total += value / factor - value
+    return total

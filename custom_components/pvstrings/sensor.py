@@ -27,6 +27,7 @@ from homeassistant.const import (
     EntityCategory,
     UnitOfEnergy,
     UnitOfPower,
+    UnitOfTemperature,
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.core import callback
@@ -85,6 +86,28 @@ def _forecast_attribute(
         }
         for ts, value in hourly
     ]
+
+
+def _thermal_attrs(data: PvStringsData, sid: str) -> dict[str, Any]:
+    """What heat is doing to this string's running hour, and to its day."""
+    hour = data.strings[sid].chain.get(floor_hour(_now_ts()), {})
+    return {
+        "thermal_factor": hour.get("thermal"),
+        "air_temp_c": hour.get("air_temp_c"),
+        "wind_ms": hour.get("wind_ms"),
+        "heat_loss_today_kwh": round(
+            data.strings[sid].heat_loss_between(data.day_start, data.day_end), 3
+        ),
+        "note": (
+            "Modelled, not measured: the Sandia cell-temperature model for this "
+            "mount type, fed with the running hour's air temperature, wind and "
+            "plane irradiance from the forecast. thermal_factor is the hour's "
+            "physics over the same physics at 25 °C cells -- below 1 the modules "
+            "lose to heat, above 1 they gain from cold. heat_loss_today_kwh is "
+            "that difference summed over today's forecast, positive when heat "
+            "costs energy."
+        ),
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -785,6 +808,23 @@ STRING_SENSORS: tuple[StringSensorDescription, ...] = (
                 "is never corrected, so it reads 0 %."
             ),
         },
+    ),
+    StringSensorDescription(
+        key="cell_temperature",
+        translation_key="string_cell_temperature",
+        device_class=SensorDeviceClass.TEMPERATURE,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        suggested_display_precision=0,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        # Diagnostic because its job is to explain the chain, not to be acted
+        # on -- but it is the number that says why a clear July afternoon
+        # delivers less than a clear April one.  Unknown at night: with no
+        # light on the plane there is no cell temperature worth the name.
+        value_fn=lambda data, sid: data.strings[sid]
+        .chain.get(floor_hour(_now_ts()), {})
+        .get("cell_temp_c"),
+        attrs_fn=_thermal_attrs,
     ),
     StringSensorDescription(
         key="forecast_today",

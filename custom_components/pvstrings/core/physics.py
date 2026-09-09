@@ -38,6 +38,11 @@ COMPONENT_TOLERANCE = 0.15
 #: signal) and the components are accepted as given.
 COMPONENT_MIN_ELEVATION_DEG = 5.0
 
+#: Cell temperature the nameplate is rated at.  The chain is run a second time
+#: with the cells held here so the cost of heat can be reported instead of
+#: staying buried in the power figure.
+STC_CELL_TEMP_C = 25.0
+
 
 @dataclass(frozen=True, slots=True)
 class StringResult:
@@ -56,6 +61,13 @@ class StringResult:
     #: is linear in this (before the nameplate cap), so dividing dc by it
     #: recovers unshaded power.
     shading_applied: pd.Series | None = None
+    #: The same chain with the cells held at ``STC_CELL_TEMP_C``: what the
+    #: modules would make if heat did not count.  ``dc_power_w`` over it is
+    #: the thermal factor -- below one on a hot still afternoon, above one on
+    #: a cold clear morning -- and the difference is the energy heat costs.
+    #: Shaded, derated and capped exactly like ``dc_power_w``, so the ratio
+    #: is thermal and nothing else.
+    stc_power_w: pd.Series | None = None
 
     def energy_kwh(self, interval_seconds: int) -> float:
         return float(self.dc_power_w.sum()) * interval_seconds / 3600.0 / 1000.0
@@ -421,14 +433,23 @@ class PhysicsEngine:
             pdc0=geometry.kwp * 1000.0,
             gamma_pdc=geometry.temp_coeff,
         ).clip(lower=0.0)
+        reference = pvlib.pvsystem.pvwatts_dc(
+            g_poa_effective=effective,
+            temp_cell=STC_CELL_TEMP_C,
+            pdc0=geometry.kwp * 1000.0,
+            gamma_pdc=geometry.temp_coeff,
+        ).clip(lower=0.0)
 
         dc = dc * system_efficiency
+        reference = reference * system_efficiency
         # Never promise more than the modules can physically deliver.
         dc = dc.clip(upper=geometry.kwp * 1000.0)
+        reference = reference.clip(upper=geometry.kwp * 1000.0)
 
         return StringResult(
             index=index,
             dc_power_w=dc.fillna(0.0),
+            stc_power_w=reference.fillna(0.0),
             poa_global=poa["poa_global"].fillna(0.0),
             cell_temp_c=cell_temp,
             aoi_deg=aoi,

@@ -246,6 +246,25 @@ recovers most of the benefit: a constant scale error cancels out between this
 layer and the per-string one, and what remains is the spectral drift with cloud
 cover.
 
+**Temperature and wind refine the cell-temperature model.** The physics reads
+module temperature off air temperature and wind speed (Sandia model, per mount
+type), and a string on a still 35 °C afternoon runs several percent below the
+same string in a 20 °C breeze. The forecast always supplies both; where a
+local temperature or wind sensor is configured, its reading replaces the
+forecast value for every interval it covered when past hours are
+reconstructed for learning. Without the sensors that difference is booked as
+weather-class weakness; with them it stays in the physics. Units are read
+from the entity, so °F and km/h are fine. Readings outside −40…60 °C or
+0…60 m/s are treated as a sensor fault and fall back to the forecast.
+
+What heat costs is reported rather than hidden: every forecast hour carries a
+`thermal` factor in its chain attributes (the physics over the same physics at
+25 °C cells, next to `source_bias`, `shading` and `model`) with the
+`cell_temp_c`, `air_temp_c` and `wind_ms` behind it, and each string has a
+diagnostic *Cell temperature* sensor whose `heat_loss_today_kwh` sums the
+day. The `Irradiance forecast` sensor's `station_air_share_today` says how
+much of today's daylight the temperature and wind sensors actually covered.
+
 ### No internet access?
 
 Switch the irradiance source to *Home Assistant weather entity*. Cloud cover is

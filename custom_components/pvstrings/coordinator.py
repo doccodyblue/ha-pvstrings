@@ -37,9 +37,10 @@ from .core.aggregate import (
     hour_share_ahead,
     merge_hourly,
     remaining_kwh as split_remaining,
+    thermal_loss_kwh,
     split_source,
 )
-from .core.config import CurtailmentGroup, PlantConfig
+from .core.config import INTERVAL_SECONDS, CurtailmentGroup, PlantConfig
 from .core.conversion import CURVE_NEUTRAL, ConversionResult, convert_group
 from .core.learning import SCOPE_CONVERSION_CURVE
 from .core.forecast import HOUR, ForecastEngine, LearnStats, floor_hour
@@ -70,8 +71,9 @@ class StringForecast:
     #: The same hours with the sky map switched off.  Plotted against
     #: ``hourly`` it shows how much of the gap to reality the map explains.
     unshaded: list[tuple[int, float]] = field(default_factory=list)
-    #: Per hour, what each layer of the model did to the raw physics.
-    chain: dict[int, dict[str, float]] = field(default_factory=dict)
+    #: Per hour, what each layer of the model did to the raw physics, and the
+    #: cell temperature that sits inside the physics itself.
+    chain: dict[int, dict[str, float | None]] = field(default_factory=dict)
     #: Five-minute detail of the hour that has already started, and the next
     #: one.  Unrounded on purpose: it is a divisor, not a display value.
     fine: list[tuple[int, float]] = field(default_factory=list)
@@ -94,6 +96,10 @@ class StringForecast:
             if ts == ts_utc:
                 return value
         return 0.0
+
+    def heat_loss_between(self, start_ts: int, end_ts: int) -> float:
+        """kWh the forecast attributes to heat in the window; negative is a gain."""
+        return thermal_loss_kwh(self.hourly, self.chain, start_ts, end_ts)
 
 
 @dataclass(slots=True)
@@ -579,6 +585,17 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
                 "physics_kwh": round(
                     row.unshaded_kwh / row.correction if row.correction else 0.0, 4
                 ),
+                # Not a fourth factor: heat is already inside ``physics_kwh``.
+                # Reported so the chain can show what the cells cost, and the
+                # air it was computed from so a hot hour explains itself.
+                "thermal": round(row.thermal_factor, 4),
+                "cell_temp_c": (
+                    round(row.cell_temp_c, 1) if row.cell_temp_c is not None else None
+                ),
+                "air_temp_c": (
+                    round(row.air_temp_c, 1) if row.air_temp_c is not None else None
+                ),
+                "wind_ms": round(row.wind_ms, 1) if row.wind_ms is not None else None,
             }
             plant_hourly[row.ts_utc] = plant_hourly.get(row.ts_utc, 0.0) + row.potential_kwh
             plant_unshaded[row.ts_utc] = (
@@ -926,6 +943,10 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
             # see ``nowcast_*`` below for that.
             "truth_source": "measured" if has_sensor and measured is not None else "nowcast",
             **self._nowcast_attributes(),
+            # Whether the temperature and wind sensors actually reach the
+            # reconstruction of past hours, as the share of today's daylight
+            # intervals that carry a station value.  None without a sensor.
+            "station_air_share_today": self._station_air_share(now_ts),
             "ghi_entity": sources.ghi_entity,
             "illuminance_entity": sources.illuminance_entity,
             # Reported rather than guessed: Home Assistant never exposes entry
@@ -949,6 +970,39 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
                 if entity
             },
         }
+
+    def _station_air_share(self, now_ts: int) -> dict[str, float | None]:
+        """Share of today's daylight intervals carrying a station air value.
+
+        The collector writes temperature and wind, the reconstruction reads
+        them back; this is the one number that shows the pipe is open.  Only
+        daylight counts, for the same reason the coverage figures clamp to
+        it.  None for a quantity with no sensor configured, and before
+        sunrise, when there is nothing to have covered yet.
+        """
+        sources = self.plant.weather_sources
+        wanted = {
+            "temperature": (sources.temperature_entity, "temp_c"),
+            "wind": (sources.wind_speed_entity, "wind_ms"),
+        }
+        out: dict[str, float | None] = {label: None for label in wanted}
+        if not any(entity for entity, _column in wanted.values()):
+            return out
+        day_start, _day_end = self._local_day_bounds(
+            dt_util.utc_from_timestamp(now_ts)
+        )
+        window = self.physics.daylight_window_for(day_start + 43200)
+        start, end = clamp_to_daylight(day_start, now_ts, window)
+        expected = (end - start) // INTERVAL_SECONDS
+        if expected <= 0:
+            return out
+        rows = self.store.weather_actual_range(start, end)
+        for label, (entity, column) in wanted.items():
+            if not entity:
+                continue
+            have = sum(1 for row in rows if row[column] is not None)
+            out[label] = round(min(1.0, have / expected), 3)
+        return out
 
     def _nowcast_attributes(self) -> dict[str, Any]:
         """What the sensor contributed to the remaining forecast, or why nothing.

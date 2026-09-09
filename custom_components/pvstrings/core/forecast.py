@@ -83,6 +83,14 @@ CURSOR_BIAS = "ghi_bias_learned"
 #: "nowcast" -- our best guess at what the irradiance actually was.
 NOWCAST_MAX_HORIZON_H = 2
 
+#: Station air temperature and wind are believed inside these bounds only.
+#: The collector has already normalised the units, so a value outside is a
+#: sensor fault -- a vane reporting -1 m/s, a probe stuck at 85 degC -- and
+#: not a unit slip.  Dropped rather than clamped: the forecast is a
+#: serviceable second-best, a clamped fault is not.
+MEASURED_TEMP_RANGE_C = (-40.0, 60.0)
+MEASURED_WIND_RANGE_MS = (0.0, 60.0)
+
 #: Local hour whose forecast counts as "what we said the day before".  Day-ahead
 #: quality is scored against the run that stood at this time on the previous
 #: day, not against a rolling lead: a rolling one draws each hour of a day from
@@ -121,6 +129,14 @@ METHOD_PHYSICS = "physics"
 METHOD_CORRECTED = "physics+learned"
 
 
+def _hour_mean(frame: pd.DataFrame, hour: int, column: str) -> float | None:
+    """One cell of an hourly-mean frame, or None where the hour has no rows."""
+    if hour not in frame.index:
+        return None
+    value = frame.at[hour, column]
+    return float(value) if np.isfinite(value) else None
+
+
 @dataclass(frozen=True, slots=True)
 class HourForecast:
     """One forecast hour of one string."""
@@ -142,6 +158,18 @@ class HourForecast:
     #: irradiance source was trusted at, and what the sky map took away.
     bias_factor: float = 1.0
     shading_factor: float = 1.0
+    #: Physics over the same physics with the cells held at 25 degC: what heat
+    #: did to the hour.  Below one on a hot still afternoon, above one on a
+    #: cold morning.  Not a correction -- it is already inside
+    #: ``physics_kwh`` -- reported so the chain can show it instead of
+    #: hiding it there.
+    thermal_factor: float = 1.0
+    #: Irradiance-weighted mean cell temperature of the hour; None when no
+    #: light reached the plane.
+    cell_temp_c: float | None = None
+    #: The air the cell temperature was computed from, as hourly means.
+    air_temp_c: float | None = None
+    wind_ms: float | None = None
     #: ``(interval_start, kWh)`` for this hour, filled only for the hours the
     #: caller asked for.  It sums to ``potential_kwh``: the same correction is
     #: applied to both, so a "how much of this hour is left" split cannot
@@ -918,6 +946,9 @@ class ForecastEngine:
             int(hour): (row["wb"] / row["w"] if row["w"] > 0 else 1.0)
             for hour, row in bias_frame.iterrows()
         }
+        # Hourly means of the air the cell temperature was computed from,
+        # reported with the chain so a reader can see *why* an hour ran hot.
+        air_by_hour = conditions.groupby("hour")[["temp_c", "wind_ms"]].mean()
         # Shading is a learned correction like any other, so it answers to both
         # gates: ``apply_learning`` for callers that want the bare physics --
         # the accuracy baseline, and every test that pins the chain itself --
@@ -942,6 +973,11 @@ class ForecastEngine:
 
             per_hour: dict[int, float] = {}
             per_hour_unshaded: dict[int, float] = {}
+            # The same hours with the cells held at the 25 degC reference, and
+            # the irradiance-weighted cell temperature that explains the gap.
+            per_hour_reference: dict[int, float] = {}
+            per_hour_cell_weight: dict[int, float] = {}
+            per_hour_cell_sum: dict[int, float] = {}
             per_fine: dict[int, dict[int, float]] = {}
             for segment, hours_in_segment in grouped:
                 mask = np.isin(hour_keys, hours_in_segment)
@@ -981,6 +1017,7 @@ class ForecastEngine:
                     shading_scope=shading_scope,
                 )
                 power = result.dc_power_w.to_numpy()
+                reference = result.stc_power_w.to_numpy()
                 # The chain is exactly linear in the *applied* ratio -- it
                 # scales the effective irradiance, and the cell temperature is
                 # taken from the unscaled plane irradiance -- so dividing it
@@ -1011,15 +1048,39 @@ class ForecastEngine:
                     # the binding test stays uncapped -- see _interval_power.
                     power = np.minimum(power, string.max_power_w)
                     bare = np.minimum(bare, string.max_power_w)
+                    reference = np.minimum(reference, string.max_power_w)
                 energy = power * INTERVAL_SECONDS / HOUR / 1000.0
                 unshaded = bare * INTERVAL_SECONDS / HOUR / 1000.0
-                for hour, value, bare in zip(
-                    sub["hour"].to_numpy(), energy, unshaded
+                held = reference * INTERVAL_SECONDS / HOUR / 1000.0
+                # Weighted by plane irradiance: the cell temperature of a dark
+                # interval is the air temperature and says nothing about the
+                # hour's energy.  An interval whose temperature is undefined
+                # carries no weight rather than a zero.
+                cell_raw = result.cell_temp_c.to_numpy(dtype=float)
+                cell_weight = np.where(
+                    np.isfinite(cell_raw),
+                    np.nan_to_num(result.poa_global.to_numpy(dtype=float), nan=0.0),
+                    0.0,
+                )
+                cell = np.nan_to_num(cell_raw, nan=0.0)
+                for hour, value, bare, ref, weight, temp in zip(
+                    sub["hour"].to_numpy(), energy, unshaded, held, cell_weight, cell
                 ):
-                    per_hour[int(hour)] = per_hour.get(int(hour), 0.0) + float(value)
-                    per_hour_unshaded[int(hour)] = per_hour_unshaded.get(
-                        int(hour), 0.0
-                    ) + float(bare)
+                    key = int(hour)
+                    per_hour[key] = per_hour.get(key, 0.0) + float(value)
+                    per_hour_unshaded[key] = per_hour_unshaded.get(key, 0.0) + float(
+                        bare
+                    )
+                    per_hour_reference[key] = per_hour_reference.get(key, 0.0) + float(
+                        ref
+                    )
+                    if weight > 0.0:
+                        per_hour_cell_weight[key] = per_hour_cell_weight.get(
+                            key, 0.0
+                        ) + float(weight)
+                        per_hour_cell_sum[key] = per_hour_cell_sum.get(
+                            key, 0.0
+                        ) + float(weight * temp)
                 if fine_window is not None:
                     lo, hi = fine_window
                     # The index holds interval midpoints; the series is keyed
@@ -1062,6 +1123,18 @@ class ForecastEngine:
                             if per_hour_unshaded.get(hour)
                             else 1.0
                         ),
+                        thermal_factor=(
+                            physics_kwh / per_hour_reference[hour]
+                            if per_hour_reference.get(hour)
+                            else 1.0
+                        ),
+                        cell_temp_c=(
+                            per_hour_cell_sum[hour] / per_hour_cell_weight[hour]
+                            if per_hour_cell_weight.get(hour)
+                            else None
+                        ),
+                        air_temp_c=_hour_mean(air_by_hour, hour, "temp_c"),
+                        wind_ms=_hour_mean(air_by_hour, hour, "wind_ms"),
                         weather=weather,
                         part=part,
                         method=method,
@@ -1331,11 +1404,20 @@ class ForecastEngine:
     def _actual_conditions(
         self, index: pd.DatetimeIndex, start_ts: int, end_ts: int
     ) -> pd.DataFrame | None:
-        """Best available reconstruction of the irradiance that actually occurred.
+        """Best available reconstruction of the conditions that actually occurred.
 
         Preference order: a measured GHI (or illuminance) sensor, then the
         source's shortest-horizon run for that hour.  Never a long-horizon
         forecast -- that would fold forecast error into the model correction.
+
+        Air temperature and wind follow the same rule.  The cell-temperature
+        model reads them, and a string on a still 35 degC afternoon runs
+        several percent below the same string in a 20 degC breeze.  Left to
+        the forecast, that difference lands in the learned correction as
+        "weather-class weakness"; taken from the station it stays where it
+        belongs, in the physics.  The forecast remains the base: a station
+        value replaces it interval by interval where one exists, and a gap
+        falls back rather than leaving a hole.
         """
         rows = self.store.latest_forecast(start_ts, end_ts, self.plant.forecast_source)
         hourly = self._hourly_frame(rows)
@@ -1343,11 +1425,11 @@ class ForecastEngine:
             return None
 
         conditions = self._downscale(index, hourly, apply_bias=False)
+        epochs = np.array(
+            [int(value.timestamp()) - INTERVAL_SECONDS // 2 for value in index]
+        )
         measured = self._measured_ghi(start_ts, end_ts)
         if measured is not None and not measured.empty:
-            epochs = np.array(
-                [int(value.timestamp()) - INTERVAL_SECONDS // 2 for value in index]
-            )
             aligned = measured.reindex(epochs)
             replace = aligned.notna().to_numpy()
             if replace.any():
@@ -1359,7 +1441,51 @@ class ForecastEngine:
                 # measured global with a forecast split.
                 conditions["dni"] = np.nan
                 conditions["dhi"] = np.nan
+
+        air = self._measured_air(start_ts, end_ts)
+        if air is not None:
+            aligned_air = air.reindex(epochs)
+            for column in aligned_air.columns:
+                station = aligned_air[column].to_numpy(dtype=float)
+                replace = np.isfinite(station)
+                if not replace.any():
+                    continue
+                values = conditions[column].to_numpy(dtype=float).copy()
+                values[replace] = station[replace]
+                conditions[column] = values
         return conditions
+
+    def _measured_air(self, start_ts: int, end_ts: int) -> pd.DataFrame | None:
+        """Station air temperature and wind, keyed by interval start.
+
+        Only the quantities whose entity is configured *now* are returned.  A
+        column left in the table by a sensor that has since been removed is
+        history, not evidence -- the same rule the GHI path applies.  Missing
+        cells stay ``NaN`` so the caller can fall back per interval; a frame
+        with nothing usable collapses to ``None``.
+        """
+        sources = self.plant.weather_sources
+        wanted = {
+            column: bounds
+            for column, entity, bounds in (
+                ("temp_c", sources.temperature_entity, MEASURED_TEMP_RANGE_C),
+                ("wind_ms", sources.wind_speed_entity, MEASURED_WIND_RANGE_MS),
+            )
+            if entity
+        }
+        if not wanted:
+            return None
+        rows = self.store.weather_actual_range(start_ts, end_ts)
+        if not rows:
+            return None
+        frame = pd.DataFrame.from_records([dict(row) for row in rows])
+        frame = frame.set_index("ts_utc").sort_index()
+        out = pd.DataFrame(index=frame.index)
+        for column, (low, high) in wanted.items():
+            values = pd.to_numeric(frame[column], errors="coerce")
+            out[column] = values.where((values >= low) & (values <= high))
+        out = out.dropna(how="all")
+        return out if not out.empty else None
 
     def _raw_measured_ghi(self, start_ts: int, end_ts: int) -> pd.Series | None:
         """Whatever the sensor reported, before it has been believed."""
