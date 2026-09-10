@@ -57,9 +57,14 @@ BACKFILL_WEIGHT = 0.35
 MIN_PHYSICS_W = 25.0
 MIN_PHYSICS_FRACTION = 0.02
 
-#: Sun elevations below this are excluded for the same reason the live
-#: collector excludes them.
-MIN_ELEVATION_DEG = 8.0
+#: Sun elevations below this are excluded, held level with the live
+#: collector's floor.  A backfilled hour is placed at its midpoint, so one
+#: centred on four degrees really spans about zero to nine -- coarser than
+#: the band it stands in for.  Aligned anyway, because the horizon cells are
+#: precisely the ones a fresh install would otherwise wait a year for, and
+#: they are discounted twice before they reach a cell: once by the backfill
+#: row weight, again by the beam share of a low sun.
+MIN_ELEVATION_DEG = 3.0
 
 #: A backfilled observation is stamped at the middle of its hour, plus one
 #: second.  The bare midpoint is 1800 s past the hour, which is a multiple of

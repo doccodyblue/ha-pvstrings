@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **The backfill reaches the horizon too.** Lowering the shading floor to
+  three degrees moved the live collector only: the history reconstruction
+  kept its own eight degree copy of the constant. The cells the change was
+  meant to open could therefore be filled by live observations alone -- a
+  handful of five-minute intervals a day, each discounted by the beam share
+  of a low sun, which is months of clear mornings before one cell crosses
+  its evidence floor. The two floors are one number's worth of policy and
+  now agree. Existing installs pick the horizon up by running
+  `pvstrings.backfill_shading` again; it is idempotent.
+
 ## v1.24.0 — 2026-09-09
 
 ### Added
