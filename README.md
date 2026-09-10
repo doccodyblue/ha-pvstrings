@@ -38,20 +38,17 @@ evening, a plant-level model averages those away. It can be 5 % right on the
 daily total while being 40 % wrong on every individual string — and you cannot
 see it, because the errors cancel.
 
-A learning layer does not close that gap on its own. Several forecast
-integrations now learn a per-cell map of the sky the way this one does, and
-against a single production total the arithmetic comes out the same either way:
-a shadow on one string and a thin cloud over the whole site both arrive as one
-number that fell short of the model. Telling them apart needs a second string
-that saw the same minute.
+A learning layer alone does not close that gap. Several forecast integrations
+now learn a map of the sky the way this one does, but measured against a single
+production total the sums come out the same either way: a shadow on one string
+and a thin cloud over the whole site both arrive as one number that fell short.
+Telling them apart takes a second string that saw the same minute.
 
-That is what the shading fit does here. Every observation is read as
-`level(string) + moment(timestamp) + shade(cell)`, so whatever the whole site
-saw at once cancels between siblings and what remains on one string alone is
-its obstacle. On the reference plant two strings of identical orientation and
-tilt — same roof, same 110°, same 24° — come out of one and the same sky cell
-at 0.3 % loss and 67.7 %. One of them has a neighbour's house in its morning.
-No plant total can say that, and neither can a sky map fitted against one.
+Weather arrives everywhere at once and cancels out between the strings; what is
+left on one of them alone is its own obstacle. On the reference plant two
+strings of identical orientation and tilt read 0.3 % and 67.7 % loss in the
+very same patch of sky — one has a neighbour's house in its morning. How that
+is fitted is under *Shading*, further down.
 
 This integration keeps them separate, and refuses to let anything blur them:
 
