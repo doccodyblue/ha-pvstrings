@@ -12,9 +12,12 @@ for each string, using that string's own azimuth, tilt and nameplate. It works
 on day one, with no training. A learning layer then corrects only what the
 physics still gets wrong.
 
-Built for small installations — balcony plants, garden sheds, a couple of
-inverters, adjustable mounts — where the per-string detail is the whole point
-and a plant total hides everything interesting.
+Built for installations whose strings are not alike: different orientations,
+different tilts, one shaded in the morning and another in the evening. Size is
+not what decides — two panels on a balcony and a 30 kWp roof across three faces
+both carry detail that a plant total hides. What it does need is one
+measurement channel per string, the kind an MPPT-per-string inverter or a set
+of micro-inverters already gives you.
 
 ---
 
