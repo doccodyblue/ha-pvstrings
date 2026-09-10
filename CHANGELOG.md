@@ -14,6 +14,19 @@
   now agree. Existing installs pick the horizon up by running
   `pvstrings.backfill_shading` again; it is idempotent.
 
+### Documentation
+
+- **The README says what the joint fit does.** The single thing this
+  integration does that a plant-level forecast cannot — reading every
+  observation as `level(string) + moment(timestamp) + shade(cell)`, so the
+  weather cancels between siblings and what remains on one string is its
+  obstacle — was in the code and its tests and nowhere a reader would look. It
+  now opens with the question a reader actually arrives with ("why another PV
+  forecast?"), and the shading section documents the joint fit and the beam
+  scaling that goes with it. Also fixes a stale attribute: cells report `ratio`,
+  maps report `level` and `fit_method`; `reference_ratio` went away with the
+  absolute-only fit.
+
 ## v1.24.0 — 2026-09-09
 
 ### Added

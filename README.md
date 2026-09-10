@@ -18,6 +18,18 @@ and a plant total hides everything interesting.
 
 ---
 
+## Why another PV forecast?
+
+Home Assistant is not short of them. Solcast and Forecast.Solar deliver a
+number for the plant and deliver it well, and the newer self-learning ones
+correct that number against your own meter. If one number for the whole roof
+is what you need, take one of those — they are good, and this integration
+would only be more work.
+
+The question here is a different one: not *how much arrives today*, but
+*which of my strings is losing what, and where*. At plant level that question
+has no answer, because the strings are added up before anybody gets to ask it.
+
 ## Why per string
 
 Most forecast integrations model one plant with one orientation. If your strings
@@ -25,6 +37,21 @@ face different directions, or one is shaded in the morning and another in the
 evening, a plant-level model averages those away. It can be 5 % right on the
 daily total while being 40 % wrong on every individual string — and you cannot
 see it, because the errors cancel.
+
+A learning layer does not close that gap on its own. Several forecast
+integrations now learn a per-cell map of the sky the way this one does, and
+against a single production total the arithmetic comes out the same either way:
+a shadow on one string and a thin cloud over the whole site both arrive as one
+number that fell short of the model. Telling them apart needs a second string
+that saw the same minute.
+
+That is what the shading fit does here. Every observation is read as
+`level(string) + moment(timestamp) + shade(cell)`, so whatever the whole site
+saw at once cancels between siblings and what remains on one string alone is
+its obstacle. On the reference plant two strings of identical orientation and
+tilt — same roof, same 110°, same 24° — come out of one and the same sky cell
+at 0.3 % loss and 67.7 %. One of them has a neighbour's house in its morning.
+No plant total can say that, and neither can a sky map fitted against one.
 
 This integration keeps them separate, and refuses to let anything blur them:
 
@@ -654,11 +681,22 @@ street, so is the file; read it before attaching it to a public issue.
 ## Shading, and what the map can and cannot see
 
 The sky is divided into cells of ten degrees of azimuth by five of elevation,
-and each string learns its own map of them: for every clean five-minute
-interval, measured over physics at that sun position. The forecast is corrected
-with it. Indexed on the sun rather than the clock, because a chimney's shadow
-sits at a fixed place in the sky while the time it arrives drifts by an hour
-twice a year.
+and each string learns its own map of them, from every clean five-minute
+interval it was measured in. Indexed on the sun rather than the clock, because
+a chimney's shadow sits at a fixed place in the sky while the time it arrives
+drifts by an hour twice a year.
+
+On a plant with two or more strings the maps are fitted **jointly**, and that
+is what separates a shadow from the weather. Each observation is read as
+`level(string) + moment(timestamp) + shade(cell)` in log space: the moment is
+whatever every string saw at the same time — a cloud edge the irradiance source
+missed, enhancement off a bright cumulus, physics running low across the site —
+and it cancels between siblings, because only the shade belongs to one string's
+patch of sky. Level and moment are estimated and thrown away; the map keeps the
+shape. This is what lets a shadow be measured on a string that beats physics
+everywhere: against an absolute reference such a string looks flawless, against
+its siblings the missing morning is plain. A single-string plant has nobody to
+difference against and keeps the absolute envelope.
 
 What it will not do:
 
@@ -675,11 +713,18 @@ What it will not do:
   battery, a charge controller holding a voltage — all are excluded, because a
   throttled afternoon recurs at the same sun positions as a shadow does and
   would otherwise be learned as one.
+- **Subtract a shadow from an overcast hour.** A cell holds a clear-day loss,
+  and it is applied scaled by the POA beam share of the moment: under a closed
+  sky the obstacle took nothing, so nothing is taken off. The same share weights
+  an observation as it is learned, so a grey morning cannot vote a shadow away —
+  and a loss seen at half beam is not filed as if the day had been clear.
 
-Each cell reports its own `ratio` and the map its `reference_ratio`, because a
-map showing no loss anywhere is unreadable without them: nothing in the way and
-everything equally in the way draw the same picture, and they want opposite
-repairs.
+Each cell reports its own `ratio` — what the string actually did there,
+measured over physics, before any normalisation — and each map reports the
+`level` the joint fit found for that string and the `fit_method` that produced
+it. Without them a map showing no loss anywhere is unreadable: nothing in the
+way and everything equally in the way draw the same picture, and they want
+opposite repairs.
 
 ---
 
