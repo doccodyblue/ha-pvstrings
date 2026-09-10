@@ -702,8 +702,16 @@ What it will not do:
 
 - **Invent sky it has not seen.** In August the sun never reaches the winter
   cells, so those correct nothing. A complete map takes a full turn of the
-  seasons; `pvstrings.backfill_shading` reconstructs what it can from Home
-  Assistant's own history.
+  seasons.
+- **Read the horizon without a second opinion.** Below eight degrees the chain
+  is at its least trustworthy: the DC model is linear where real modules are
+  not, the transposition and incidence models are at their limits, and the
+  irradiance source is at its weakest on the direct/diffuse split. On a plant
+  with two or more strings the joint fit can still use it — whatever the whole
+  site got wrong in that moment cancels between siblings, and what survives is
+  applied scaled by the beam share. A string with nobody to difference against
+  has neither, so its map is fitted from eight degrees up. The observations
+  below stay on disk and start counting the day that string gets a sibling.
 - **Carry the string's overall level.** The map is normalised against parity,
   so it reports *shape* — how a string varies across the sky — and leaves the
   level to the per-string log-ratio layer. The cost is real and known: on a
@@ -752,7 +760,7 @@ APIs exist there, not by running it. Breaking changes remain possible between
 minor versions before 2.0; the schema migrates in place, and the v2 → v3 upgrade
 has been exercised against a real database.
 
-778 automated tests cover the physics chain, the learning rules, censoring, the
+994 automated tests cover the physics chain, the learning rules, censoring, the
 sky map, storage and the config-flow schemas — including the parts that only
 fail against a real Home Assistant.
 

@@ -85,6 +85,18 @@ ELEVATION_BIN_DEG = 5.0
 #: from four different days, so even this is not a single day's accident.
 MIN_OBSERVATIONS = 4.0
 
+#: Below this an absolute map does not fit at all.  The joint fit can afford a
+#: low sun: whatever the whole site got wrong in that moment cancels between
+#: siblings, and what survives is applied scaled by beam.  A string with nobody
+#: to difference against has neither, and down there the chain is at its least
+#: trustworthy -- the DC model is linear where real modules are not, the
+#: component check is off below five degrees, and a reconstructed hour smears
+#: the sun across fifteen degrees of azimuth.  Eight is not a new number: it is
+#: the floor this envelope was fitted against until v1.24.  Observations below
+#: it are still collected and kept; they start counting the day the string gets
+#: a sibling to be checked against.
+ABSOLUTE_MIN_ELEVATION_DEG = 8.0
+
 #: Which quantile of a cell's ratios counts as "nothing else in the way".
 UPPER_QUANTILE = 0.80
 
@@ -103,6 +115,16 @@ REFERENCE_QUANTILE = 0.90
 #: sensor, not a shadow, and the map may never amplify.
 MIN_FACTOR = 0.05
 MAX_FACTOR = 1.0
+
+#: The clear-day inversion divides by the moment's beam share, so a residual
+#: measured in near darkness is extrapolated without limit: at a beam share of
+#: 0.10 a ten percent shortfall arrives as a ninety-five percent cell.  Apply
+#: time can never spend more than the moment's own beam, so below this floor
+#: the fit would be claiming a shadow the forecast could never act on.  The
+#: direction is deliberate -- a floored divisor *understates* the clear-day
+#: shade of a grey moment, and understating is the safe error here, same as
+#: the shrinkage and the capped reference.
+BEAM_INVERSION_FLOOR = 0.30
 
 #: Cells within this many bins may stand in for an unobserved one.
 NEIGHBOUR_RADIUS = 1
@@ -249,14 +271,21 @@ class ShadingMap:
         """Build a map from ``(ts, azimuth, elevation, ratio, weight)`` rows.
 
         Rows may carry the newer trailing columns (physics watts, clearness);
-        this absolute fit ignores them -- its envelope semantics predate them
-        and must stay exactly reproducible for single-string plants.
+        this absolute fit ignores them -- its envelope semantics predate them,
+        and reproducing v1.23 exactly for single-string plants is the point.
+
+        Which is also why it starts at ``ABSOLUTE_MIN_ELEVATION_DEG`` rather
+        than at the horizon the collector now reaches: a mixed-weather envelope
+        with no sibling to difference against and no beam to scale by has
+        nothing to catch a low sun's errors with.
         """
         samples: dict[tuple[int, int], list[Sample]] = {}
         newest = 0.0
         for row in observations:
             ts_utc, azimuth, elevation, ratio, weight = row[:5]
-            if ratio <= 0.0 or weight <= 0.0 or elevation < 0.0:
+            if ratio <= 0.0 or weight <= 0.0:
+                continue
+            if elevation < ABSOLUTE_MIN_ELEVATION_DEG:
                 continue
             newest = max(newest, ts_utc)
             key = (azimuth_bin(azimuth), elevation_bin(elevation))
@@ -669,6 +698,10 @@ def _blended_shade_log(shade_log: float, beam: float) -> float:
     The blend the forecast applies, used in reverse gear by the fit: before an
     observation's shade can be taken out of the moment term, it has to be
     scaled down to what the obstacle could actually have cost in that light.
+
+    Deliberately without the floor its inverse carries: this direction mirrors
+    apply time, and apply time spends the real beam share.  Flooring it here
+    would make the forward step claim a cost the sky never presented.
     """
     return math.log(max(1.0 - beam * (1.0 - math.exp(shade_log)), MIN_FACTOR))
 
@@ -679,11 +712,16 @@ def _clear_day_shade_log(blended_log: float, beam: float) -> float:
     An observation at half beam that came in 12 % low is reporting a quarter
     lost on a clear day, and storing the 12 % as if it were the clear-day
     figure would then be scaled by beam *again* at apply time -- the shadow
-    would be discounted twice.  Clamped into ``[MIN_FACTOR, 1]``: at low beam
-    the inversion amplifies noise, and the sample's beam weight is what keeps
-    those from mattering.
+    would be discounted twice.
+
+    The divisor is floored at ``BEAM_INVERSION_FLOOR``.  The sample's own beam
+    weight was once thought to make that unnecessary, but weight only decides
+    whether a cell gets an opinion, not how loud it is: enough grey rows clear
+    the evidence bar together and then speak with the full amplification.
     """
-    transmission = 1.0 - (1.0 - math.exp(blended_log)) / max(beam, 1e-6)
+    transmission = 1.0 - (1.0 - math.exp(blended_log)) / max(
+        beam, BEAM_INVERSION_FLOOR
+    )
     return math.log(min(max(transmission, MIN_FACTOR), 1.0))
 
 

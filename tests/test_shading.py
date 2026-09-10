@@ -12,7 +12,9 @@ from __future__ import annotations
 import pytest
 
 from core.shading import (
+    ABSOLUTE_MIN_ELEVATION_DEG,
     ASCENDING,
+    BEAM_INVERSION_FLOOR,
     DESCENDING,
     MIN_OBSERVATIONS,
     RECENCY_HALFLIFE_DAYS,
@@ -1165,3 +1167,159 @@ class TestDifferential:
         assert open_sky["ratio"] == pytest.approx(1.5, abs=0.1)
         assert shaded["loss"] > 30.0
         assert open_sky["loss"] == pytest.approx(0.0, abs=2.0)
+
+
+def low_sun_joint(
+    shade_by_string: dict[str, float],
+    beam: float = 1.0,
+    days: int = 40,
+    azimuth: float = 110.0,
+    elevation: float = 4.0,
+) -> dict[str, list[tuple]]:
+    """Rows at one low cell plus a clean sky above it, for several strings.
+
+    The sky above is what makes the fixture honest: without it the low cell is
+    the whole map, the reference quantile lands inside the shadow, and every
+    assertion below would pass for the wrong reason.
+    """
+    rows: dict[str, list[tuple]] = {}
+    for string_id, transmission in shade_by_string.items():
+        clean = full_sky(ratio=1.0)
+        rows[string_id] = [
+            (ts, az, el, ratio, weight, 100.0, 1.0)
+            for ts, az, el, ratio, weight in clean
+        ]
+        biting = 1.0 - beam * (1.0 - transmission)
+        for day in range(days):
+            ts = SUMMER + day * DAY + 7777
+            rows[string_id].append(
+                (ts, azimuth, elevation, biting, 1.0, 100.0, beam)
+            )
+    return rows
+
+
+class TestTheHorizonNeedsASecondOpinion:
+    """Below eight degrees an absolute envelope has nothing to check itself against.
+
+    The joint fit differences the low sun's errors away against a sibling and
+    scales what survives by beam.  A string on its own has neither, and the
+    chain is at its worst down there -- so the absolute fit does not go.
+    """
+
+    def test_a_low_sun_cell_never_reaches_an_absolute_map(self):
+        """Two dark cells below the floor, one above it, three azimuths apart.
+
+        Apart rather than stacked because the floor sits inside a bin: 7.9 and
+        8.1 degrees share the 5-10 band, so a cell there proves nothing about
+        which of the two rows built it.
+        """
+        rows = full_sky(ratio=1.0)
+        rows += observations(120.0, 4.0, 0.30, 40)   # bin 0-5, below
+        rows += observations(140.0, 7.9, 0.05, 40)   # bin 5-10, below
+        rows += observations(160.0, 8.1, 0.30, 40)   # bin 5-10, above
+        sky = ShadingMap.fit(rows)
+
+        assert (azimuth_bin(120.0), elevation_bin(4.0)) not in sky.cells
+        assert (azimuth_bin(140.0), elevation_bin(7.9)) not in sky.cells
+        # Not through the neighbour rule either: an unobserved cell may borrow,
+        # and borrowing a shadow into the band would undo the whole point.
+        assert sky.factor(120.0, 4.0) == pytest.approx(1.0)
+        assert sky.factor(140.0, 7.9) == pytest.approx(1.0)
+        # Immediately above it the map works exactly as before.
+        assert (azimuth_bin(160.0), elevation_bin(8.1)) in sky.cells
+        assert sky.factor(160.0, 8.1) < 0.9
+
+    def test_the_same_shadow_still_reaches_a_joint_map(self):
+        """The reference plant's gain must not be cut away with it."""
+        model = ShadingModel.fit(
+            low_sun_joint({"a": 0.3, "b": 1.0}), now_ts=SUMMER + 41 * DAY
+        )
+        assert model.method_of("a") == "differential"
+        assert model.factor("a", 110.0, 4.0, beam=1.0) < 0.75
+        assert model.factor("b", 110.0, 4.0, beam=1.0) == pytest.approx(1.0, abs=0.1)
+
+    def test_a_string_nobody_could_cross_check_loses_its_horizon_too(self):
+        """The solo fallback inside the joint fit runs the same absolute code."""
+        joint = joint_sky(
+            {"a": {"level": 1.0, "shade": {(110.0, 35.0): 0.5}}, "b": {"level": 1.0}}
+        )
+        alone = low_sun_joint({"c": 0.3}, days=40)
+        alone["c"] = [
+            (ts + 200 * DAY, az, el, ratio, weight, watts, beam)
+            for ts, az, el, ratio, weight, watts, beam in alone["c"]
+        ]
+        model = ShadingModel.fit(
+            {"a": joint["a"], "b": joint["b"], "c": alone["c"]},
+            now_ts=SUMMER + 241 * DAY,
+        )
+        assert model.method_of("c") == "absolute"
+        assert model.factor("c", 110.0, 4.0) == pytest.approx(1.0)
+
+    def test_the_absolute_floor_is_the_number_it_claims_to_be(self):
+        assert ABSOLUTE_MIN_ELEVATION_DEG == 8.0
+
+    def test_the_absolute_fit_is_more_cautious_than_the_collector(self):
+        """The policy this release is really about, in one assertion."""
+        from core import backfill
+        from core.forecast import SHADING_MIN_ELEVATION_DEG
+
+        assert ABSOLUTE_MIN_ELEVATION_DEG > SHADING_MIN_ELEVATION_DEG
+        assert ABSOLUTE_MIN_ELEVATION_DEG > backfill.MIN_ELEVATION_DEG
+
+
+class TestTheInversionHasAFloor:
+    """A shadow measured in the dark is not evidence of a darker shadow."""
+
+    def _noisy_cell(self, beam: float, shortfall: float, days: int = 100):
+        """One cell where a string reads low for a reason that is not a shadow.
+
+        The shortfall is written straight into the ratio rather than blended
+        in through the beam, because that is what a model error looks like: at
+        this sun height the DC model is linear where real modules are not, and
+        nothing about that scales with how much beam the moment carried.
+        """
+        rows: dict[str, list[tuple]] = {}
+        for string_id, ratio in (("a", 1.0 - shortfall), ("b", 1.0)):
+            clean = full_sky(ratio=1.0)
+            rows[string_id] = [
+                (ts, az, el, value, weight, 100.0, 1.0)
+                for ts, az, el, value, weight in clean
+            ]
+            for day in range(days):
+                rows[string_id].append(
+                    (SUMMER + day * DAY + 7777, 110.0, 22.0, ratio, 1.0, 100.0, beam)
+                )
+        return rows
+
+    def test_a_nearly_dark_residual_cannot_black_out_a_cell(self):
+        """At beam 0.10 a ten percent shortfall used to arrive as ninety-five.
+
+        Dividing by the moment's beam is right for a real shadow, which only
+        ever costs beam.  It is wrong for everything else that makes a low sun
+        read low, and the fit cannot tell the two apart.
+
+        A hundred days of it, because the beam weight alone does hold such a
+        cell back for a while -- that was the reasoning the old comment rested
+        on.  It stops holding once enough grey rows have piled up, and then
+        nothing else stands between a ten percent error and a black cell.
+        """
+        model = ShadingModel.fit(
+            self._noisy_cell(beam=0.10, shortfall=0.10), now_ts=SUMMER + 101 * DAY
+        )
+        # Without the floor this lands near 0.29: a seventy percent shadow
+        # conjured out of a ten percent shortfall.
+        assert model.factor("a", 110.0, 22.0, beam=1.0) > 0.75
+
+    def test_a_shadow_seen_in_good_light_is_unaffected(self):
+        """The floor sits below every beam share worth trusting.
+
+        Same shortfall, twice the light: the inversion still runs on the real
+        beam share and the shadow arrives at its full clear-day size.
+        """
+        model = ShadingModel.fit(
+            self._noisy_cell(beam=0.50, shortfall=0.25), now_ts=SUMMER + 101 * DAY
+        )
+        assert model.factor("a", 110.0, 22.0, beam=1.0) < 0.70
+
+    def test_the_beam_floor_is_the_number_it_claims_to_be(self):
+        assert BEAM_INVERSION_FLOOR == 0.30

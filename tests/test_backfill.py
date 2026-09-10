@@ -18,6 +18,7 @@ import pytest
 from core.backfill import (
     BACKFILL_WEIGHT,
     MIDPOINT_OFFSET_S,
+    MIN_ELEVATION_DEG,
     hourly_series,
     shading_rows_from_history,
 )
@@ -191,10 +192,6 @@ class TestReconstruction:
         assert 170 < azimuth < 200  # close to due south
         assert 50 < elevation < 62  # midsummer at 53.5 N
 
-    def test_low_sun_is_excluded(self, physics):
-        result = self._run(physics, self._unshaded(physics))
-        assert all(row[3] >= 8.0 for row in result.rows)
-
     def test_hours_with_negligible_physics_are_excluded(self, physics):
         dim = {hour: (2.0, 1.0, 1.0) for hour in bright_day()}
         result = self._run(physics, {hour: 1.0 for hour in dim}, irradiance=dim)
@@ -310,3 +307,114 @@ class TestReconstruction:
         dim = [row[4] for row in result.rows if row[1] == "dim"]
         assert bright and dim
         assert min(bright) > max(dim)
+
+
+#: 2025-01-15 00:00 UTC.  A midwinter day exists in this file for one reason:
+#: the midsummer fixture above has no hour anywhere in the band the elevation
+#: floor governs.  Its midpoints step 18Z 9.30 deg, 19Z 2.04 deg -- straight
+#: over the top of it -- so an assertion about that floor could not fail there
+#: whatever the constant said, and for one release it did not.
+#:
+#: At 53.5 N / 5.0 E this day puts midpoints at 4.15 deg (08Z) and 7.95 deg
+#: (14Z) inside the band, and 1.99 deg (15Z) below it, which pins the floor
+#: into (1.99, 4.15].
+LOW_SUN_DAY = 1_736_899_200
+LOW_SUN_HOURS = tuple(range(8, 16))
+
+
+@pytest.fixture
+def low_sun_physics() -> PhysicsEngine:
+    return PhysicsEngine(
+        latitude=53.5,
+        longitude=5.0,
+        elevation_m=5.0,
+        albedo=0.2,
+        transposition_model="perez-driesse",
+        time_zone="Europe/Amsterdam",
+    )
+
+
+def low_sun_day(physics: PhysicsEngine) -> dict[int, tuple[float, float, float]]:
+    """A clear winter day, closed against its own geometry.
+
+    ``ghi = dhi + dni * cos(zenith)`` rather than a hand-written shape: at
+    this sun height the closure is what decides whether the components are
+    plausible, and a shape that misses it would be testing the plausibility
+    fallback instead of the elevation floor.
+    """
+    hours = [LOW_SUN_DAY + hour * HOUR for hour in LOW_SUN_HOURS]
+    index = to_index([hour + MIDPOINT_OFFSET_S for hour in hours])
+    zenith = physics.solar_position(index)["apparent_zenith"].to_numpy()
+    import numpy as np
+
+    dni, dhi = 700.0, 60.0
+    ghi = dhi + dni * np.cos(np.radians(zenith)).clip(min=0.0)
+    return {
+        hour: (float(ghi[position]), dni, dhi)
+        for position, hour in enumerate(hours)
+    }
+
+
+class TestTheElevationFloor:
+    """The floor is a policy, and a policy needs a test that can fail."""
+
+    def _run(self, physics, kwp=2.0):
+        irradiance = low_sun_day(physics)
+        hours = sorted(irradiance)
+        index = to_index([hour + MIDPOINT_OFFSET_S for hour in hours])
+        produced = physics.run(
+            index,
+            south_segment(kwp),
+            ghi=pd.Series([irradiance[hour][0] for hour in hours], index=index),
+            dni=pd.Series([irradiance[hour][1] for hour in hours], index=index),
+            dhi=pd.Series([irradiance[hour][2] for hour in hours], index=index),
+            temp_air=2.0,
+            wind_speed=1.5,
+            system_efficiency=0.96,
+            mount_type="open_rack",
+        )
+        power = dict(zip(hours, produced.dc_power_w.to_numpy()))
+        return shading_rows_from_history(
+            physics=physics,
+            power_by_string={"s1": power},
+            irradiance=irradiance,
+            geometry_at=lambda _string, _hour: south_segment(kwp),
+        ), power
+
+    def test_the_horizon_band_is_reconstructed(self, low_sun_physics):
+        """What v1.24.1 was for: the hours between three and eight degrees."""
+        result, _ = self._run(low_sun_physics)
+        band = [row[3] for row in result.rows if 3.0 <= row[3] < 8.0]
+        assert len(band) == 2, f"expected 08Z and 14Z, got {band}"
+        assert min(band) == pytest.approx(4.15, abs=0.1)
+        assert max(band) == pytest.approx(7.95, abs=0.1)
+
+    def test_a_two_degree_hour_is_dropped_for_its_elevation_alone(
+        self, low_sun_physics
+    ):
+        """The 15Z hour carries hundreds of watts, so no other gate explains it."""
+        result, power = self._run(low_sun_physics)
+        dropped_hour = LOW_SUN_DAY + 15 * HOUR
+        assert power[dropped_hour] > 200.0, "the physics gate must not be the reason"
+        assert all(row[3] >= MIN_ELEVATION_DEG for row in result.rows)
+        assert min(row[3] for row in result.rows) == pytest.approx(4.15, abs=0.1)
+
+    @pytest.mark.parametrize("kwp", [0.3, 2.0, 30.0])
+    def test_the_gate_is_the_same_at_every_plant_size(self, low_sun_physics, kwp):
+        """The physics floor scales with the nameplate; the elevation gate does not.
+
+        If one size quietly loses different hours, the test above is measuring
+        ``MIN_PHYSICS_W`` and not the floor it claims to be about.
+        """
+        result, _ = self._run(low_sun_physics, kwp=kwp)
+        assert sorted(round(row[3], 2) for row in result.rows) == pytest.approx(
+            [4.15, 7.95, 9.7, 12.46, 13.58, 15.03, 15.41], abs=0.1
+        )
+
+    def test_the_floor_is_the_number_it_claims_to_be(self):
+        """Sun geometry pins a range; only this pins the decimal.
+
+        Together with the two tests above -- 4.15 in, 1.99 out -- any change to
+        the constant now breaks something.
+        """
+        assert MIN_ELEVATION_DEG == 3.0

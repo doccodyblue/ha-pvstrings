@@ -598,7 +598,7 @@
     },
     "backfill_shading": {
       "name": "Verschattung aus Verlauf nachtragen",
-      "description": "Rekonstruiert Verschattungsbeobachtungen aus den Langzeitstatistiken von Home Assistant und einem historischen Einstrahlungsarchiv. Damit startet die Verschattungskorrektur mit Monaten echter Daten, statt einen ganzen Jahresgang abzuwarten. Mehrfaches Ausführen ist unschädlich.",
+      "description": "Rekonstruiert Verschattungsbeobachtungen aus den Langzeitstatistiken von Home Assistant und einem historischen Einstrahlungsarchiv. Ein Entwicklerwerkzeug: die geschriebenen Stunden sind Stundenmittel aus einem Reanalyse-Archiv und keine Messung, tragen also nur einen Bruchteil des Gewichts einer Live-Beobachtung. Nahe am Horizont fittet sie außerdem nur eine Anlage mit zwei oder mehr Strängen — ein einzelner Strang hat kein Geschwister, gegen das sich die Fehler der tiefen Sonne herausrechnen ließen. Ein erneuter Lauf ändert nichts an bereits abgedeckten Stunden.",
       "fields": {
         "config_entry_id": {
           "name": "Anlage",

@@ -20,10 +20,18 @@ degrees of azimuth, so a backfilled observation is placed at the midpoint of an
 arc rather than at a point.  Shadow edges therefore come out softer than the
 live collector will eventually draw them.
 
-*Reanalysis is not a measurement.*  On any given hour it may be well off.  It
-is unbiased across many days at the same sun position, though, and the fitter
-takes an upper envelope over exactly that population, so the errors that matter
-are the ones that would correlate with sun position -- and those are small.
+*Reanalysis is not a measurement.*  On any given hour it may be well off.
+Across many days at the same sun position it is close to unbiased, and the
+fitter takes an upper envelope over exactly that population, so what survives
+is whatever error correlates with sun position.
+
+Near the horizon that error is not small.  The direct/diffuse split of a
+reanalysis is at its weakest at a low sun, the DC model is linear where real
+modules are not, and the terrain the grid cell averages over is not the one
+the panels stand on -- all of it correlated with sun position by construction.
+The joint fit is what makes those hours usable: an error the whole site shares
+in one moment cancels between siblings.  With no sibling there is nothing to
+cancel it against, which is why the absolute fit starts higher up.
 
 Backfilled rows are marked by their weight so they never outvote a real
 five-minute observation of the same patch of sky.
@@ -60,10 +68,19 @@ MIN_PHYSICS_FRACTION = 0.02
 #: Sun elevations below this are excluded, held level with the live
 #: collector's floor.  A backfilled hour is placed at its midpoint, so one
 #: centred on four degrees really spans about zero to nine -- coarser than
-#: the band it stands in for.  Aligned anyway, because the horizon cells are
-#: precisely the ones a fresh install would otherwise wait a year for, and
-#: they are discounted twice before they reach a cell: once by the backfill
-#: row weight, again by the beam share of a low sun.
+#: the band it stands in for.
+#:
+#: Aligned anyway, because the horizon cells are precisely the ones a fresh
+#: install would otherwise wait a year for -- but writing a row is not the
+#: same as fitting it.  Below ``shading.ABSOLUTE_MIN_ELEVATION_DEG`` only the
+#: joint fit reads these rows, because only it can difference the low sun's
+#: errors away against a sibling.  A single-string plant keeps them on disk
+#: and fits from eight degrees up.
+#:
+#: An earlier version of this comment claimed the rows were discounted twice,
+#: by the row weight and again by the beam share.  Only the first is true: the
+#: absolute fit ignores the beam column entirely, and where it is read, a
+#: clear low sun on a tilted plane carries a beam share around 0.8.
 MIN_ELEVATION_DEG = 3.0
 
 #: A backfilled observation is stamped at the middle of its hour, plus one

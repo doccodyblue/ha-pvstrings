@@ -1,5 +1,65 @@
 # Changelog
 
+## v1.24.2 — 2026-09-10
+
+### Fixed
+
+- **The horizon is only read where it can be checked.** v1.24.1 lowered the
+  shading floor to three degrees for the history reconstruction as well, on the
+  strength of a reference plant where every string has siblings. A string with
+  nobody to difference against gets a different fit — an upper envelope over
+  mixed weather, with no beam scaling on the way in or out — and down at the
+  horizon it has nothing to catch a low sun's errors with: the DC model is
+  linear where real modules are not, the component check is off below five
+  degrees, and a reconstructed hour smears the sun across fifteen degrees of
+  azimuth. Twelve reconstructed hours were enough to fill such a cell, and a
+  systematic shortfall there is indistinguishable from a shadow.
+
+  The absolute fit now starts at eight degrees, which is the floor it was
+  fitted against until v1.24. Nothing changes on a plant with two or more
+  strings: the joint fit still reads the horizon, because whatever the site got
+  wrong in one moment cancels between siblings. The rows below stay on disk and
+  start counting the day a string gets a sibling. Anyone who already ran the
+  backfill is covered by the next refit — reloading the integration is enough,
+  no `reset_learning` needed.
+
+- **A shadow measured in the dark is no longer extrapolated without limit.**
+  The clear-day inversion divides a residual by the moment's beam share, which
+  is right for a shadow — a shadow only ever costs beam — and wrong for
+  everything else that makes a low sun read low. At a beam share of 0.10 a ten
+  percent shortfall arrived as a ninety-five percent cell. The divisor now has
+  a floor of 0.30: apply time can never spend more beam than the moment
+  carried, so below that the fit was claiming a shadow the forecast could never
+  act on. The comment that said the sample's beam weight already prevented this
+  was wrong — weight decides whether a cell gets an opinion, not how loud it
+  is, and enough grey rows clear the bar together.
+
+### Changed
+
+- **`backfill_shading` describes itself as the development tool it is.** The
+  hours it writes are hourly averages from a reanalysis archive, not
+  measurements; they carry a fraction of a live observation's weight, and near
+  the horizon only a multi-string plant fits them at all.
+
+### Documentation
+
+- **Correction to the v1.24.1 notes.** They said reconstructed rows near the
+  horizon were discounted twice, by the row weight and again by the beam share
+  of a low sun. Only the first is true. The absolute fit ignores the beam
+  column by construction, and where it *is* read, a clear low sun on a tilted
+  plane carries a beam share around 0.8 — no discount worth the name. The
+  claim also survived in two comments in `core/backfill.py`, which are
+  corrected, and in one that called reanalysis errors at a low sun small when
+  they are exactly the kind that correlates with sun position and so does
+  not average out.
+
+- **The test that was supposed to pin the floor did not.** Its fixture is a
+  midsummer day whose hourly midpoints step straight over the governed band —
+  9.30° then 2.04° — so the assertion could not fail whatever the constant
+  said. A midwinter fixture pins it into (1.99°, 4.15°], the collector's own
+  floor gets its first test at all, and both new floors are pinned by
+  behaviour, not only by value.
+
 ## v1.24.1 — 2026-09-10
 
 ### Fixed
