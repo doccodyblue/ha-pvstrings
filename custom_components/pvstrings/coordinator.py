@@ -45,6 +45,7 @@ from .core.conversion import CURVE_NEUTRAL, ConversionResult, convert_group
 from .core.learning import SCOPE_CONVERSION_CURVE
 from .core.forecast import HOUR, ForecastEngine, LearnStats, floor_hour
 from .core.health import Health, learn_summary
+from .core.history import close_weeks
 from .core.physics import PhysicsEngine, clamp_to_daylight, to_index
 from .core.quality import NIGHT_ELEVATION_DEG
 from .core.store import Store
@@ -329,6 +330,7 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         self._last_weather_fetch: datetime | None = None
         self._last_learn_hour: int | None = None
         self._last_purge: date | None = None
+        self._baseline_failed = False
         self._monthly_weights: list[float] | None = None
         self.last_learn_stats = LearnStats()
         self.health = Health()
@@ -478,6 +480,18 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
                 )
             except Exception:  # noqa: BLE001 - learning is a side process
                 _LOGGER.exception("pvstrings: learning cycle failed")
+            try:
+                # After learning, before compaction: a week closes only once
+                # the cursor has passed its end, and only while its issues
+                # still exist.
+                await self.hass.async_add_executor_job(
+                    close_weeks,
+                    self.engine,
+                    int(now.timestamp()),
+                    max(SCORE_WINDOWS) + 5,
+                )
+            except Exception:  # noqa: BLE001 - a missing week is not a broken plant
+                _LOGGER.exception("pvstrings: closing accuracy weeks failed")
 
         await self._async_maybe_purge(now)
 
@@ -556,8 +570,19 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         tomorrow_start, tomorrow_end = day_end, day_end + 86400
         day_after_start, day_after_end = tomorrow_end, tomorrow_end + 86400
 
+        # Before the live run, on the same window: the live run owns the
+        # nowcast state, and the baseline must see the same weather issue.
+        baseline: dict[tuple[int, str], float] | None = None
+        try:
+            baseline = self.engine.baseline_forecast(
+                now_ts, hours=FORECAST_HOURS, start_ts=day_start
+            )
+        except Exception:  # noqa: BLE001 - a missing baseline is logged as NULL
+            if not self._baseline_failed:
+                _LOGGER.exception("pvstrings: baseline forecast failed")
+            self._baseline_failed = True
         rows = self.engine.forecast(now_ts, hours=FORECAST_HOURS, start_ts=day_start)
-        self.engine.log_forecast(now_ts, rows)
+        self.engine.log_forecast(now_ts, rows, baseline)
 
         strings: dict[str, StringForecast] = {
             string.string_id: StringForecast(string.string_id, string.name)

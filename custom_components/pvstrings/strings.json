@@ -623,6 +623,30 @@
           "description": "Prices recorded on this day and later are dropped."
         }
       }
+    },
+    "get_day": {
+      "name": "Get a past day",
+      "description": "Return one past local day as it was forecast and measured: per hour the forecast, the day-ahead figure, the baseline without learning and the measurement, plus the five-minute power. Read-only; the answer is a service response and is not stored.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Plant",
+          "description": "Which plant to read."
+        },
+        "date": {
+          "name": "Date",
+          "description": "A local date before today."
+        }
+      }
+    },
+    "get_weeks": {
+      "name": "Get accuracy by week",
+      "description": "Return day-ahead accuracy week by week, against the same integration with every learned layer switched off, plus the running week. Read-only; the answer is a service response and is not stored.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Plant",
+          "description": "Which plant to read."
+        }
+      }
     }
   }
 }

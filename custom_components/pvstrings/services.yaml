@@ -103,3 +103,23 @@ backfill_shading:
           max: 730
           step: 1
           unit_of_measurement: d
+
+get_day:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: pvstrings
+    date:
+      required: true
+      selector:
+        date:
+
+get_weeks:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: pvstrings

@@ -476,6 +476,33 @@ draws the daily chart; the second says whether the error lives in the morning
 or the afternoon, which is what a windowed automation needs to know (see
 [Reading one window out of the hourly series](#reading-one-window-out-of-the-hourly-series)).
 
+### Looking back: past days and the learning, week by week
+
+Two read-only services answer with data instead of writing it anywhere, so
+nothing lands in the recorder. The dashboard uses them to step back through
+past days and weeks.
+
+`get_day` returns one past local day per hour and string: the forecast as it
+stood when the hour began, the day-ahead figure and which run it came from,
+the measurement with its censoring, and the five-minute power while the raw
+rows still exist. Day-ahead figures exist for as long as their issues are
+kept (35 days); older days show the forecast and the measurement only.
+
+`get_weeks` returns each local week's day-ahead error as sums — forecast,
+actual, and the absolute error per day — so a chart can add weeks up. The
+same week is also scored against a **baseline: this integration with every
+learned layer switched off** (no source bias, no nowcast, no sky map, no
+correction factor) on the same weather run. It is not "pure physics" in any
+stronger sense, and the distance between the two is what learning has saved.
+Weeks are stored when they close, because the day-ahead issues they need are
+gone a few weeks later.
+
+The baseline is logged from 1.25 on. The weeks already in the issue window
+on the first start are rebuilt once and marked `backfilled`: their day-ahead
+figures are the ones published then, but their baseline is replayed with
+today's code and today's geometry, and there is no record of how mature the
+model was.
+
 ### Whose fault was it — the weather service or us?
 
 Any forecast error has two possible culprits: the irradiance the forecast was
@@ -651,6 +678,8 @@ around 10 % through a battery.
 | `pvstrings.add_geometry` | Record a new mounting geometry period |
 | `pvstrings.reset_learning` | Drop all learned corrections, keep measurements |
 | `pvstrings.purge` | Delete raw 5-minute data past the retention period |
+| `pvstrings.get_day` | One past day: forecast, day-ahead, baseline and measurement per hour, plus five-minute power (response only) |
+| `pvstrings.get_weeks` | Day-ahead error week by week, against the baseline without learning (response only) |
 
 ---
 
@@ -760,7 +789,7 @@ APIs exist there, not by running it. Breaking changes remain possible between
 minor versions before 2.0; the schema migrates in place, and the v2 → v3 upgrade
 has been exercised against a real database.
 
-994 automated tests cover the physics chain, the learning rules, censoring, the
+1036 automated tests cover the physics chain, the learning rules, censoring, the
 sky map, storage and the config-flow schemas — including the parts that only
 fail against a real Home Assistant.
 

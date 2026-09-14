@@ -183,13 +183,17 @@ class HourForecast:
     #: forecast record stays hourly.
     fine: tuple[tuple[int, float], ...] = ()
 
-    def as_log_row(self, issued_at_utc: int) -> tuple[Any, ...]:
+    def as_log_row(
+        self, issued_at_utc: int, baseline_kwh: float | None = None
+    ) -> tuple[Any, ...]:
         return (
             issued_at_utc,
             self.ts_utc,
             self.string_id,
             round(self.potential_kwh, 5),
             self.method,
+            None if baseline_kwh is None else round(baseline_kwh, 5),
+            round(self.unshaded_kwh, 5),
         )
 
 
@@ -367,6 +371,16 @@ class LearnStats:
             "reconstructed_intervals": self.reconstructed_intervals,
             "skipped_because": dict(sorted(self.skipped.items())),
         }
+
+
+def is_uncensored(value_kind: str | None, curtailed_fraction: float | None) -> bool:
+    """The one rule that decides whether an hour describes model quality.
+
+    Shared by the score and by everything that republishes scored hours, so a
+    dashboard's "censored" flag cannot drift from what the accuracy figures
+    actually left out.
+    """
+    return value_kind == VALUE_MEASURED and not curtailed_fraction
 
 
 def floor_hour(ts_utc: float) -> int:
@@ -878,8 +892,14 @@ class ForecastEngine:
         hours: int = 48,
         apply_learning: bool = True,
         start_ts: int | None = None,
+        weather_issued_before: int | None = None,
     ) -> list[HourForecast]:
-        """Per-string hourly potential over the horizon."""
+        """Per-string hourly potential over the horizon.
+
+        ``weather_issued_before`` replays the weather as it stood at that
+        instant instead of reading the newest run -- for rebuilding a baseline
+        that was never logged.
+        """
         # Cleared first, and before any early return: a run that produced
         # nothing must not leave the previous run's nowcast on display.
         self.last_nowcast = None
@@ -887,7 +907,12 @@ class ForecastEngine:
 
         start = floor_hour(start_ts if start_ts is not None else now_ts)
         end = start + hours * HOUR
-        rows = self.store.latest_forecast(start, end, self.plant.forecast_source)
+        if weather_issued_before is None:
+            rows = self.store.latest_forecast(start, end, self.plant.forecast_source)
+        else:
+            rows = self.store.latest_forecast_before(
+                start, end, self.plant.forecast_source, weather_issued_before
+            )
         hourly = self._hourly_frame(rows)
         if hourly.empty:
             _LOGGER.debug("pvstrings: no weather forecast rows for %s..%s", start, end)
@@ -916,6 +941,39 @@ class ForecastEngine:
             # before the next run replaces this.
             fine_window=(floor_hour(now_ts), floor_hour(now_ts) + 2 * HOUR),
         )
+
+    def baseline_forecast(
+        self,
+        now_ts: int,
+        hours: int = 48,
+        start_ts: int | None = None,
+        weather_issued_before: int | None = None,
+    ) -> dict[tuple[int, str], float]:
+        """The same run with every learned layer off: what learning is measured against.
+
+        Not "pure physics" in any stronger sense -- the same geometry, the same
+        weather issue, the same tracker ceiling; only the source bias, the
+        nowcast, the sky map and the log-ratio factor are left out.
+
+        The window must be the live run's window, not just the hours that get
+        logged: ``physics.run`` decides on one components flag for the whole
+        series, so a shorter window can change every hour in it.
+
+        ``forecast`` clears the nowcast state on entry, which the live run
+        publishes; it is put back so a baseline never blanks those attributes.
+        """
+        saved = (self.last_nowcast, self.last_nowcast_reason)
+        try:
+            rows = self.forecast(
+                now_ts,
+                hours=hours,
+                apply_learning=False,
+                start_ts=start_ts,
+                weather_issued_before=weather_issued_before,
+            )
+        finally:
+            self.last_nowcast, self.last_nowcast_reason = saved
+        return {(row.ts_utc, row.string_id): row.potential_kwh for row in rows}
 
     def _evaluate(
         self,
@@ -1172,7 +1230,12 @@ class ForecastEngine:
             )
         return out
 
-    def log_forecast(self, issued_at_utc: int, rows: Sequence[HourForecast]) -> int:
+    def log_forecast(
+        self,
+        issued_at_utc: int,
+        rows: Sequence[HourForecast],
+        baseline: Mapping[tuple[int, str], float] | None = None,
+    ) -> int:
         """Record the prediction so it can be scored later.
 
         The issue time is quantised to the hour and hours that have already
@@ -1189,8 +1252,13 @@ class ForecastEngine:
           structurally impossible rather than merely discouraged.
         """
         issued_hour = floor_hour(issued_at_utc)
+        baseline = baseline or {}
         return self.store.log_forecast(
-            [row.as_log_row(issued_hour) for row in rows if row.ts_utc > issued_hour]
+            [
+                row.as_log_row(issued_hour, baseline.get((row.ts_utc, row.string_id)))
+                for row in rows
+                if row.ts_utc > issued_hour
+            ]
         )
 
     # ------------------------------------------------------------------ #
@@ -2258,7 +2326,7 @@ class ForecastEngine:
                     # All three on the same hours, or the numbers would answer
                     # different questions and still be read side by side.
                     tally.attribution.add(day, predicted, float(chain), actual)
-            if row["value_kind"] == VALUE_MEASURED and not row["curtailed_fraction"]:
+            if is_uncensored(row["value_kind"], row["curtailed_fraction"]):
                 tally.uncensored.append((predicted, actual))
                 tally.daily_uncensored.setdefault(day, [0.0, 0.0])
                 tally.daily_uncensored[day][0] += predicted

@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Past days and weeks, read back through two response-only services.**
+  `pvstrings.get_day` returns one past local day per hour and string —
+  forecast, day-ahead figure with the run it came from, baseline, unshaded
+  forecast, measurement with its censoring — plus the five-minute power while
+  the raw rows exist. `pvstrings.get_weeks` returns the day-ahead error of
+  every local week as addable sums, next to the same week scored against a
+  baseline. Nothing is written to the recorder; the dashboard's day and week
+  steppers and its learning card read these.
+
+- **A baseline without learning is logged with every forecast.** Each run is
+  computed a second time with every learned layer off, on the same weather
+  issue and the same window, and stored in `forecast_log` next to the
+  published figure. Measured at about 35 ms per run. The nowcast state the
+  live run publishes is left untouched.
+
+- **Accuracy weeks are persisted when they close** (`accuracy_weekly`, schema
+  9). A week closes once the learning cursor has passed its end and while its
+  day-ahead issues still exist; the weeks already in that window on the first
+  start are rebuilt once and marked `backfilled`.
+
+### Changed
+
+- The forecast log's lookup index now includes the issue time, so picking the
+  newest issue before a cut-off is one index seek per hour instead of a scan
+  and a sort. The pairing reads every column from that one issue.
+
 ## v1.24.2 — 2026-09-10
 
 ### Fixed

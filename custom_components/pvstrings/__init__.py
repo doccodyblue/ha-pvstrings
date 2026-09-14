@@ -95,6 +95,9 @@ from .const import (
     ATTR_FROM_DATE,
     SERVICE_BACKFILL,
     SERVICE_CLEAR_PRICES,
+    SERVICE_GET_DAY,
+    SERVICE_GET_WEEKS,
+    ATTR_DATE,
     SERVICE_PURGE,
     SERVICE_RECALCULATE,
     SERVICE_RESET_LEARNING,
@@ -143,6 +146,8 @@ ENTRY_SERVICE_SCHEMA = vol.Schema({vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string
 CLEAR_PRICES_SCHEMA = ENTRY_SERVICE_SCHEMA.extend(
     {vol.Required(ATTR_FROM_DATE): cv.date}
 )
+
+GET_DAY_SCHEMA = ENTRY_SERVICE_SCHEMA.extend({vol.Required(ATTR_DATE): cv.date})
 
 RESET_LEARNING_SCHEMA = ENTRY_SERVICE_SCHEMA.extend(
     {vol.Optional(ATTR_STRING_ID): cv.string}
@@ -536,6 +541,27 @@ def _async_register_services(hass: HomeAssistant) -> None:
         coordinator = _coordinator_for(hass, call.data[ATTR_CONFIG_ENTRY_ID])
         return await async_backfill_shading(hass, coordinator, call.data["days"])
 
+    async def _get_day(call: ServiceCall) -> dict[str, Any]:
+        from .core.history import day_payload
+
+        coordinator = _coordinator_for(hass, call.data[ATTR_CONFIG_ENTRY_ID])
+        day: date = call.data[ATTR_DATE]
+        if day >= dt_util.now().date():
+            raise ServiceValidationError(
+                f"{day.isoformat()} is not a past day; today is the live forecast"
+            )
+        return await hass.async_add_executor_job(
+            day_payload, coordinator.engine, day
+        )
+
+    async def _get_weeks(call: ServiceCall) -> dict[str, Any]:
+        from .core.history import weeks_payload
+
+        coordinator = _coordinator_for(hass, call.data[ATTR_CONFIG_ENTRY_ID])
+        return await hass.async_add_executor_job(
+            weeks_payload, coordinator.engine, int(dt_util.utcnow().timestamp())
+        )
+
     async def _add_geometry(call: ServiceCall) -> None:
         coordinator = _coordinator_for(hass, call.data[ATTR_CONFIG_ENTRY_ID])
         string_id = call.data[ATTR_STRING_ID]
@@ -584,4 +610,20 @@ def _async_register_services(hass: HomeAssistant) -> None:
         _backfill,
         schema=BACKFILL_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
+    )
+    # Read-only and response-only: nothing lands in the recorder, and no admin
+    # requirement -- the dashboard calls these from wall tablets.
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_GET_DAY,
+        _get_day,
+        schema=GET_DAY_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_GET_WEEKS,
+        _get_weeks,
+        schema=ENTRY_SERVICE_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
     )

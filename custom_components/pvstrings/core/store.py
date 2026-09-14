@@ -36,7 +36,7 @@ SHADING_THIN_DAYS = 120
 
 _LOGGER = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS string_geometry (
@@ -179,9 +179,31 @@ CREATE TABLE IF NOT EXISTS forecast_log (
     string_id     TEXT    NOT NULL,
     potential_kwh REAL    NOT NULL,
     method        TEXT    NOT NULL,
+    -- The same run with every learned layer switched off (apply_learning=False)
+    -- on the same weather issue: the baseline a learning gain is measured
+    -- against.  NULL on rows logged before v9.
+    baseline_kwh  REAL,
+    unshaded_kwh  REAL,
     PRIMARY KEY (issued_at_utc, ts_utc, string_id)
 );
-CREATE INDEX IF NOT EXISTS ix_forecast_log_ts ON forecast_log (ts_utc, string_id);
+-- With the issue time in the key, "newest issue at or before a cut-off" is one
+-- index seek per hour instead of a scan and a sort -- the pairing runs it for
+-- every measured hour of every score window.
+CREATE INDEX IF NOT EXISTS ix_forecast_log_issue
+    ON forecast_log (ts_utc, string_id, issued_at_utc);
+
+-- One row per closed local week, written once and never compacted: day-ahead
+-- issues only live for the score window, so a week has to be persisted while
+-- they still exist.  Grows by 52 small rows a year, on purpose.
+CREATE TABLE IF NOT EXISTS accuracy_weekly (
+    week_start      TEXT    PRIMARY KEY,
+    start_ts_utc    INTEGER NOT NULL,
+    end_ts_utc      INTEGER NOT NULL,
+    closed_at_utc   INTEGER NOT NULL,
+    backfilled      INTEGER NOT NULL,
+    payload_version INTEGER NOT NULL,
+    payload         TEXT    NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS shading_obs (
     ts_utc        INTEGER NOT NULL,
@@ -362,6 +384,17 @@ class Store:
                 self._conn.execute(
                     "ALTER TABLE string_hourly ADD COLUMN chain_kwh REAL"
                 )
+            log_columns = {
+                row[1]
+                for row in self._conn.execute("PRAGMA table_info(forecast_log)")
+            }
+            for column in ("baseline_kwh", "unshaded_kwh"):
+                if column not in log_columns:
+                    self._conn.execute(
+                        f"ALTER TABLE forecast_log ADD COLUMN {column} REAL"
+                    )
+            # Superseded by ix_forecast_log_issue, which has it as a prefix.
+            self._conn.execute("DROP INDEX IF EXISTS ix_forecast_log_ts")
             for table in ("plant_state_5min", "plant_hourly"):
                 plant_columns = {
                     row[1]
@@ -1159,6 +1192,32 @@ class Store:
             ),
         }
 
+    def latest_forecast_before(
+        self, start_ts: int, end_ts: int, source: str, issued_before_ts: int
+    ) -> list[sqlite3.Row]:
+        """:meth:`latest_forecast` as it stood at one instant.
+
+        Per target hour the newest issue at or before the cut-off -- the same
+        rule, so a replay of an evening run reads exactly what a live run at
+        that moment would have read.
+        """
+        return self._query(
+            """
+            SELECT f.* FROM weather_forecast f
+            JOIN (
+                SELECT ts_utc, MAX(issued_at_utc) AS issued
+                FROM weather_forecast
+                WHERE source = ? AND ts_utc >= ? AND ts_utc < ?
+                  AND issued_at_utc <= ?
+                GROUP BY ts_utc
+            ) latest
+              ON latest.ts_utc = f.ts_utc AND latest.issued = f.issued_at_utc
+            WHERE f.source = ?
+            ORDER BY f.ts_utc
+            """,
+            (source, start_ts, end_ts, issued_before_ts, source),
+        )
+
     def forecast_for_verification(
         self, start_ts: int, end_ts: int, source: str, max_horizon_h: int = 48
     ) -> list[sqlite3.Row]:
@@ -1345,18 +1404,28 @@ class Store:
     # -- forecast log ------------------------------------------------------ #
 
     def log_forecast(self, rows: Iterable[tuple[Any, ...]]) -> int:
-        payload = list(rows)
+        """``(issued, ts, string_id, potential, method[, baseline, unshaded])``.
+
+        Five-field rows are padded with NULLs.  The conflict branch overwrites
+        the two optional columns as well: a later run in the same issue hour
+        replaces the whole row, and a baseline from the earlier run next to a
+        potential from the later one would compare different weather.
+        """
+        payload = [tuple(row) + (None,) * (7 - len(row)) for row in rows]
         if not payload:
             return 0
         with self._tx() as conn:
             conn.executemany(
                 """
                 INSERT INTO forecast_log
-                    (issued_at_utc, ts_utc, string_id, potential_kwh, method)
-                VALUES (?, ?, ?, ?, ?)
+                    (issued_at_utc, ts_utc, string_id, potential_kwh, method,
+                     baseline_kwh, unshaded_kwh)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (issued_at_utc, ts_utc, string_id) DO UPDATE SET
                     potential_kwh = excluded.potential_kwh,
-                    method        = excluded.method
+                    method        = excluded.method,
+                    baseline_kwh  = excluded.baseline_kwh,
+                    unshaded_kwh  = excluded.unshaded_kwh
                 """,
                 payload,
             )
@@ -1367,17 +1436,30 @@ class Store:
     #: hour or a literal timestamp; everything else -- the columns, the
     #: hindsight-proof ``<=``, the newest-issue-wins ordering -- has to stay
     #: identical, or the two scores would stop being comparable.
+    #:
+    #: The subquery only picks the issue; the join on the full primary key then
+    #: reads every column of that one row, so the potential, the baseline and
+    #: the issue time can never come from different runs.
     _FORECAST_VS_ACTUAL_SQL = """
-        SELECT h.ts_utc, h.string_id, h.energy_kwh, h.quality, h.value_kind,
-               h.curtailed_fraction, h.coverage, h.chain_kwh,
-               (SELECT f.potential_kwh FROM forecast_log f
-                 WHERE f.ts_utc = h.ts_utc
-                   AND f.string_id = h.string_id
-                   AND f.issued_at_utc <= {cutoff}
-                 ORDER BY f.issued_at_utc DESC LIMIT 1) AS potential_kwh
-        FROM string_hourly h
-        WHERE h.ts_utc >= ? AND h.ts_utc < ?
-        ORDER BY h.ts_utc
+        SELECT p.ts_utc, p.string_id, p.energy_kwh, p.quality, p.value_kind,
+               p.curtailed_fraction, p.coverage, p.chain_kwh,
+               f.potential_kwh, f.baseline_kwh, f.unshaded_kwh, p.issued_at_utc
+        FROM (
+            SELECT h.ts_utc, h.string_id, h.energy_kwh, h.quality, h.value_kind,
+                   h.curtailed_fraction, h.coverage, h.chain_kwh,
+                   (SELECT f.issued_at_utc FROM forecast_log f
+                     WHERE f.ts_utc = h.ts_utc
+                       AND f.string_id = h.string_id
+                       AND f.issued_at_utc <= {cutoff}
+                     ORDER BY f.issued_at_utc DESC LIMIT 1) AS issued_at_utc
+            FROM string_hourly h
+            WHERE h.ts_utc >= ? AND h.ts_utc < ?
+        ) p
+        LEFT JOIN forecast_log f
+          ON f.issued_at_utc = p.issued_at_utc
+         AND f.ts_utc = p.ts_utc
+         AND f.string_id = p.string_id
+        ORDER BY p.ts_utc
     """
 
     def forecast_vs_actual(
@@ -1445,6 +1527,96 @@ class Store:
             (start_ts, end_ts, issued_before_ts),
         )
         return {str(row["string_id"]): float(row["kwh"]) for row in rows}
+
+    def forecast_log_as_of(
+        self, start_ts: int, end_ts: int, issued_before_ts: int | None = None
+    ) -> list[sqlite3.Row]:
+        """Every logged hour of a window, as it stood before the hour or a cut-off.
+
+        The unpaired sibling of the pairing queries: hours that were forecast
+        but never measured are here too.  ``None`` means "the last issue before
+        the hour started", which is what the pairing calls lead time zero.
+        """
+        cutoff = "f2.ts_utc" if issued_before_ts is None else "?"
+        params: list[Any] = [] if issued_before_ts is None else [issued_before_ts]
+        return self._query(
+            f"""
+            SELECT f.ts_utc, f.string_id, f.issued_at_utc, f.potential_kwh,
+                   f.baseline_kwh, f.unshaded_kwh
+              FROM forecast_log f
+             WHERE f.ts_utc >= ? AND f.ts_utc < ?
+               AND f.issued_at_utc = (
+                    SELECT MAX(f2.issued_at_utc) FROM forecast_log f2
+                     WHERE f2.ts_utc = f.ts_utc
+                       AND f2.string_id = f.string_id
+                       AND f2.issued_at_utc <= {cutoff})
+             ORDER BY f.ts_utc
+            """,
+            (start_ts, end_ts, *params),
+        )
+
+    def first_multi_issue_ts(self) -> int | None:
+        """The oldest target hour that still has more than one issue.
+
+        Before it, compaction has left only the newest issue per hour, so a
+        day-ahead lookup finds nothing and must say so rather than read zero.
+        """
+        rows = self._query(
+            "SELECT MIN(ts_utc) AS first FROM ("
+            "  SELECT ts_utc FROM forecast_log GROUP BY ts_utc, string_id"
+            "  HAVING COUNT(*) > 1)"
+        )
+        return None if not rows or rows[0]["first"] is None else int(rows[0]["first"])
+
+    def first_ts(self, table: str) -> int | None:
+        """Oldest ``ts_utc`` in one of the time-keyed tables."""
+        if table not in ("string_hourly", "string_5min", "forecast_log"):
+            raise ValueError(table)
+        rows = self._query(f"SELECT MIN(ts_utc) AS first FROM {table}")
+        return None if not rows or rows[0]["first"] is None else int(rows[0]["first"])
+
+    def fivemin_energy(self, start_ts: int, end_ts: int) -> list[sqlite3.Row]:
+        """``(ts_utc, string_id, energy_wh)`` of every string over a window."""
+        return self._query(
+            "SELECT ts_utc, string_id, energy_wh FROM string_5min "
+            "WHERE ts_utc >= ? AND ts_utc < ? ORDER BY ts_utc",
+            (start_ts, end_ts),
+        )
+
+    # -- weekly accuracy --------------------------------------------------- #
+
+    def insert_week(
+        self,
+        week_start: str,
+        start_ts: int,
+        end_ts: int,
+        closed_at: int,
+        backfilled: bool,
+        payload_version: int,
+        payload: str,
+    ) -> bool:
+        """Persist a closed week once.  Returns whether a row was written.
+
+        ``INSERT OR IGNORE``: a closed week is a record of what was known at
+        the time, and a second close -- after a restart, or a backfill racing a
+        regular close -- must not overwrite it with a later model state.
+        """
+        with self._tx() as conn:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO accuracy_weekly "
+                "(week_start, start_ts_utc, end_ts_utc, closed_at_utc, backfilled,"
+                " payload_version, payload) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (week_start, start_ts, end_ts, closed_at, int(backfilled),
+                 payload_version, payload),
+            )
+            return cur.rowcount > 0
+
+    def weeks(self) -> list[sqlite3.Row]:
+        return self._query("SELECT * FROM accuracy_weekly ORDER BY start_ts_utc")
+
+    def last_week_end(self) -> int | None:
+        rows = self._query("SELECT MAX(end_ts_utc) AS last FROM accuracy_weekly")
+        return None if not rows or rows[0]["last"] is None else int(rows[0]["last"])
 
     # -- shading ----------------------------------------------------------- #
 
@@ -2018,6 +2190,7 @@ class Store:
             "weather_actual_5min",
             "plant_state_5min",
             "forecast_log",
+            "accuracy_weekly",
             "shading_obs",
             "model_effects",
             "ghi_bias",

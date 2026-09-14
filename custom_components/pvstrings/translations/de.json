@@ -623,6 +623,30 @@
           "description": "Preise ab diesem Tag werden verworfen."
         }
       }
+    },
+    "get_day": {
+      "name": "Vergangenen Tag abrufen",
+      "description": "Liefert einen vergangenen lokalen Tag so, wie er prognostiziert und gemessen wurde: je Stunde Prognose, Vorabend-Prognose, Vergleichswert ohne Lernen und Messung, dazu die Fünf-Minuten-Leistung. Nur lesend; die Antwort ist eine Service-Antwort und wird nicht gespeichert.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Anlage",
+          "description": "Welche Anlage."
+        },
+        "date": {
+          "name": "Datum",
+          "description": "Ein lokales Datum vor heute."
+        }
+      }
+    },
+    "get_weeks": {
+      "name": "Genauigkeit nach Wochen abrufen",
+      "description": "Liefert die Vorabend-Genauigkeit Woche für Woche, verglichen mit derselben Integration ohne jede gelernte Korrektur, dazu die laufende Woche. Nur lesend; die Antwort ist eine Service-Antwort und wird nicht gespeichert.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Anlage",
+          "description": "Welche Anlage."
+        }
+      }
     }
   }
 }

@@ -1575,3 +1575,196 @@ class TestClearingRecordedPrices:
         store.materialise_plant_hourly(0, 10800)
         row = store._query("SELECT * FROM plant_hourly WHERE ts_utc = 7200")[0]
         assert row["import_price_per_kwh"] is None
+
+
+class TestLearningBaselineColumns:
+    """Schema 9: the log carries the run without learning next to the forecast."""
+
+    HOUR = 1_700_003_600
+
+    def _v8_database(self, tmp_path):
+        import sqlite3
+
+        path = tmp_path / "v8.db"
+        conn = sqlite3.connect(path)
+        conn.executescript(
+            """
+            CREATE TABLE forecast_log (
+                issued_at_utc INTEGER NOT NULL,
+                ts_utc        INTEGER NOT NULL,
+                string_id     TEXT    NOT NULL,
+                potential_kwh REAL    NOT NULL,
+                method        TEXT    NOT NULL,
+                PRIMARY KEY (issued_at_utc, ts_utc, string_id)
+            );
+            CREATE INDEX ix_forecast_log_ts ON forecast_log (ts_utc, string_id);
+            """
+        )
+        conn.execute(
+            "INSERT INTO forecast_log VALUES (?,?,?,?,?)",
+            (self.HOUR - 3600, self.HOUR, "s1", 0.7, "corrected"),
+        )
+        conn.execute("PRAGMA user_version=8")
+        conn.commit()
+        conn.close()
+        return path
+
+    def test_old_rows_survive_with_null_baselines(self, tmp_path):
+        store = Store(self._v8_database(tmp_path))
+        store.connect()
+        try:
+            row = store._query("SELECT * FROM forecast_log")[0]
+            assert row["potential_kwh"] == pytest.approx(0.7)
+            assert row["baseline_kwh"] is None
+            assert row["unshaded_kwh"] is None
+            assert store.weeks() == []
+            indexes = {r[1] for r in store._query("PRAGMA index_list(forecast_log)")}
+            assert "ix_forecast_log_issue" in indexes
+            assert "ix_forecast_log_ts" not in indexes
+        finally:
+            store.close()
+
+    def test_a_stamp_without_the_columns_heals(self, tmp_path):
+        """The version is written before the ALTERs; a crash in between must not stick."""
+        import sqlite3
+
+        path = self._v8_database(tmp_path)
+        conn = sqlite3.connect(path)
+        conn.execute("PRAGMA user_version=9")
+        conn.commit()
+        conn.close()
+        store = Store(path)
+        store.connect()
+        try:
+            store.log_forecast(
+                [(self.HOUR - 7200, self.HOUR, "s1", 0.5, "corrected", 0.6, 0.55)]
+            )
+            rows = store._query("SELECT baseline_kwh FROM forecast_log ORDER BY issued_at_utc")
+            assert rows[0]["baseline_kwh"] == pytest.approx(0.6)
+        finally:
+            store.close()
+
+    def test_a_later_run_in_the_same_hour_replaces_the_baseline_too(self, store: Store):
+        """A baseline from one weather run next to a potential from another
+        would measure the weather change as learning."""
+        issued = self.HOUR - 3600
+        store.log_forecast([(issued, self.HOUR, "s1", 0.5, "corrected", 0.6, 0.55)])
+        store.log_forecast([(issued, self.HOUR, "s1", 0.8, "corrected", None, 0.85)])
+        row = store._query("SELECT * FROM forecast_log")[0]
+        assert row["potential_kwh"] == pytest.approx(0.8)
+        assert row["baseline_kwh"] is None
+
+    def test_pairing_reads_every_column_from_the_same_issue(self, store: Store):
+        store.upsert_hourly(
+            [(self.HOUR, "s1", 1.0, 1.0, 0.0, None, None, None, "measured", "exact")]
+        )
+        cutoff = self.HOUR - 12 * 3600
+        store.log_forecast([(cutoff - 3600, self.HOUR, "s1", 0.5, "c", 0.4, 0.45)])
+        store.log_forecast([(cutoff + 3600, self.HOUR, "s1", 0.9, "c", 0.8, 0.85)])
+
+        row = store.forecast_vs_actual_before(self.HOUR, self.HOUR + 3600, cutoff)[0]
+        assert row["potential_kwh"] == pytest.approx(0.5)
+        assert row["baseline_kwh"] == pytest.approx(0.4)
+        assert row["unshaded_kwh"] == pytest.approx(0.45)
+        assert row["issued_at_utc"] == cutoff - 3600
+
+    def test_the_join_returns_exactly_what_the_old_subquery_did(self, store: Store):
+        """Same rows, same order, NULL stays NULL, nothing multiplied."""
+        old_sql = """
+            SELECT h.ts_utc, h.string_id, h.energy_kwh, h.quality, h.value_kind,
+                   h.curtailed_fraction, h.coverage, h.chain_kwh,
+                   (SELECT f.potential_kwh FROM forecast_log f
+                     WHERE f.ts_utc = h.ts_utc
+                       AND f.string_id = h.string_id
+                       AND f.issued_at_utc <= {cutoff}
+                     ORDER BY f.issued_at_utc DESC LIMIT 1) AS potential_kwh
+            FROM string_hourly h
+            WHERE h.ts_utc >= ? AND h.ts_utc < ?
+            ORDER BY h.ts_utc
+        """
+        start = self.HOUR
+        cutoff = start - 6 * 3600
+        hourly, log = [], []
+        for index in range(12):
+            ts = start + index * 3600
+            for sid in ("s1", "s2"):
+                hourly.append((ts, sid, 0.1 * index, 1.0, 0.0, None, None, None,
+                               "measured", "exact"))
+                if index == 5 and sid == "s2":
+                    continue  # never forecast
+                for lead in (30, 7, 6, 2):  # 6 h lands exactly on the cut-off for hour 0
+                    log.append((ts - lead * 3600, ts, sid, 0.01 * lead + index, "c",
+                                None, None))
+        store.upsert_hourly(hourly)
+        store.log_forecast(log)
+        end = start + 12 * 3600
+
+        def plain(rows, columns):
+            return [tuple(row[c] for c in columns) for row in rows]
+
+        columns = ("ts_utc", "string_id", "energy_kwh", "potential_kwh")
+        for cutoff_sql, params, new in (
+            ("?", (cutoff, start, end),
+             store.forecast_vs_actual_before(start, end, cutoff)),
+            ("h.ts_utc - ?", (0, start, end), store.forecast_vs_actual(start, end, 0.0)),
+            ("h.ts_utc - ?", (86400, start, end),
+             store.forecast_vs_actual(start, end, 24.0)),
+        ):
+            old = store._query(old_sql.format(cutoff=cutoff_sql), params)
+            assert len(new) == len(old)
+            assert plain(new, columns) == plain(old, columns)
+        assert any(
+            row["potential_kwh"] is None
+            for row in store.forecast_vs_actual_before(start, end, cutoff)
+        )
+
+    def test_the_unpaired_log_includes_hours_nobody_measured(self, store: Store):
+        store.log_forecast([(self.HOUR - 7200, self.HOUR, "s1", 0.5, "c", 0.6, 0.55)])
+        store.log_forecast([(self.HOUR - 3600, self.HOUR, "s1", 0.7, "c", 0.8, 0.75)])
+        # Issued inside the hour: not a forecast of it.
+        store.log_forecast([(self.HOUR + 600, self.HOUR, "s1", 0.9, "c", 0.9, 0.9)])
+
+        lead0 = store.forecast_log_as_of(self.HOUR, self.HOUR + 3600)
+        assert [row["potential_kwh"] for row in lead0] == [pytest.approx(0.7)]
+        ahead = store.forecast_log_as_of(self.HOUR, self.HOUR + 3600, self.HOUR - 7200)
+        assert ahead[0]["baseline_kwh"] == pytest.approx(0.6)
+
+    def test_weather_as_it_stood(self, store: Store):
+        def row(issued, ghi):
+            return (issued, self.HOUR, "open_meteo", 1, ghi, 0.0, ghi, 20.0, 0.0,
+                    2.0, 60.0, 0.0, None, 1013.0, 1)
+
+        store.upsert_weather_forecast([row(self.HOUR - 7200, 100.0)])
+        store.upsert_weather_forecast([row(self.HOUR - 3600, 300.0)])
+        before = store.latest_forecast_before(
+            self.HOUR, self.HOUR + 3600, "open_meteo", self.HOUR - 5400
+        )
+        assert before[0]["ghi_wm2"] == pytest.approx(100.0)
+        assert store.latest_forecast(self.HOUR, self.HOUR + 3600, "open_meteo")[0][
+            "ghi_wm2"
+        ] == pytest.approx(300.0)
+
+
+class TestAccuracyWeeks:
+    def test_a_closed_week_is_never_overwritten(self, store: Store):
+        assert store.insert_week("2026-09-07", 10, 20, 30, False, 1, '{"a":1}')
+        assert not store.insert_week("2026-09-07", 10, 20, 99, True, 1, '{"a":2}')
+        rows = store.weeks()
+        assert len(rows) == 1
+        assert rows[0]["payload"] == '{"a":1}'
+        assert store.last_week_end() == 20
+
+    def test_compaction_never_touches_weeks(self, store: Store):
+        store.insert_week("2020-01-06", 0, 604800, 604800, False, 1, "{}")
+        store.compact(10 * 365 * 86400)
+        assert len(store.weeks()) == 1
+
+    def test_only_hours_with_several_issues_count_as_day_ahead_history(
+        self, store: Store
+    ):
+        hour = 1_700_003_600
+        store.log_forecast([(hour - 3600, hour, "s1", 0.5, "c")])
+        assert store.first_multi_issue_ts() is None
+        store.log_forecast([(hour - 86400, hour + 3600, "s1", 0.5, "c")])
+        store.log_forecast([(hour - 3600, hour + 3600, "s1", 0.5, "c")])
+        assert store.first_multi_issue_ts() == hour + 3600
