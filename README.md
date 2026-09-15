@@ -808,6 +808,11 @@ looked exactly like "not enough data yet" from the outside — which is why the
 diagnostics download carries the model internals. If a number here looks wrong to
 you, it may well be: open an issue and attach it.
 
+Questions, ideas and screenshots of your own plant belong in
+[Discussions](https://github.com/doccodyblue/ha-pvstrings/discussions); every
+plant teaches the model something different, and seeing them is the best test
+there is. Issues are for bugs and feature requests.
+
 ---
 
 ## Data sources
