@@ -814,6 +814,18 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         azimuth = float(position["azimuth"].iloc[0])
         elevation = float(position["apparent_elevation"].iloc[0])
         counts = self.store.shading_observations_by_string()
+        below_horizon = elevation < NIGHT_ELEVATION_DEG
+        # How much of the light is direct decides what a differential map's
+        # clear-day loss costs right now -- the forecast scales it the same
+        # way.  Measured where the nowcast found the sensor usable, the
+        # source's split otherwise; unknown keeps the clear-day loss.
+        measured_beam: dict[str, float] = {}
+        forecast_beam: dict[str, float] = {}
+        if not below_horizon:
+            try:
+                measured_beam, forecast_beam = self.engine.beam_share_now(now_ts)
+            except Exception:  # noqa: BLE001 -- a side figure, never the update
+                _LOGGER.exception("pvstrings: beam share for shading-now failed")
 
         # The map itself is deliberately *not* in here.  These fields change
         # on every update as the sun moves, and Home Assistant deduplicates
@@ -826,9 +838,20 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
             "strings": {},
         }
         for string in self.plant.strings:
-            found = self.engine.shading.maps.get(string.string_id)
-            below_horizon = elevation < NIGHT_ELEVATION_DEG
-            out["strings"][string.string_id] = {
+            sid = string.string_id
+            found = self.engine.shading.maps.get(sid)
+            if sid in measured_beam:
+                beam, beam_source = measured_beam[sid], "measured"
+            elif sid in forecast_beam:
+                beam, beam_source = forecast_beam[sid], "forecast"
+            else:
+                beam, beam_source = None, None
+            clear_day = (
+                None
+                if below_horizon
+                else self.engine.shading.factor(sid, azimuth, elevation, now_ts)
+            )
+            out["strings"][sid] = {
                 "name": string.name,
                 # Carried per string rather than in one plant-wide table so a
                 # card can show a name instead of a ULID.
@@ -838,10 +861,22 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
                     if below_horizon
                     else round(
                         self.engine.shading.factor(
-                            string.string_id, azimuth, elevation, now_ts
+                            sid, azimuth, elevation, now_ts, beam=beam
                         ),
                         3,
                     )
+                ),
+                # The map's loss on a clear day at this sun position -- what
+                # the state was before it knew about clouds, and what a plot
+                # over the day needs to draw the shadow's edge.
+                "clear_day_factor": None if clear_day is None else round(clear_day, 3),
+                "beam_share": None if beam is None else round(beam, 3),
+                "beam_source": beam_source,
+                # The source's split for the running interval, next to the
+                # measured one: the forecast applies this, so a gap between
+                # the two explains a gap between sensor and forecast.
+                "forecast_beam_share": (
+                    None if sid not in forecast_beam else round(forecast_beam[sid], 3)
                 ),
                 "observations": counts.get(string.string_id, 0),
                 "cells": found.observed_cells if found else 0,

@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **"Shading now" no longer reports a shadow under a closed sky.** On a
+  differential sky map a cell holds the clear-day loss, and the forecast has
+  always applied it to the beam component only. The sensor did not: it
+  published the full clear-day loss whatever the weather, so an overcast
+  afternoon could read 6 % shading while the forecast subtracted almost
+  nothing. The state is now scaled by the beam share of the moment — from the
+  irradiance sensor's last quarter hour (Erbs on the measured global, gated
+  by the nowcast: fresh, not frozen, learning on), or from the weather
+  source's split for the running interval without one. Where neither can be
+  computed the clear-day loss stays. New attributes: `clear_day_factor`,
+  `beam_share`, `beam_source`, `forecast_beam_share`. Absolute maps are
+  unchanged; they already average the weather in.
+
 ## v1.25.0 — 2026-09-14
 
 ### Added

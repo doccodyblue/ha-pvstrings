@@ -1475,6 +1475,117 @@ class ForecastEngine:
             beam_out[string.string_id] = beams
         return out, beam_out
 
+    def beam_share_now(
+        self, now_ts: int
+    ) -> tuple[dict[str, float], dict[str, float]]:
+        """POA beam share per string for this moment: measured, and forecast.
+
+        A differential sky map holds the clear-day loss, and what it costs now
+        depends on how much of the light is direct.  The forecast knows that
+        for its own intervals; a "shading now" figure has to know it too, or
+        it reports the full clear-day loss under a closed cloud deck.
+
+        *Measured* reconstructs the last quarter hour from the irradiance
+        sensor -- the same window the nowcast reads, and only while the
+        nowcast found it usable (fresh, not frozen, learning on).  The split
+        comes from Erbs on the measured global, so under broken cloud it is an
+        estimate, not a DNI reading.  *Forecast* is the source's own split for
+        the running interval.  Either side is simply absent where it cannot
+        be computed; a string missing from both keeps the clear-day loss.
+        """
+        measured: dict[str, float] = {}
+        end = (int(now_ts) // INTERVAL_SECONDS) * INTERVAL_SECONDS
+        if self.last_nowcast is not None:
+            start = end - persistence.WINDOW_SECONDS
+            # Widened to whole hours for the same reason ``_sky_now`` widens:
+            # the weather rows are keyed on the hour.
+            wide_start, wide_end = floor_hour(start), floor_hour(end) + HOUR
+            index = self._midpoint_index(start, end)
+            conditions = (
+                self._actual_conditions(index, wide_start, wide_end)
+                if len(index)
+                else None
+            )
+            series = self._measured_ghi(wide_start, wide_end)
+            if conditions is not None and series is not None and not series.empty:
+                epochs = [
+                    int(value.timestamp()) - INTERVAL_SECONDS // 2 for value in index
+                ]
+                seen = series.reindex(epochs).notna().to_numpy()
+                # Only intervals the sensor actually covered: the rest carry
+                # the forecast's global, and a split of that is not a
+                # measurement.
+                if seen.any():
+                    measured = self._beam_by_string(index[seen], conditions.loc[seen])
+
+        forecast: dict[str, float] = {}
+        rows = self.store.latest_forecast(
+            floor_hour(end), floor_hour(end) + HOUR, self.plant.forecast_source
+        )
+        hourly = self._hourly_frame(rows)
+        if not hourly.empty:
+            # The whole hour, then the running interval out of it: the
+            # downscaling shapes each interval against the hour's clear-sky
+            # mean, and a one-interval index would flatten that away.
+            index = self._midpoint_index(floor_hour(end), floor_hour(end) + HOUR)
+            conditions = self._downscale(
+                index, hourly, apply_bias=True, issued_at_utc=now_ts
+            )
+            starts = np.array(
+                [int(value.timestamp()) - INTERVAL_SECONDS // 2 for value in index]
+            )
+            running = (starts == end) & conditions["covered"].to_numpy()
+            if running.any():
+                forecast = self._beam_by_string(index[running], conditions.loc[running])
+        return measured, forecast
+
+    def _beam_by_string(
+        self, index: pd.DatetimeIndex, conditions: pd.DataFrame
+    ) -> dict[str, float]:
+        """Beam share per string, weighted by unshaded plane-of-array light.
+
+        Weighted by POA rather than DC power: the power carries cell
+        temperature, efficiency and the module ceiling, none of which say
+        anything about how the light is split.  No shading is applied -- the
+        share is geometry only.  A string without geometry, or without any
+        light on its plane, is left out rather than reported as zero beam,
+        which would read as "no shade".
+        """
+        if len(index) == 0:
+            return {}
+        hour_keys = conditions["hour"].to_numpy()
+        unique_hours = sorted({int(hour) for hour in hour_keys})
+        out: dict[str, float] = {}
+        for string in self.plant.strings:
+            grouped = self._geometry_segments(string.string_id, unique_hours)
+            weight = 0.0
+            weighted = 0.0
+            for segment, hours_in_segment in grouped:
+                mask = np.isin(hour_keys, hours_in_segment)
+                if not mask.any():
+                    continue
+                sub_index = index[mask]
+                sub = conditions.loc[mask]
+                result = self.physics.run(
+                    sub_index,
+                    segment,
+                    ghi=pd.Series(sub["ghi"].to_numpy(), index=sub_index),
+                    dni=pd.Series(sub["dni"].to_numpy(), index=sub_index),
+                    dhi=pd.Series(sub["dhi"].to_numpy(), index=sub_index),
+                    temp_air=pd.Series(sub["temp_c"].to_numpy(), index=sub_index),
+                    wind_speed=pd.Series(sub["wind_ms"].to_numpy(), index=sub_index),
+                    system_efficiency=self.plant.efficiency_of(string.string_id),
+                    mount_type=string.mount_type,
+                )
+                poa = result.poa_global.to_numpy(dtype=float)
+                beam = result.beam_share.to_numpy(dtype=float)
+                ok = np.isfinite(poa) & np.isfinite(beam) & (poa > 0.0)
+                weight += float(poa[ok].sum())
+                weighted += float((poa[ok] * beam[ok]).sum())
+            if weight > 0.0:
+                out[string.string_id] = min(max(weighted / weight, 0.0), 1.0)
+        return out
+
     def _actual_conditions(
         self, index: pd.DatetimeIndex, start_ts: int, end_ts: int
     ) -> pd.DataFrame | None:

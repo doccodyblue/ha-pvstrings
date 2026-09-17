@@ -755,6 +755,14 @@ What it will not do:
   sky the obstacle took nothing, so nothing is taken off. The same share weights
   an observation as it is learned, so a grey morning cannot vote a shadow away —
   and a loss seen at half beam is not filed as if the day had been clear.
+  The *shading now* sensor follows the same rule: it scales the cell's
+  clear-day loss by the beam share of the moment — reconstructed from the
+  irradiance sensor's last quarter hour where the nowcast finds it usable,
+  from the weather source's split otherwise. Its attributes carry
+  `clear_day_factor` (the loss on a clear day at this sun position),
+  `beam_share` with its `beam_source` (`measured` or `forecast`), and the
+  source's `forecast_beam_share` next to it. Where no share can be computed
+  the full clear-day loss stays — ignorance never reads as "no shade".
 
 Each cell reports its own `ratio` — what the string actually did there,
 measured over physics, before any normalisation — and each map reports the
