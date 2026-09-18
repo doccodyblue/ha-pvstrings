@@ -77,8 +77,11 @@ INTERVALS_PER_HOUR = HOUR // INTERVAL_SECONDS
 #: Cursor names in ``learning_cursor``.
 CURSOR_HOURLY = "hourly_materialised"
 CURSOR_LEARN = "model_learned"
-#: Marks that the one-off backfill of the irradiance bias has run.
-CURSOR_BIAS = "ghi_bias_backfilled"
+#: Marks that the one-off backfill of the irradiance bias has run.  The key
+#: carries a version: the first pass under the old key was computed but never
+#: written -- ``learn`` returns before its save when no hour has closed --
+#: so a plant that ran it still needs it.
+CURSOR_BIAS = "ghi_bias_backfilled_v2"
 
 #: How far back that backfill reaches.  The issues live exactly this long
 #: (the score window plus a few days), so it costs one pass over rows that
@@ -2144,6 +2147,12 @@ class ForecastEngine:
         stats = LearnStats()
         self._learn_ghi_bias(start, end, stats)
         if stats.bias_observations:
+            # Saved here and not left to the caller: ``learn`` returns before
+            # its own save whenever no hour has closed since the cursor, and
+            # then a pass that ran perfectly would be lost on the next
+            # restart -- with the marker already claimed, so it would never
+            # run again.
+            self.save_models(int(now_ts))
             _LOGGER.info(
                 "pvstrings: bias model backfilled from %s past observations",
                 stats.bias_observations,

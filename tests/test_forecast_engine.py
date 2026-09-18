@@ -659,6 +659,30 @@ class TestLearningCycle:
         assert engine.backfill_ghi_bias(now) == 0
         assert engine.ghi_bias.buckets[(14, "24-48h")].n_eff == pytest.approx(once)
 
+    def test_the_backfill_survives_a_restart(
+        self, engine: ForecastEngine, seeded_store: Store, plant
+    ):
+        """It must be written, not just computed.
+
+        ``learn`` returns before its own save whenever no hour has closed, so
+        a pass left to that save is lost on the next restart -- and its
+        marker is already claimed, so it never runs again. That combination
+        leaves the model permanently empty, which is worse than never having
+        backfilled at all.
+        """
+        clear_sky_forecast(
+            engine, seeded_store, DAY_START - 26 * HOUR, DAY_START, 24, scale=1.3
+        )
+        clear_sky_forecast(
+            engine, seeded_store, 0, DAY_START, 24, scale=1.0, lead_time_h=1
+        )
+        assert engine.backfill_ghi_bias(DAY_START + 24 * HOUR) > 0
+
+        restarted = ForecastEngine(plant, seeded_store)
+        restarted.load_models()
+
+        assert restarted.ghi_bias.factor(14, 30.0) < 1.0
+
     def test_the_backfill_runs_once_and_not_after_a_reset(
         self, engine: ForecastEngine, seeded_store: Store
     ):
