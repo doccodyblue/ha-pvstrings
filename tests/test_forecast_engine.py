@@ -637,6 +637,28 @@ class TestLearningCycle:
         assert recovered > 0
         assert engine.ghi_bias.factor(noon_local, 30.0) < 1.0
 
+    def test_two_cycles_at_once_do_not_sum_the_history_twice(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """Around a restart two learn cycles can overlap.
+
+        The ratio would survive it -- both sums double -- but the evidence
+        count would not, and the nowcast reads that count to decide how far
+        to trust a measurement.
+        """
+        clear_sky_forecast(
+            engine, seeded_store, DAY_START - 26 * HOUR, DAY_START, 24, scale=1.3
+        )
+        clear_sky_forecast(
+            engine, seeded_store, 0, DAY_START, 24, scale=1.0, lead_time_h=1
+        )
+        now = DAY_START + 24 * HOUR
+        assert engine.backfill_ghi_bias(now) > 0
+        once = engine.ghi_bias.buckets[(14, "24-48h")].n_eff
+
+        assert engine.backfill_ghi_bias(now) == 0
+        assert engine.ghi_bias.buckets[(14, "24-48h")].n_eff == pytest.approx(once)
+
     def test_the_backfill_runs_once_and_not_after_a_reset(
         self, engine: ForecastEngine, seeded_store: Store
     ):

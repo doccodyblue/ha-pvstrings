@@ -2134,9 +2134,15 @@ class ForecastEngine:
             return 0
         end = floor_hour(now_ts)
         start = end - BIAS_BACKFILL_DAYS * 86400
+        # Claimed before the work, not after: two cycles can overlap around a
+        # restart, and both would otherwise pass the guard and sum the same
+        # history twice.  The ratio survives that -- both sums double -- but
+        # the evidence count does not, and the nowcast reads it.  A crash
+        # mid-pass leaves partial evidence that the normal cycle extends,
+        # which is the cheaper failure.
+        self.store.set_cursor(CURSOR_BIAS, end)
         stats = LearnStats()
         self._learn_ghi_bias(start, end, stats)
-        self.store.set_cursor(CURSOR_BIAS, end)
         if stats.bias_observations:
             _LOGGER.info(
                 "pvstrings: bias model backfilled from %s past observations",
