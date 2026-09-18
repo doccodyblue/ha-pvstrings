@@ -2165,6 +2165,9 @@ class ForecastEngine:
                     measured_ghi=truth,
                     forecast_ghi=float(issue["ghi_wm2"]),
                     weight=bias_weight(truth),
+                    # The hour the observation belongs to, so the bucket's
+                    # memory runs in real time rather than in arrivals.
+                    ts_utc=float(hour),
                 ):
                     stats.bias_observations += 1
 

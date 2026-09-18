@@ -57,12 +57,15 @@ MIN_INTERVALS = 3
 #: anchored to different scales (a lux sensor reads its own units), and blending
 #: them hard produces a step across the horizon rather than a correction.
 #:
-#: Scaled to what ``n_eff`` actually reaches: it is an irradiance-weighted,
-#: decaying count, not a sample tally, and on a mature plant it saturates
-#: around 10-16 at midday and 1-2 near the edges of the day.  A larger constant
-#: throttles the feature permanently rather than only while it is young -- at
-#: 20 even the best-evidenced hour would have stayed below half weight.
-BIAS_EVIDENCE_K = 3.0
+#: Scaled to what ``n_eff`` actually reaches, which changed with the bias
+#: model's accumulator: it is an irradiance-weighted sum over a fortnight's
+#: half-life, not a saturating tally, and on the reference plant a mature
+#: midday bucket holds around a hundred while the last hour before sunset
+#: holds a handful.  Half trust at twenty-five is about a day and a half of
+#: midday evidence, and leaves the dim edges of the day damped -- which is
+#: where the nowcast has least to say anyway.  Before the accumulator changed
+#: the same shape was reached with three against a ceiling of about sixteen.
+BIAS_EVIDENCE_K = 25.0
 
 REASON_NO_SOURCE = "no_source"
 REASON_NO_MEASUREMENT = "no_measurement"

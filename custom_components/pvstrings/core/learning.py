@@ -370,6 +370,70 @@ def bias_weight(measured_ghi: float) -> float:
     return min(measured_ghi, BIAS_FULL_WEIGHT_WM2) / BIAS_FULL_WEIGHT_WM2
 
 
+#: Half-life of a bias bucket, in days.  Deliberately in *time*: a bucket is
+#: fed once per issue, so the same target hour arrives eighteen times in the
+#: 6-24 h bucket and twenty-four times in the 24-48 h one.  Counted in
+#: observations -- as the layers that carry an ``Effect`` do -- that is a
+#: memory of about a day, and the bucket ends up describing yesterday's
+#: weather rather than the source's standing error.
+BIAS_HALFLIFE_DAYS = 14.0
+
+
+@dataclass
+class BiasBucket:
+    """Irradiance the source announced, and irradiance that arrived.
+
+    Kept as two decaying sums rather than as a mean of ratios.  The quantity
+    this layer exists to remove is an *energy* bias, and the factor that
+    removes it is the ratio of the sums.  A mean of ratios answers a different
+    question -- the typical multiplicative error of an hour -- in which a dim
+    hour whose ratio is wild but whose energy is negligible counts as much as
+    a bright one, and the correction it produces is far too timid to close the
+    gap it was built for.
+
+    ``n_eff`` stays the evidence count, and only the evidence count: it drives
+    the shrinkage, it does not weight the sums.  Weighting the sums by it as
+    well counts brightness twice and undoes most of the gain.
+    """
+
+    measured: float = 0.0
+    forecast: float = 0.0
+    n_eff: float = 0.0
+    #: When this bucket was last touched, so the decay can run in real time.
+    updated_at: float = 0.0
+
+    def observe(
+        self, measured: float, forecast: float, weight: float, ts_utc: float
+    ) -> None:
+        if weight <= 0.0:
+            return
+        self._decay_to(ts_utc)
+        self.measured += measured
+        self.forecast += forecast
+        self.n_eff += weight
+
+    def _decay_to(self, ts_utc: float) -> None:
+        if self.updated_at and ts_utc > self.updated_at:
+            elapsed_days = (ts_utc - self.updated_at) / 86400.0
+            decay = 0.5 ** (elapsed_days / BIAS_HALFLIFE_DAYS)
+            self.measured *= decay
+            self.forecast *= decay
+            self.n_eff *= decay
+        self.updated_at = max(self.updated_at, ts_utc)
+
+    @property
+    def factor(self) -> float:
+        """The correction, shrunk towards neutral while the bucket is thin."""
+        if self.forecast <= 0.0 or self.measured <= 0.0 or self.n_eff <= 0.0:
+            return 1.0
+        raw = math.log(self.measured / self.forecast)
+        shrunk = raw * (self.n_eff / (self.n_eff + SHRINK_K))
+        return math.exp(_clamp(shrunk, -MAX_LOG_EFFECT, MAX_LOG_EFFECT))
+
+    def as_tuple(self) -> tuple[float, float, float, float]:
+        return self.measured, self.forecast, self.n_eff, self.updated_at
+
+
 @dataclass
 class GhiBiasModel:
     """Per (local hour, forecast horizon) correction of the irradiance source.
@@ -379,22 +443,27 @@ class GhiBiasModel:
     the physics chain is deterministic, the irradiance input is not.
     """
 
-    buckets: dict[tuple[int, str], Effect] = field(default_factory=dict)
+    buckets: dict[tuple[int, str], BiasBucket] = field(default_factory=dict)
 
     @classmethod
     def from_rows(
-        cls, rows: Mapping[tuple[int, str], tuple[float, float]]
+        cls, rows: Mapping[tuple[int, str], tuple[float, float, float, float]]
     ) -> "GhiBiasModel":
         return cls(
-            buckets={k: Effect(value=v, n_eff=n) for k, (v, n) in rows.items()}
+            buckets={
+                key: BiasBucket(
+                    measured=measured, forecast=forecast, n_eff=n, updated_at=ts
+                )
+                for key, (measured, forecast, n, ts) in rows.items()
+            }
         )
 
-    def to_rows(self) -> dict[tuple[int, str], tuple[float, float]]:
-        return {key: effect.as_tuple() for key, effect in self.buckets.items()}
+    def to_rows(self) -> dict[tuple[int, str], tuple[float, float, float, float]]:
+        return {key: bucket.as_tuple() for key, bucket in self.buckets.items()}
 
     def factor(self, hour_local: int, horizon_h: float) -> float:
-        effect = self.buckets.get((hour_local, horizon_bucket(horizon_h)))
-        return math.exp(effect.shrunk) if effect else 1.0
+        bucket = self.buckets.get((hour_local, horizon_bucket(horizon_h)))
+        return bucket.factor if bucket else 1.0
 
     def observe(
         self,
@@ -403,23 +472,28 @@ class GhiBiasModel:
         measured_ghi: float,
         forecast_ghi: float,
         weight: float = 1.0,
+        ts_utc: float = 0.0,
     ) -> bool:
         if forecast_ghi <= 5.0 or measured_ghi <= 0.0:
             # Near darkness: the ratio explodes and carries no information.
             return False
         ratio = measured_ghi / forecast_ghi
         if not MIN_RATIO <= ratio <= MAX_RATIO:
+            # Still the guard against broken data, and now also the only
+            # bound on what one hour can do to the sums.
             return False
         key = (int(hour_local), horizon_bucket(horizon_h))
-        self.buckets.setdefault(key, Effect()).update(math.log(ratio), weight)
+        self.buckets.setdefault(key, BiasBucket()).observe(
+            measured_ghi, forecast_ghi, weight, ts_utc
+        )
         return True
 
     def summary(self) -> dict[str, object]:
         return {
             f"{hour:02d}|{bucket}": {
-                "factor": round(math.exp(effect.shrunk), 4),
-                "n_eff": round(effect.n_eff, 2),
+                "factor": round(b.factor, 4),
+                "n_eff": round(b.n_eff, 2),
             }
-            for (hour, bucket), effect in sorted(self.buckets.items())
-            if effect.n_eff > 0
+            for (hour, bucket), b in sorted(self.buckets.items())
+            if b.n_eff > 0
         }

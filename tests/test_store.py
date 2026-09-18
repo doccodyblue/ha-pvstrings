@@ -270,10 +270,29 @@ class TestModelState:
 
     def test_reset_clears_effects_and_bias(self, store: Store):
         store.save_effects("plant", {"clear|midday": (0.1, 5.0)}, 0)
-        store.save_ghi_bias("open_meteo", {(12, "0-6h"): (0.05, 3.0)}, 0)
+        store.save_ghi_bias("open_meteo", {(12, "0-6h"): (420.0, 400.0, 3.0, 0.0)}, 0)
         store.clear_effects(None)
         assert store.load_effects("plant") == {}
         assert store.load_ghi_bias("open_meteo") == {}
+
+    def test_a_v1_bias_row_is_not_read_as_sums(self, store: Store):
+        """The old rows hold a mean of log ratios, not the sums.
+
+        Reading the pair as if it were (measured, forecast) would invent
+        evidence out of two numbers that cannot carry it, and the invented
+        factor would look perfectly plausible. A plant coming from the old
+        model starts neutral instead and refills within a day or two.
+        """
+        with store._tx() as conn:  # the table the old model wrote
+            conn.execute(
+                "INSERT INTO ghi_bias (source, hour_local, horizon_bkt, log_factor,"
+                " n_eff, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                ("open_meteo", 12, "0-6h", -0.2, 9.0, 0),
+            )
+        assert store.load_ghi_bias("open_meteo") == {}
+        # and it stays there, for a rollback
+        rows = store._query("SELECT log_factor FROM ghi_bias WHERE hour_local = 12")
+        assert rows and rows[0]["log_factor"] == pytest.approx(-0.2)
 
     def test_cursor_defaults_and_persists(self, store: Store):
         assert store.get_cursor("learn", default=42) == 42
@@ -482,7 +501,9 @@ class TestResettingLearning:
             {"s1|morning": (-0.1, 8.0), "s2|morning": (0.05, 8.0)},
             1_700_000_000,
         )
-        store.save_ghi_bias("open_meteo", {(12, "0-6h"): (0.02, 5.0)}, 1_700_000_000)
+        store.save_ghi_bias(
+            "open_meteo", {(12, "0-6h"): (410.0, 400.0, 5.0, 1_700_000_000.0)}, 1_700_000_000
+        )
 
         store.clear_effects_for_string("s1")
 

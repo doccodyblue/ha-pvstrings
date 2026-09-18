@@ -36,7 +36,7 @@ SHADING_THIN_DAYS = 120
 
 _LOGGER = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS string_geometry (
@@ -238,6 +238,23 @@ CREATE TABLE IF NOT EXISTS ghi_bias (
     log_factor  REAL    NOT NULL DEFAULT 0.0,
     n_eff       REAL    NOT NULL DEFAULT 0.0,
     updated_at  INTEGER,
+    PRIMARY KEY (source, hour_local, horizon_bkt)
+);
+
+-- The same buckets, kept as the two sums the correction is a ratio of.  A
+-- separate table, not new columns: the v1 rows hold a mean of log ratios,
+-- from which the sums cannot be recovered, and reading them as if they were
+-- sums would invent evidence.  They stay untouched, and a bucket that has
+-- not been seen since the change is simply neutral until it refills -- which
+-- takes a day or two, since every issue feeds it.
+CREATE TABLE IF NOT EXISTS ghi_bias_v2 (
+    source       TEXT    NOT NULL,
+    hour_local   INTEGER NOT NULL,
+    horizon_bkt  TEXT    NOT NULL,
+    measured_sum REAL    NOT NULL DEFAULT 0.0,
+    forecast_sum REAL    NOT NULL DEFAULT 0.0,
+    n_eff        REAL    NOT NULL DEFAULT 0.0,
+    updated_at   INTEGER,
     PRIMARY KEY (source, hour_local, horizon_bkt)
 );
 
@@ -1975,13 +1992,28 @@ class Store:
             else:
                 conn.execute("DELETE FROM model_effects")
                 conn.execute("DELETE FROM ghi_bias")
+                conn.execute("DELETE FROM ghi_bias_v2")
 
-    def load_ghi_bias(self, source: str) -> dict[tuple[int, str], tuple[float, float]]:
+    def load_ghi_bias(
+        self, source: str
+    ) -> dict[tuple[int, str], tuple[float, float, float, float]]:
+        """The sums a bias bucket is built from.  v1 rows are never read here.
+
+        A v1 row holds a mean of log ratios and its evidence count; the sums
+        cannot be reconstructed from them, and treating the pair as sums would
+        be inventing data.  An installation coming from v1 therefore starts
+        neutral and relearns, which costs a day or two of evidence.
+        """
         return {
-            (row["hour_local"], row["horizon_bkt"]): (row["log_factor"], row["n_eff"])
+            (row["hour_local"], row["horizon_bkt"]): (
+                row["measured_sum"],
+                row["forecast_sum"],
+                row["n_eff"],
+                float(row["updated_at"] or 0),
+            )
             for row in self._query(
-                "SELECT hour_local, horizon_bkt, log_factor, n_eff FROM ghi_bias "
-                "WHERE source = ?",
+                "SELECT hour_local, horizon_bkt, measured_sum, forecast_sum, n_eff,"
+                " updated_at FROM ghi_bias_v2 WHERE source = ?",
                 (source,),
             )
         }
@@ -1989,7 +2021,7 @@ class Store:
     def save_ghi_bias(
         self,
         source: str,
-        bias: dict[tuple[int, str], tuple[float, float]],
+        bias: dict[tuple[int, str], tuple[float, float, float, float]],
         updated_at: int,
     ) -> None:
         if not bias:
@@ -1997,17 +2029,19 @@ class Store:
         with self._tx() as conn:
             conn.executemany(
                 """
-                INSERT INTO ghi_bias
-                    (source, hour_local, horizon_bkt, log_factor, n_eff, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO ghi_bias_v2
+                    (source, hour_local, horizon_bkt, measured_sum, forecast_sum,
+                     n_eff, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (source, hour_local, horizon_bkt) DO UPDATE SET
-                    log_factor = excluded.log_factor,
-                    n_eff      = excluded.n_eff,
-                    updated_at = excluded.updated_at
+                    measured_sum = excluded.measured_sum,
+                    forecast_sum = excluded.forecast_sum,
+                    n_eff        = excluded.n_eff,
+                    updated_at   = excluded.updated_at
                 """,
                 [
-                    (source, hour, bucket, factor, n_eff, updated_at)
-                    for (hour, bucket), (factor, n_eff) in bias.items()
+                    (source, hour, bucket, measured, forecast, n_eff, updated_at)
+                    for (hour, bucket), (measured, forecast, n_eff, _ts) in bias.items()
                 ],
             )
 

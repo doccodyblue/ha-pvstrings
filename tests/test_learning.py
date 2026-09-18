@@ -308,6 +308,76 @@ class TestGhiBias:
         assert model.factor(8, 10.0) < 1.0
         assert model.factor(14, 10.0) == pytest.approx(1.0)
 
+    def test_the_correction_follows_the_energy_not_the_typical_ratio(self):
+        """Why the bucket holds two sums instead of a mean of ratios.
+
+        One dim hour the source got wrong by a factor of three, against ten
+        bright hours it got right to a tenth.  In energy the bucket is almost
+        exactly right and must barely correct; a mean of ratios would read the
+        dim hour as an equal vote and pull the whole bucket down.
+        """
+        model = GhiBiasModel()
+        model.observe(12, 10.0, measured_ghi=30.0, forecast_ghi=90.0, weight=0.05)
+        for _ in range(10):
+            model.observe(12, 10.0, measured_ghi=800.0, forecast_ghi=790.0, weight=1.0)
+        # The sums: 8030 measured against 7990 announced -- a percent, not a third.
+        assert model.factor(12, 10.0) > 0.97
+
+    def test_a_bright_hour_outweighs_a_dim_one(self):
+        model = GhiBiasModel()
+        model.observe(12, 10.0, measured_ghi=50.0, forecast_ghi=100.0, weight=0.1)
+        model.observe(12, 10.0, measured_ghi=900.0, forecast_ghi=900.0, weight=1.0)
+        assert model.factor(12, 10.0) > 0.99
+
+    def test_the_memory_runs_in_days_not_in_arrivals(self):
+        """The same hour arrives eighteen times; that is one day, not eighteen.
+
+        Counted in arrivals the bucket would forget within a day, and would
+        describe yesterday's weather instead of the source's standing error.
+        """
+        model = GhiBiasModel()
+        day = 86400.0
+        for i in range(18):                       # one day of issues, one hour
+            model.observe(12, 10.0, measured_ghi=700.0, forecast_ghi=1000.0,
+                          weight=1.0, ts_utc=day + i)
+        after_one_day = model.factor(12, 10.0)
+        for i in range(18):                       # the next day, same error
+            model.observe(12, 10.0, measured_ghi=700.0, forecast_ghi=1000.0,
+                          weight=1.0, ts_utc=2 * day + i)
+        # Evidence keeps building instead of decaying away.
+        assert model.buckets[(12, "6-24h")].n_eff > 30
+        assert model.factor(12, 10.0) < after_one_day
+
+    def test_an_old_bucket_decays_towards_neutral(self):
+        model = GhiBiasModel()
+        for i in range(40):
+            model.observe(12, 10.0, measured_ghi=700.0, forecast_ghi=1000.0,
+                          weight=1.0, ts_utc=float(i * 3600))
+        fresh = model.factor(12, 10.0)
+        # Nothing for two months, then one lonely observation of the same kind.
+        model.observe(12, 10.0, measured_ghi=700.0, forecast_ghi=1000.0,
+                      weight=1.0, ts_utc=60 * 86400.0)
+        assert fresh < model.factor(12, 10.0) < 1.0
+
+    def test_a_single_hour_cannot_run_away_with_the_bucket(self):
+        model = GhiBiasModel()
+        for _ in range(30):
+            model.observe(12, 10.0, measured_ghi=800.0, forecast_ghi=800.0, weight=1.0)
+        before = model.factor(12, 10.0)
+        # A sensor spike: rejected by the ratio bounds, never summed.
+        assert model.observe(12, 10.0, measured_ghi=9000.0, forecast_ghi=800.0) is False
+        assert model.factor(12, 10.0) == pytest.approx(before)
+
+    def test_rows_carry_the_sums_and_survive_a_roundtrip(self):
+        model = GhiBiasModel()
+        for i in range(20):
+            model.observe(12, 10.0, measured_ghi=700.0, forecast_ghi=900.0,
+                          weight=1.0, ts_utc=float(i * 3600))
+        restored = GhiBiasModel.from_rows(model.to_rows())
+        assert restored.factor(12, 10.0) == pytest.approx(model.factor(12, 10.0))
+        measured, forecast, n_eff, ts = model.to_rows()[(12, "6-24h")]
+        assert measured > 0 and forecast > measured and n_eff > 0 and ts > 0
+
 
 def test_roundtrip_through_rows():
     model = LogRatioModel()
