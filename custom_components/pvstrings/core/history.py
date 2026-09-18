@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import date, datetime, timedelta
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from .config import INTERVAL_SECONDS
 from .forecast import (
@@ -37,7 +37,19 @@ _LOGGER = logging.getLogger(__name__)
 RESPONSE_VERSION = 1
 #: Shape of the JSON stored in ``accuracy_weekly.payload``.  Bumped when a
 #: stored week can no longer be read as a current one.
-WEEK_PAYLOAD_VERSION = 1
+WEEK_PAYLOAD_VERSION = 2
+#: Versions the reader still understands.  A week is written once and never
+#: rescored, so an older payload must stay readable -- it is simply reported
+#: with what it can prove about itself, which for version 1 is nothing about
+#: where its baseline came from.
+WEEK_PAYLOAD_VERSIONS = (1, 2)
+
+#: Where a week's baseline figure comes from, which decides whether the week
+#: may carry a causal claim at all.
+BASIS_LIVE = "live"          # every paired hour's baseline was logged live
+BASIS_REPLAYED = "replayed"  # every one was reconstructed with today's code
+BASIS_MIXED = "mixed"        # some of each -- not one comparison, two
+BASIS_UNKNOWN = "unknown"    # a version-1 row: it cannot say
 #: Hours the live coordinator forecasts per run.  A replayed baseline has to
 #: use the live window: ``physics.run`` decides one components flag over the
 #: whole series, so a shorter window can change every hour in it.
@@ -234,18 +246,35 @@ def maturity_snapshot(engine: "ForecastEngine") -> dict[str, Any]:
     }
 
 
-def _block(daily: Mapping[str, list[float]], hours: int) -> dict[str, Any]:
+def _block(
+    daily: Mapping[str, list[float]],
+    pairs: Sequence[tuple[float, float]],
+) -> dict[str, Any]:
+    """One series over one hour set: its sums, and its error two ways.
+
+    ``abs_error_kwh`` is the absolute error of the daily *net*, which is what
+    the day-ahead score reports -- an hour early and an hour late cancel
+    inside the day.  That cancellation is exactly why it cannot answer "did
+    learning help": a run without a multiplicative correction cancels more
+    readily than one with it.  ``abs_error_hourly_kwh`` is therefore published
+    next to it, summed per hour, and it is the figure a comparison uses.
+    """
     forecast = sum(values[0] for values in daily.values())
     actual = sum(values[1] for values in daily.values())
     return {
         "forecast_kwh": round(forecast, 3),
         "actual_kwh": round(actual, 3),
-        # Per day, like ``wmape``: an hour early and an hour late cancel in
-        # a day, and summing hourly errors would not be the score's number.
         "abs_error_kwh": round(
             sum(abs(values[0] - values[1]) for values in daily.values()), 3
         ),
-        "hours": hours,
+        "abs_error_hourly_kwh": round(
+            sum(abs(predicted - real) for predicted, real in pairs), 3
+        ),
+        # What this block actually rests on, which is not the week's size:
+        # only hours with a baseline can be compared, and saying so is the
+        # difference between a thin week and a good one.
+        "hours": len(pairs),
+        "days": len(daily),
     }
 
 
@@ -278,6 +307,8 @@ def week_payload(
     full = _ScoreTally()
     paired_published = _ScoreTally()
     paired_baseline = _ScoreTally()
+    replayed = 0
+    paired = 0
 
     for offset in range(7):
         day = monday + timedelta(days=offset)
@@ -288,9 +319,10 @@ def week_payload(
         cutoff = engine.day_ahead_cutoff(start)
         rows = [dict(row) for row in engine.store.forecast_vs_actual_before(start, end, cutoff)]
         if replay:
-            _replay_baseline(engine, rows)
+            replayed += _replay_baseline(engine, rows)
         engine._tally(rows, full, detailed=True)
         with_baseline = [row for row in rows if row["baseline_kwh"] is not None]
+        paired += len(with_baseline)
         engine._tally(with_baseline, paired_published)
         engine._tally(
             [{**row, "potential_kwh": row["baseline_kwh"]} for row in with_baseline],
@@ -299,12 +331,24 @@ def week_payload(
 
     has_baseline = bool(paired_baseline.uncensored)
     if has_baseline:
-        day_ahead = _block(paired_published.daily_uncensored, len(paired_published.uncensored))
-        baseline = _block(paired_baseline.daily_uncensored, len(paired_baseline.uncensored))
+        day_ahead = _block(paired_published.daily_uncensored, paired_published.uncensored)
+        baseline = _block(paired_baseline.daily_uncensored, paired_baseline.uncensored)
     else:
-        day_ahead = _block(full.daily_uncensored, len(full.uncensored))
+        day_ahead = _block(full.daily_uncensored, full.uncensored)
         baseline = None
     return {
+        # Where the baseline came from, per week and not per batch: a week
+        # can hold both kinds, and then it is two comparisons rather than
+        # one.  Only a live week may carry a causal claim.
+        "baseline_basis": (
+            None
+            if not has_baseline
+            else BASIS_LIVE
+            if not replayed
+            else BASIS_REPLAYED
+            if replayed >= paired
+            else BASIS_MIXED
+        ),
         "days_scored": len(full.daily_all),
         "hours_scored": len(full.every),
         "hours_uncensored": len(full.uncensored),
@@ -316,16 +360,22 @@ def week_payload(
     }
 
 
-def _replay_baseline(engine: "ForecastEngine", rows: list[dict[str, Any]]) -> None:
+def _replay_baseline(engine: "ForecastEngine", rows: list[dict[str, Any]]) -> int:
     """Fill missing ``baseline_kwh`` in place from a replay of the issue's weather.
 
+    Returns how many rows were filled, which is what tells a week whether its
+    comparison was live, reconstructed, or both.
+
     Grouped by issue: every hour of a day normally comes from the one evening
-    run.  The logged issue is quantised to its hour and stands for the last
-    run inside it, so the replay may read weather fetched up to the end of
-    that hour.  Geometry and configuration are today's -- that is what
-    ``backfilled`` tells the reader.
+    run.  The weather cut-off is the logged issue instant itself: the issue is
+    quantised to its hour, so a later cut-off would let the reconstruction
+    read a run the original never had -- an hour of hindsight that only
+    reconstructed weeks would carry, which is precisely the bias that makes
+    them incomparable.  Geometry and configuration are still today's, which
+    is what the basis tells the reader.
     """
     missing: dict[int, list[dict[str, Any]]] = {}
+    filled = 0
     for row in rows:
         if row["baseline_kwh"] is None and row["issued_at_utc"] is not None:
             missing.setdefault(int(row["issued_at_utc"]), []).append(row)
@@ -336,12 +386,14 @@ def _replay_baseline(engine: "ForecastEngine", rows: list[dict[str, Any]]) -> No
             issued,
             hours=LIVE_WINDOW_HOURS,
             start_ts=_local_midnight(run_day, tz),
-            weather_issued_before=issued + HOUR - 1,
+            weather_issued_before=issued,
         )
         for row in group:
             value = replayed.get((int(row["ts_utc"]), str(row["string_id"])))
             if value is not None:
                 row["baseline_kwh"] = value
+                filled += 1
+    return filled
 
 
 def close_weeks(
@@ -421,14 +473,20 @@ def weeks_payload(engine: "ForecastEngine", now_ts: int) -> dict[str, Any]:
     """
     weeks: list[dict[str, Any]] = []
     for row in engine.store.weeks():
-        if row["payload_version"] != WEEK_PAYLOAD_VERSION:
+        if row["payload_version"] not in WEEK_PAYLOAD_VERSIONS:
             continue
+        payload = json.loads(row["payload"])
+        # A version-1 week was written before the basis was recorded, and its
+        # payload holds sums only -- nothing in it can prove where its
+        # baseline came from.  It says so rather than claiming to be live.
+        if payload.get("baseline") is not None and "baseline_basis" not in payload:
+            payload["baseline_basis"] = BASIS_UNKNOWN
         weeks.append(
             {
                 "week_start": row["week_start"],
                 "complete": True,
                 "backfilled": bool(row["backfilled"]),
-                **json.loads(row["payload"]),
+                **payload,
             }
         )
     monday = monday_of(datetime.fromtimestamp(now_ts, tz=engine._tz).date())

@@ -360,6 +360,152 @@ class TestWeek:
         )
 
 
+class TestWhereTheBaselineCameFrom:
+    """A week may only carry a causal claim if it can say where it came from.
+
+    The published figure and the baseline are always over the same hours (see
+    above), but a *reconstructed* baseline was computed with today's code
+    against a forecast published by the code of back then.  Summing that into
+    "learning avoided N kWh" charges every later fix to the learning, so the
+    week has to be honest about its own provenance -- per week, because one
+    week can hold both kinds.
+    """
+
+    NOW = MONDAY_TS + 7 * 86400 + 2 * HOUR
+
+    def test_a_week_logged_live_says_live(self, engine: ForecastEngine,
+                                          seeded_store: Store):
+        for offset in range(7):
+            measured_day(engine, seeded_store, MONDAY + timedelta(days=offset),
+                         FACTORS[offset], baseline_factor=1.3)
+        week = history.week_payload(engine, MONDAY, self.NOW, None, replay=True)
+        assert week["baseline_basis"] == history.BASIS_LIVE
+
+    def test_a_week_that_had_to_be_rebuilt_says_so(self, engine: ForecastEngine,
+                                                   seeded_store: Store):
+        for offset in range(7):
+            measured_day(engine, seeded_store, MONDAY + timedelta(days=offset),
+                         FACTORS[offset], baseline_factor=None)
+        week = history.week_payload(engine, MONDAY, self.NOW, None, replay=True)
+        assert week["baseline_basis"] == history.BASIS_REPLAYED
+
+    def test_a_week_with_both_kinds_says_mixed(self, engine: ForecastEngine,
+                                               seeded_store: Store):
+        """The case the old batch-wide flag could not express.
+
+        Three days from before the baseline existed, four from after: one
+        week, two comparisons.  Stored as "live" this would have walked into
+        the running total as if it had all been measured against a baseline
+        of its own time.
+        """
+        for offset in range(7):
+            measured_day(engine, seeded_store, MONDAY + timedelta(days=offset),
+                         FACTORS[offset],
+                         baseline_factor=None if offset < 3 else 1.3)
+        week = history.week_payload(engine, MONDAY, self.NOW, None, replay=True)
+        assert week["baseline_basis"] == history.BASIS_MIXED
+
+    def test_a_week_without_any_baseline_claims_nothing(self, engine: ForecastEngine,
+                                                        seeded_store: Store):
+        for offset in range(7):
+            measured_day(engine, seeded_store, MONDAY + timedelta(days=offset),
+                         FACTORS[offset], baseline_factor=None)
+        week = history.week_payload(engine, MONDAY, self.NOW, None)
+        assert week["baseline"] is None
+        assert week["baseline_basis"] is None
+
+    def test_a_week_stored_before_this_existed_reads_as_unknown(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """Version-1 rows stay readable and stay out of any total.
+
+        The payload holds sums only, so nothing in it can prove where its
+        baseline came from -- and a row is never rescored.  Silently reading
+        it as "live" is the one outcome that must not happen.
+        """
+        for offset in range(7):
+            measured_day(engine, seeded_store, MONDAY + timedelta(days=offset),
+                         FACTORS[offset], baseline_factor=1.3)
+        payload = history.week_payload(engine, MONDAY, self.NOW, None, replay=True)
+        payload.pop("baseline_basis")
+        start, end = history.week_bounds(MONDAY, TZ)
+        assert seeded_store.insert_week(
+            MONDAY.isoformat(), start, end, self.NOW, False, 1,
+            json.dumps(payload),
+        )
+
+        weeks = history.weeks_payload(engine, self.NOW)["weeks"]
+        stored = next(w for w in weeks if w["week_start"] == MONDAY.isoformat())
+        assert stored["baseline"] is not None
+        assert stored["baseline_basis"] == history.BASIS_UNKNOWN
+
+
+class TestTheErrorTwoWays:
+    """Daily net and per hour, because they answer different questions."""
+
+    NOW = MONDAY_TS + 7 * 86400 + 2 * HOUR
+
+    @staticmethod
+    def _self_cancelling_day(engine: ForecastEngine, store: Store, day: date) -> None:
+        """A day promised too high in the morning and too low after noon."""
+        start = midnight(day)
+        clear_sky_forecast(engine, store, start - 7 * HOUR, start, 24)
+        rows = engine.forecast(start, hours=24, start_ts=start, apply_learning=False)
+        cutoff = engine.day_ahead_cutoff(start)
+        store.upsert_hourly(
+            [
+                (row.ts_utc, row.string_id, row.potential_kwh, 1.0, 0.0, None, None,
+                 None, "measured", "exact" if row.potential_kwh > 0 else "night")
+                for row in rows
+            ]
+        )
+        def factor(ts: int) -> float:
+            return 1.4 if datetime.fromtimestamp(ts, tz=TZ).hour < 12 else 0.6
+        store.log_forecast(
+            [(cutoff, row.ts_utc, row.string_id,
+              row.potential_kwh * factor(row.ts_utc), "c",
+              row.potential_kwh, row.potential_kwh)
+             for row in rows]
+        )
+
+    def test_the_hourly_error_does_not_let_a_day_cancel_itself(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """The reason the comparison uses the hourly figure.
+
+        A run that promises too much in the morning and too little in the
+        afternoon has a daily net near zero and is still wrong twice -- and a
+        forecast without a multiplicative correction cancels that way more
+        readily than one with it, which would hand the baseline a win it did
+        not earn.
+        """
+        for offset in range(7):
+            self._self_cancelling_day(engine, seeded_store,
+                                      MONDAY + timedelta(days=offset))
+        week = history.week_payload(engine, MONDAY, self.NOW, None)
+        published, base = week["day_ahead"], week["baseline"]
+        # The published run is wrong twice a day; per day it nearly cancels.
+        assert published["abs_error_hourly_kwh"] > 3 * published["abs_error_kwh"]
+        # The baseline here is exact, so both of its figures are zero and the
+        # daily-net comparison would call the published run almost as good.
+        assert base["abs_error_hourly_kwh"] == pytest.approx(0.0, abs=1e-6)
+        assert published["abs_error_kwh"] < 0.35 * published["abs_error_hourly_kwh"]
+
+    def test_each_block_names_the_days_and_hours_it_rests_on(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """No figure may be divided by the week's size instead of its own."""
+        for offset in range(7):
+            measured_day(engine, seeded_store, MONDAY + timedelta(days=offset),
+                         FACTORS[offset],
+                         baseline_factor=None if offset < 3 else 1.3)
+        week = history.week_payload(engine, MONDAY, self.NOW, None)
+        for block in (week["day_ahead"], week["baseline"]):
+            assert block["days"] == 4
+            assert block["hours"] < week["hours_uncensored"]
+        assert week["days_scored"] == 7
+
+
 class TestClosingWeeks:
     NOW = MONDAY_TS + 7 * 86400 + 2 * HOUR
 
@@ -499,6 +645,49 @@ class TestReplay:
         seeded_store.compact(now, issue_days=ISSUE_DAYS)
         after = history.week_payload(engine, MONDAY, now, None, replay=True)
         assert after == before
+
+
+class TestTheReplayHasNoHindsight:
+    def test_it_does_not_read_a_weather_run_the_original_never_had(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """The issue is quantised to its hour; the cut-off must not be.
+
+        A reconstruction that may read weather from anywhere inside the issue
+        hour sees up to an hour further than the run it stands in for. Only
+        reconstructed weeks would carry that advantage, which is the bias
+        that makes them incomparable with live ones.
+        """
+        day = MONDAY
+        start = midnight(day)
+        clear_sky_forecast(engine, seeded_store, start - 7 * HOUR, start, 24)
+        rows = engine.forecast(start, hours=24, start_ts=start, apply_learning=False)
+        cutoff = engine.day_ahead_cutoff(start)
+        seeded_store.upsert_hourly(
+            [
+                (row.ts_utc, row.string_id, row.potential_kwh, 1.0, 0.0, None, None,
+                 None, "measured", "exact" if row.potential_kwh > 0 else "night")
+                for row in rows
+            ]
+        )
+        seeded_store.log_forecast(
+            [(cutoff, row.ts_utc, row.string_id, row.potential_kwh * 0.7, "c",
+              None, None) for row in rows]
+        )
+        # A brighter run, issued inside the same hour as the logged issue.
+        clear_sky_forecast(engine, seeded_store, cutoff + 1800,
+                           midnight(day - timedelta(days=1)), 72, scale=1.6)
+
+        replayed = [dict(r) for r in seeded_store.forecast_vs_actual_before(
+            start, start + 86400, cutoff)]
+        filled = history._replay_baseline(engine, replayed)
+
+        assert filled
+        # The 1.6x run would push the baseline above the measurement it is
+        # derived from; the 1.0x weather of the issue itself does not.
+        for row in replayed:
+            if row["baseline_kwh"] is not None and row["energy_kwh"]:
+                assert row["baseline_kwh"] < row["energy_kwh"] * 1.3
 
 
 class TestWeeksResponse:
