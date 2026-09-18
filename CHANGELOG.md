@@ -1,5 +1,37 @@
 # Changelog
 
+## v1.25.2 — 2026-09-18
+
+### Fixed
+
+- **A week now says where its baseline came from.** The weekly learning
+  comparison could not be read across weeks: a closed week has every missing
+  baseline reconstructed with today's code, the running week only carries what
+  the coordinator logged live, and the one flag that distinguished them was
+  decided once per close batch instead of per week — so a week holding both
+  kinds was stored as if it had been compared live. Each week publishes
+  `baseline_basis` (`live`, `replayed`, `mixed`, or `unknown` for a week
+  written before this existed). Stored weeks are never rescored; a version-1
+  payload stays readable and reports `unknown` rather than claiming to be live.
+
+- **Each figure names the days and hours it rests on.** `day_ahead.days` and
+  `baseline.days` next to the existing `hours`: only hours with a baseline can
+  be compared, so a week of seven days can carry a comparison over three. The
+  week's own `days_scored` is unchanged, and dividing the one by the other was
+  how a four-day sample came to look like a verdict.
+
+- **The error is published a second way, summed per hour**
+  (`abs_error_hourly_kwh`). The daily net stays for the score it belongs to,
+  but it cannot answer whether learning helped: a day's morning and afternoon
+  errors cancel in it, and a run without a multiplicative correction cancels
+  more readily than one with it. On the reference plant the two disagree on the
+  sign — the daily figure called learning 3.6 kWh worse over four days, per
+  hour it is slightly better.
+
+- **A replayed baseline no longer reads weather the original run never had.**
+  The cut-off is the issue instant itself; it used to reach to the end of the
+  issue hour, an hour of hindsight only reconstructed weeks carried.
+
 ## v1.25.1 — 2026-09-17
 
 ### Fixed
