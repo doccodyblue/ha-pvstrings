@@ -18,12 +18,14 @@ import pytest
 from core.config import INTERVAL_SECONDS, GeometrySegment, PlantConfig
 from core.quality import VALUE_MEASURED
 from core.forecast import (
+    CURSOR_LEARN,
     DAY_AHEAD_ISSUE_HOUR_LOCAL,
     HOUR,
     MIN_SCORED_DAYS,
     ForecastEngine,
     floor_hour,
 )
+from core.learning import GhiBiasModel
 from core.physics import PhysicsEngine, to_index
 from core.store import Store
 
@@ -608,6 +610,53 @@ class TestLearningCycle:
         noon_local = 14  # 12:00 UTC in June is 14:00 in Europe/Berlin
         assert engine.ghi_bias.factor(noon_local, 30.0) < 1.0
         assert engine.ghi_bias.factor(noon_local, 1.0) == pytest.approx(1.0)
+
+    def test_an_empty_bias_model_is_filled_from_the_history_once(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """The learn cursor only walks forward; the issues are on disk anyway.
+
+        Without this an update that changes the model's shape costs days of
+        uncorrected forecasts -- and, because the nowcast reads this model's
+        evidence to decide how far to trust a measurement, days without a
+        nowcast on exactly the plants that have the sensor for it.
+        """
+        clear_sky_forecast(
+            engine, seeded_store, DAY_START - 26 * HOUR, DAY_START, 24, scale=1.3
+        )
+        clear_sky_forecast(
+            engine, seeded_store, 0, DAY_START, 24, scale=1.0, lead_time_h=1
+        )
+        # The hours are already behind the cursor: the normal cycle will not
+        # look at them again.
+        seeded_store.set_cursor(CURSOR_LEARN, DAY_START + 24 * HOUR)
+        noon_local = 14
+
+        recovered = engine.backfill_ghi_bias(DAY_START + 24 * HOUR)
+
+        assert recovered > 0
+        assert engine.ghi_bias.factor(noon_local, 30.0) < 1.0
+
+    def test_the_backfill_runs_once_and_not_after_a_reset(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """Its own cursor, not emptiness: a reset must stay reset."""
+        clear_sky_forecast(
+            engine, seeded_store, DAY_START - 26 * HOUR, DAY_START, 24, scale=1.3
+        )
+        clear_sky_forecast(
+            engine, seeded_store, 0, DAY_START, 24, scale=1.0, lead_time_h=1
+        )
+        assert engine.backfill_ghi_bias(DAY_START + 24 * HOUR) > 0
+
+        engine.ghi_bias = GhiBiasModel()
+        assert engine.backfill_ghi_bias(DAY_START + 24 * HOUR) == 0
+        assert not engine.ghi_bias.buckets
+
+    def test_a_plant_without_history_backfills_nothing(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        assert engine.backfill_ghi_bias(DAY_START) == 0
 
 
 class TestScoring:

@@ -77,7 +77,13 @@ INTERVALS_PER_HOUR = HOUR // INTERVAL_SECONDS
 #: Cursor names in ``learning_cursor``.
 CURSOR_HOURLY = "hourly_materialised"
 CURSOR_LEARN = "model_learned"
-CURSOR_BIAS = "ghi_bias_learned"
+#: Marks that the one-off backfill of the irradiance bias has run.
+CURSOR_BIAS = "ghi_bias_backfilled"
+
+#: How far back that backfill reaches.  The issues live exactly this long
+#: (the score window plus a few days), so it costs one pass over rows that
+#: are on disk regardless.
+BIAS_BACKFILL_DAYS = 35
 
 #: A forecast issued at most this far ahead of the target hour counts as the
 #: "nowcast" -- our best guess at what the irradiance actually was.
@@ -340,6 +346,8 @@ class LearnStats:
     observations_used: int = 0
     observations_skipped: int = 0
     bias_observations: int = 0
+    #: Observations recovered by the one-off backfill of the bias model.
+    bias_backfilled: int = 0
     shading_observations: int = 0
     ghi_hours_rejected: int = 0
     censored_hours: int = 0
@@ -1924,6 +1932,7 @@ class ForecastEngine:
         stats.chain_hours = self.store_chain_potential(start, end)
         # Must exist before compaction is allowed to drop the raw rows.
         self.store.materialise_plant_hourly(start, end)
+        stats.bias_backfilled = self.backfill_ghi_bias(now_ts)
         self._learn_ghi_bias(start, end, stats)
 
         if self.plant.learning_enabled:
@@ -2100,6 +2109,36 @@ class ForecastEngine:
                 )
         self.store.add_shading_obs(payload)
         stats.shading_observations = len(payload)
+
+    def backfill_ghi_bias(self, now_ts: int) -> int:
+        """Teach the bias model from the weather rows already on disk, once.
+
+        The learn cycle only ever walks forward, so a model that starts empty
+        -- a new installation, or one whose buckets changed shape -- would
+        spend its first days uncorrected.  That is not only slower learning:
+        the nowcast reads this model's evidence to decide how far to trust a
+        measurement, so an empty bias model quietly switches the nowcast off
+        as well, on exactly the plants that have the sensor to run it.
+
+        The issues are kept for the score window anyway, so the evidence is
+        already there; this pass simply reads it.  Guarded by its own cursor
+        rather than by emptiness: a plant whose owner has just reset the
+        learning wants an empty model, not one that refills itself from the
+        history a second later.
+        """
+        if self.store.get_cursor(CURSOR_BIAS, default=0) > 0:
+            return 0
+        end = floor_hour(now_ts)
+        start = end - BIAS_BACKFILL_DAYS * 86400
+        stats = LearnStats()
+        self._learn_ghi_bias(start, end, stats)
+        self.store.set_cursor(CURSOR_BIAS, end)
+        if stats.bias_observations:
+            _LOGGER.info(
+                "pvstrings: bias model backfilled from %s past observations",
+                stats.bias_observations,
+            )
+        return stats.bias_observations
 
     def _learn_ghi_bias(
         self, start_ts: int, end_ts: int, stats: LearnStats
