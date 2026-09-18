@@ -658,6 +658,30 @@ class TestLearningCycle:
     ):
         assert engine.backfill_ghi_bias(DAY_START) == 0
 
+    def test_the_backfill_does_not_wait_for_the_hour_to_turn(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """An upgrade lands between two hour boundaries, not on one.
+
+        ``learn`` returns early when nothing has closed since the cursor, so
+        a backfill behind that gate would leave the model empty -- and the
+        nowcast off -- for up to an hour after every upgrade.
+        """
+        clear_sky_forecast(
+            engine, seeded_store, DAY_START - 26 * HOUR, DAY_START, 24, scale=1.3
+        )
+        clear_sky_forecast(
+            engine, seeded_store, 0, DAY_START, 24, scale=1.0, lead_time_h=1
+        )
+        now = DAY_START + 24 * HOUR + 1800          # half past the hour
+        seeded_store.set_cursor(CURSOR_LEARN, floor_hour(now))
+
+        stats = engine.learn(now, max_hours=24)
+
+        assert stats.hours_materialised == 0, "nothing new should have been learned"
+        assert stats.bias_backfilled > 0
+        assert engine.ghi_bias.factor(14, 30.0) < 1.0
+
 
 class TestScoring:
     def _score_day(self, engine: ForecastEngine, store: Store, actual_ratio: float):

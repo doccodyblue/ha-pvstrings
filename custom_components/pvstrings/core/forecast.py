@@ -1897,6 +1897,11 @@ class ForecastEngine:
         after a restart into a multi-minute blocking job.
         """
         stats = LearnStats()
+        # Before the window check below: the backfill answers a different
+        # question than "what has closed since last time", and an upgrade
+        # that lands between two hour boundaries would otherwise leave the
+        # model empty -- and the nowcast off -- until the hour turns.
+        stats.bias_backfilled = self.backfill_ghi_bias(now_ts)
         last_closed = floor_hour(now_ts) - HOUR
         # Default zero, not "one hour back": on a cold start there may already
         # be days of collected data, and the ``max_hours`` clamp below is what
@@ -1932,7 +1937,6 @@ class ForecastEngine:
         stats.chain_hours = self.store_chain_potential(start, end)
         # Must exist before compaction is allowed to drop the raw rows.
         self.store.materialise_plant_hourly(start, end)
-        stats.bias_backfilled = self.backfill_ghi_bias(now_ts)
         self._learn_ghi_bias(start, end, stats)
 
         if self.plant.learning_enabled:
