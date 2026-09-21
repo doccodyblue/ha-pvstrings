@@ -1,5 +1,46 @@
 # Changelog
 
+## v1.25.5 — 2026-09-22
+
+### Fixed
+
+- **Each irradiance-bias bucket keeps its own age.** The estimator decays in
+  real time with a fortnight's half-life, counted from when a bucket was last
+  observed — and it wrote the time of the *save* to every row on the way to
+  disk. Ageing therefore worked while a model stayed in memory and lost a gap's
+  worth on every restart: a bucket left alone for four weeks came back holding
+  more evidence than it went in with. Evidence that is currently too high is
+  not reset; it is worn down by ordinary observation over the coming weeks.
+
+- **Days are counted by the calendar, not in units of 86400 seconds.**
+  Yesterday, tomorrow, the day after and the start of the savings week each
+  added a fixed day, which lands an hour off local midnight on the two days a
+  year that are 23 or 25 hours long. Sydney shortens 4 October and Berlin
+  stretches 25 October, so both are days away. In zones that turn the clock
+  back over midnight — Havana on 1 November — the day could also be held to
+  start at the second of its two midnights, losing an hour of its own data.
+
+- **Daylight windows belong to a local day.** They were resolved by asking the
+  solar almanac for the events of a UTC calendar date, which returns the wrong
+  day for a site far enough east: Auckland on 64 of 122 days sampled across
+  2026, Fiji on 28. Near the antimeridian the almanac's own event dates jump,
+  and a day can be missing from its answers altogether. The window is now found
+  by scanning the sun's elevation across the local day, against the same
+  horizon the almanac uses, so nothing else about it changed. Coverage
+  statistics on affected sites were being clamped to the wrong window or to
+  none at all; no plant currently known to the project was affected.
+
+### Changed
+
+- **Every hour the learning cycle refuses now records why, with the figures
+  behind it** — physics, measured, ratio and weight — in the diagnostics
+  download. A count of refusals by reason cannot distinguish a misconfigured
+  string from a restart cutting an hour in half, and on a plant that can only
+  be looked at from a distance, that count was the whole diagnosis.
+
+- The test suite runs in CI, on the oldest and newest supported Python. It did
+  not before: the checks that ran validated the manifest, not the forecast.
+
 ## v1.25.4 — 2026-09-21
 
 ### Fixed
