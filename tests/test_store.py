@@ -1921,15 +1921,46 @@ class TestBiasBucketAgeSurvivesTheRoundTrip:
         assert rows[(7, "6-24h")][3] == float(old)
         assert rows[(12, "6-24h")][3] == float(recent)
 
-    def test_a_never_observed_bucket_falls_back_to_the_save_time(
-        self, store: Store
-    ):
+    def test_an_unknown_age_is_kept_unknown(self, store: Store):
+        """A zero stamp is preserved, not quietly replaced by the save time.
+
+        Zero does not mean "never observed" -- ``observe`` accepts a call
+        without a timestamp and then accrues evidence at zero.  Substituting
+        the save time for such a bucket changes what it concludes on reload:
+        the same observation afterwards left it at 41 in memory and at 11
+        across a save.  Whatever the model decides about unknown ages, it has
+        to decide the same on both sides of a restart.
+        """
         saved_at = self.T0 + 5 * self.DAY
         store.save_ghi_bias(
             self.SOURCE, {(12, "6-24h"): (900.0, 1000.0, 40.0, 0.0)}, saved_at
         )
         rows = store.load_ghi_bias(self.SOURCE)
-        assert rows[(12, "6-24h")][3] == float(saved_at)
+        assert rows[(12, "6-24h")][3] == 0.0
+
+    def test_the_sums_survive_the_round_trip_too(self, store: Store):
+        """Not only the stamp: the two sums and the evidence must come back.
+
+        A constant measured/forecast ratio hides a corrupted pair -- scale both
+        sums by ten and the factor is unchanged -- so this uses a ratio that
+        differs from the one the other tests feed, and checks the numbers
+        themselves rather than only what they divide to.
+        """
+        stamp = float(self.T0 + 3 * self.DAY)
+        written = {
+            (7, "6-24h"): (123.5, 456.75, 12.25, stamp),
+            (12, "0-6h"): (900.0, 1000.0, 40.0, stamp + self.DAY),
+        }
+        store.save_ghi_bias(self.SOURCE, written, self.T0 + 40 * self.DAY)
+        assert store.load_ghi_bias(self.SOURCE) == written
+
+    def test_repeated_saves_do_not_drift(self, store: Store):
+        """The upsert path, exercised the way a running plant exercises it."""
+        rows = {(12, "6-24h"): (500.0, 1000.0, 30.0, float(self.T0))}
+        for cycle in range(5):
+            store.save_ghi_bias(self.SOURCE, rows, self.T0 + cycle * self.DAY)
+            rows = store.load_ghi_bias(self.SOURCE)
+        assert rows == {(12, "6-24h"): (500.0, 1000.0, 30.0, float(self.T0))}
 
     def test_a_restart_does_not_change_what_the_model_concludes(
         self, store: Store

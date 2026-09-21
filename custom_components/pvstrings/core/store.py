@@ -2051,13 +2051,15 @@ class Store:
     ) -> None:
         """Persist the bias buckets, each with *its own* last-observed time.
 
-        ``updated_at`` is only the fallback for a bucket that has never been
-        observed.  Writing it to every row instead -- which is what this did
-        until now -- silently disables the whole model: the decay runs in real
-        time from the bucket's own stamp, and saving happens on every learn
-        cycle, so on the next load every bucket looked freshly observed and
-        nothing ever aged.  A bucket four weeks idle came back with more
-        evidence than it went in with.
+        Each row carries the bucket's own stamp, because the decay runs in real
+        time from the moment that bucket was last observed.  Writing the time
+        of the *save* to every row instead -- which is what this did until now
+        -- was invisible while a model stayed in memory, and lost a gap's worth
+        of ageing on every restart: the buckets came back looking freshly
+        observed, so a bucket four weeks idle returned with more evidence than
+        it went in with.  ``updated_at`` is left as the caller's business; it
+        is not written over a bucket's own time, not even a zero one, so that
+        saving and loading cannot change what the model concludes.
         """
         if not bias:
             return
@@ -2082,7 +2084,7 @@ class Store:
                         measured,
                         forecast,
                         n_eff,
-                        int(ts) if ts else updated_at,
+                        int(ts),
                     )
                     for (hour, bucket), (measured, forecast, n_eff, ts) in bias.items()
                 ],

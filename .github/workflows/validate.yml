@@ -30,11 +30,16 @@ jobs:
   # the download.
   tests:
     runs-on: "ubuntu-latest"
+    strategy:
+      matrix:
+        # The floor is what the manifest promises; the ceiling is what current
+        # Home Assistant runs on. A break on either is a break for someone.
+        python-version: ["3.13", "3.14"]
     steps:
       - uses: "actions/checkout@v4"
       - uses: "actions/setup-python@v5"
         with:
-          python-version: "3.13"
+          python-version: "${{ matrix.python-version }}"
           cache: "pip"
           # This repository has no requirements.txt; without pointing the
           # cache at the file that exists, the action fails before installing.
