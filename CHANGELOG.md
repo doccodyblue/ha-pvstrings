@@ -1,5 +1,32 @@
 # Changelog
 
+## v1.25.3 — 2026-09-21
+
+### Changed
+
+- **The source bias now corrects an energy bias, and closes it.** Per (local
+  hour, forecast horizon) it estimated the typical multiplicative error of an
+  hour, in which a dim hour whose ratio is wild but whose energy is negligible
+  votes as loudly as a bright one. The bucket now keeps what arrived over what
+  was announced, decayed with a fortnight's half-life in real time rather than
+  per arrival — counted in arrivals, the memory was spent within a day and
+  described yesterday's weather instead of the source's standing error.
+
+  Replayed over the reference plant's 40 days, online:
+
+  | | MAE | bias |
+  |---|---|---|
+  | uncorrected | 40.3 % | +26.1 % |
+  | before | 37.0 % | +18.7 % |
+  | after | 29.8 % | +1.8 % |
+
+  Three days in the field since: day-ahead bias 1.39 → 1.03 kWh/day.
+
+- **The model is taught once from the history already on disk**, so it no
+  longer spends its first days uncorrected — which also left the nowcast off
+  on exactly the plants that have the sensor to run it. State lives in a new
+  table; buckets start empty and refill within a day or two.
+
 ## v1.25.2 — 2026-09-18
 
 ### Fixed
