@@ -18,7 +18,7 @@ from __future__ import annotations
 import functools
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from typing import Sequence
 
@@ -246,24 +246,32 @@ class PhysicsEngine:
         """
         tz = ZoneInfo(self.time_zone)
         day = datetime.fromordinal(day_ordinal)
-        start = datetime(day.year, day.month, day.day, tzinfo=tz).timestamp()
-        # Twenty-five hours rather than twenty-four: a local day is 23 or 25
-        # long around a DST change.  No latitude that also observes DST has a
-        # sunset late enough for the extra hour to be load-bearing, so this is
-        # margin rather than a fix -- and it costs one more sample.
-        stamps = np.arange(start, start + 25 * 3600, self._DAYLIGHT_STEP_S)
+        midnight = datetime(day.year, day.month, day.day, tzinfo=tz)
+        start = midnight.timestamp()
+        # The local day, whatever its length: 23 or 25 hours around a DST
+        # change, and the scan must not reach past its end or it picks up the
+        # next day's sun.
+        end = (midnight + timedelta(days=1)).timestamp()
+        stamps = np.arange(start, end, self._DAYLIGHT_STEP_S)
         elevation = self.solar_position(to_index(list(stamps)))[
             "apparent_elevation"
         ].to_numpy()
 
         above = elevation >= 0.0
         if not above.any() or above.all():
+            # Never up, or never down: the polar night and the polar day.  Both
+            # want the same answer from every caller so far -- fall back to the
+            # unclamped window rather than guess which one it was.
             return None
-        rises = np.flatnonzero(~above[:-1] & above[1:])
-        sets = np.flatnonzero(above[:-1] & ~above[1:])
-        if not rises.size or not sets.size:
-            return None
-        return float(stamps[rises[0] + 1]), float(stamps[sets[-1]])
+        lit = np.flatnonzero(above)
+        # The envelope of the sun's time above the horizon, not the first
+        # crossing up and the last one down.  Those two coincide on an ordinary
+        # day and invert on the days either side of the polar day, where the
+        # sun sets just after local midnight and rises again an hour later: the
+        # last set then precedes the first rise, and the window comes out
+        # negative.  Clamping to a negative window yields no hours at all,
+        # which is how a plant reports a coverage of none on a day it produced.
+        return float(stamps[lit[0]]), float(stamps[lit[-1]])
 
     def daylight_window_for(self, ts_utc: float) -> tuple[float, float] | None:
         """The daylight of the local day this instant falls in."""

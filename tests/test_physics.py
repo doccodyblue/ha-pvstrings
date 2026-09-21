@@ -742,6 +742,38 @@ class TestDaylightWindowAcrossTheDateLine:
         # Twelve hours of daylight on the equator, near the equinox.
         assert 11.5 * 3600 < window[1] - window[0] < 12.5 * 3600
 
+    @pytest.mark.parametrize(
+        "name,latitude,longitude,zone",
+        [
+            ("longyearbyen", 78.22, 15.63, "Arctic/Longyearbyen"),
+            ("tromso", 69.65, 18.96, "Europe/Oslo"),
+            ("ushuaia", -54.80, -68.30, "America/Argentina/Ushuaia"),
+            ("berlin", 53.60, 9.90, "Europe/Berlin"),
+        ],
+    )
+    def test_the_window_never_comes_out_backwards(
+        self, name: str, latitude: float, longitude: float, zone: str
+    ):
+        """Sunrise before sunset, every day of the year.
+
+        On the days either side of the polar day the sun sets just after local
+        midnight and rises again an hour later, so "first crossing up, last
+        crossing down" inverts: at Longyearbyen on 19 April 2026 that gave a
+        window of minus 1.2 hours.  Clamping an hour range to a backwards
+        window yields nothing, which is how a plant ends up reporting no
+        coverage on a day it produced perfectly well.
+        """
+        tz = ZoneInfo(zone)
+        engine = PhysicsEngine(
+            latitude=latitude, longitude=longitude, time_zone=zone
+        )
+        for offset in range(365):
+            day = datetime(2026, 1, 1, tzinfo=tz) + timedelta(days=offset)
+            window = engine.daylight_window_for(day.timestamp() + 43200)
+            if window is None:
+                continue
+            assert window[0] < window[1], f"{name} {day.date()}"
+
     def test_polar_day_and_night_still_say_nothing(self):
         """``None`` where the sun never crosses the horizon, as before."""
         zone = "Arctic/Longyearbyen"
