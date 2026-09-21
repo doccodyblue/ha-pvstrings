@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import math
 
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -1560,13 +1560,73 @@ class TestLocalMidnight:
         assert (result.hour, result.minute) == (0, 0)
 
     def test_a_week_back_from_a_transition_day(self):
-        """The savings week is built the same way, up to seven days back."""
+        """The savings week is built the same way, up to seven days back.
+
+        Checks the dates, not only that the clock reads midnight: landing on
+        local midnight of the *wrong day* is exactly the failure here.
+        """
         tz = ZoneInfo("Europe/Berlin")
-        # Monday 26 October 2026, the day after the change.
+        # Monday 26 October 2026, the day after the clocks went back.
         monday = int(datetime(2026, 10, 26, tzinfo=tz).timestamp())
         for back in range(8):
             result = datetime.fromtimestamp(local_midnight(monday, -back, tz), tz)
+            expected = date(2026, 10, 26) - timedelta(days=back)
+            assert result.date() == expected, back
             assert (result.hour, result.minute) == (0, 0), back
+
+    def test_a_doubled_midnight_resolves_to_the_first_one(self):
+        """Havana turns the clock back over midnight: it happens twice.
+
+        Asked from inside the repeated hour, the day must still start at its
+        first midnight.  Carrying the fold through instead holds the day to
+        start an hour late, so today loses an hour of its own data and
+        yesterday gains one.
+        """
+        tz = ZoneInfo("America/Havana")
+        repeated = datetime(2026, 11, 1, 0, 30, tzinfo=tz, fold=1)
+        first = datetime(2026, 11, 1, 0, 30, tzinfo=tz, fold=0)
+
+        assert local_midnight(int(repeated.timestamp()), 0, tz) == local_midnight(
+            int(first.timestamp()), 0, tz
+        )
+        start = datetime.fromtimestamp(
+            local_midnight(int(first.timestamp()), 0, tz), tz
+        )
+        assert start.date() == date(2026, 11, 1)
+        assert (start.hour, start.minute) == (0, 0)
+
+    @pytest.mark.parametrize(
+        "zone,day",
+        [
+            ("America/Santiago", (2026, 9, 6)),
+            ("Asia/Beirut", (2026, 3, 29)),
+        ],
+    )
+    def test_a_skipped_midnight_still_starts_the_day(
+        self, zone: str, day: tuple
+    ):
+        """Zones that jump the clock forward over midnight: 00:00 never occurs.
+
+        Asked from a time that does exist on such a day, the day still has to
+        begin at its real beginning -- the instant after the jump.  Nothing is
+        asserted about a time inside the gap, because two readings of an hour
+        that never happened are genuinely different instants, sometimes on
+        different dates, and demanding they agree would be a test of nothing.
+        """
+        tz = ZoneInfo(zone)
+        noon = datetime(*day, 12, 0, tzinfo=tz)
+        start = datetime.fromtimestamp(
+            local_midnight(int(noon.timestamp()), 0, tz), tz
+        )
+        assert start.date() == date(*day)
+        # Not 00:00 on these days: that hour does not exist.
+        assert start.hour in (0, 1)
+        # And it is the earliest instant of the local day.
+        assert start.timestamp() <= noon.timestamp()
+        # Over the timestamp, not with a timedelta: arithmetic on an aware
+        # datetime moves the wall clock, which is the very thing under test.
+        earlier = datetime.fromtimestamp(start.timestamp() - 60, tz)
+        assert earlier.date() < date(*day)
 
     def test_the_offset_is_calendar_days_not_elapsed_time(self):
         """Across the 25-hour day the step really is longer than 86400 s."""

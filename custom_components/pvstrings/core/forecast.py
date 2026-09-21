@@ -409,7 +409,12 @@ def local_midnight(ts_utc: int, days: int, tz: tzinfo) -> int:
     difference.
     """
     local = datetime.fromtimestamp(ts_utc, tz=tz)
-    midnight = local.replace(hour=0, minute=0, second=0, microsecond=0)
+    # ``fold=0`` for the zones that turn the clock back over midnight, where
+    # there are two local midnights and ``replace`` would carry the fold of
+    # whatever moment it was handed.  Belt and braces: adding a timedelta
+    # below resets the fold anyway, so this only matters if that ever stops
+    # being an addition.
+    midnight = local.replace(hour=0, minute=0, second=0, microsecond=0, fold=0)
     return int((midnight + timedelta(days=days)).timestamp())
 
 

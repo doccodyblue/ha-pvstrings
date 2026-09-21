@@ -216,6 +216,14 @@ class PhysicsEngine:
         solar_hours = utc_hours + self.longitude / 15.0 + eot_min / 60.0
         return (solar_hours - 12.0 + 12.0) % 24.0 - 12.0
 
+    #: The sun's geometric elevation at sunrise and sunset, in degrees: the
+    #: disc's upper limb on the horizon under standard refraction.  It is what
+    #: the SPA's own rise/set events use, and keeping it means this window did
+    #: not quietly narrow when it stopped asking the SPA -- at Longyearbyen in
+    #: February the difference between this and a plain zero is a third of an
+    #: hour at each end.
+    _HORIZON_DEG = -0.8333
+
     #: Sampling step for the daylight scan, in seconds.  Five minutes puts the
     #: edges within a few minutes of the true horizon crossing, which is finer
     #: than anything that reads this needs -- the callers clamp hourly coverage
@@ -254,10 +262,10 @@ class PhysicsEngine:
         end = (midnight + timedelta(days=1)).timestamp()
         stamps = np.arange(start, end, self._DAYLIGHT_STEP_S)
         elevation = self.solar_position(to_index(list(stamps)))[
-            "apparent_elevation"
+            "elevation"
         ].to_numpy()
 
-        above = elevation >= 0.0
+        above = elevation >= self._HORIZON_DEG
         if not above.any() or above.all():
             # Never up, or never down: the polar night and the polar day.  Both
             # want the same answer from every caller so far -- fall back to the

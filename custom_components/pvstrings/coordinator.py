@@ -566,8 +566,15 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
     # ------------------------------------------------------------------ #
 
     def _local_day_bounds(self, moment: datetime) -> tuple[int, int]:
+        # ``fold=0`` explicitly: ``replace`` carries the fold of the moment it
+        # is given, and in a zone that turns the clock back over midnight there
+        # are two local midnights.  Called during the second of them, the day
+        # would otherwise be held to start an hour late -- today losing an
+        # hour of its own data and yesterday gaining one.
         local = dt_util.as_local(moment)
-        start = local.replace(hour=0, minute=0, second=0, microsecond=0)
+        start = local.replace(
+            hour=0, minute=0, second=0, microsecond=0, fold=0
+        )
         return int(start.timestamp()), int((start + timedelta(days=1)).timestamp())
 
     def _local_midnight(self, day_start: int, days: int) -> int:
@@ -1219,12 +1226,14 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         economics = self.plant.economics
         local = dt_util.as_local(now)
         month_start = int(
-            local.replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp()
+            local.replace(
+                day=1, hour=0, minute=0, second=0, microsecond=0, fold=0
+            ).timestamp()
         )
         week_start = self._local_midnight(day_start, -local.weekday())
         year_start = int(
             local.replace(
-                month=1, day=1, hour=0, minute=0, second=0, microsecond=0
+                month=1, day=1, hour=0, minute=0, second=0, microsecond=0, fold=0
             ).timestamp()
         )
         commissioning = economics.commissioning_date or local.date()
