@@ -1425,3 +1425,59 @@ class TestUnshadedIsCarriedAlongside:
             with_bias = plain * row.bias_factor
             assert plain == pytest.approx(row.potential_kwh, rel=1e-6)
             assert with_bias != pytest.approx(row.potential_kwh, rel=1e-6)
+
+
+class TestHourClassification:
+    """Every hour handed in must come back classified.
+
+    ``_classify_hours`` asks the physics for all its offsets in one call and
+    then pairs them with the hours by position.  A batch that returned fewer
+    rows than it was given would pair the survivors correctly and drop the
+    rest, and every caller falls back to ("partly_cloudy", "midday") for a
+    missing hour -- a silently wrong classification rather than a crash, on
+    exactly the hours the model learns from.
+    """
+
+    def _conditions(self, engine: ForecastEngine, hours: int):
+        import pandas as pd
+
+        rows = []
+        for n in range(hours):
+            hour = DAY_START + n * HOUR
+            for step in range(0, HOUR, INTERVAL_SECONDS):
+                rows.append(
+                    {
+                        "hour": hour,
+                        "ts_utc": hour + step,
+                        "ghi": 400.0,
+                        "cs_ghi": 500.0,
+                        "rain_mm": 0.0,
+                        "clouds_pct": 20.0,
+                    }
+                )
+        return pd.DataFrame(rows)
+
+    def test_every_hour_is_classified(self, engine: ForecastEngine):
+        hours = 24
+        classes = engine._classify_hours(self._conditions(engine, hours))
+        assert len(classes) == hours
+        expected = {DAY_START + n * HOUR for n in range(hours)}
+        assert set(classes) == expected
+
+    def test_dayparts_follow_the_sun_across_the_day(self, engine: ForecastEngine):
+        classes = engine._classify_hours(self._conditions(engine, 24))
+        # Berlin in June: solar noon a little after 11:00 UTC / 13:00 local.
+        by_hour = {
+            (hour - DAY_START) // HOUR: part for hour, (_, part) in classes.items()
+        }
+        assert by_hour[8] == "morning"
+        assert by_hour[13] == "midday"
+        assert by_hour[17] == "afternoon"
+
+    def test_an_empty_frame_is_not_a_crash(self, engine: ForecastEngine):
+        import pandas as pd
+
+        empty = pd.DataFrame(
+            columns=["hour", "ts_utc", "ghi", "cs_ghi", "rain_mm", "clouds_pct"]
+        )
+        assert engine._classify_hours(empty) == {}

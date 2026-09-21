@@ -1789,3 +1789,102 @@ class TestAccuracyWeeks:
         store.log_forecast([(hour - 86400, hour + 3600, "s1", 0.5, "c")])
         store.log_forecast([(hour - 3600, hour + 3600, "s1", 0.5, "c")])
         assert store.first_multi_issue_ts() == hour + 3600
+
+
+class TestDaypartEffectMigration:
+    """Schema 11 drops the effects that were fitted against a broken daypart.
+
+    Until v11, the daypart of an hour was resolved through the solar noon of
+    its *UTC* calendar day, so a plant far enough east never reached "morning"
+    and filed those hours as afternoon.  The three log-ratio scopes are fitted
+    together and all three carry it; nothing else in the database saw a
+    daypart.
+    """
+
+    SCOPES_REBUILT = ("plant", "string", "string_daypart")
+    SCOPES_KEPT = ("conversion_curve", "conversion_source")
+
+    def _v10_database(self, tmp_path):
+        import sqlite3
+
+        from core.store import _SCHEMA
+
+        path = tmp_path / "v10.db"
+        conn = sqlite3.connect(path)
+        conn.executescript(_SCHEMA)
+        for scope in self.SCOPES_REBUILT + self.SCOPES_KEPT:
+            conn.execute(
+                "INSERT INTO model_effects (scope, key, value, n_eff, updated_at)"
+                " VALUES (?,?,?,?,?)",
+                (scope, "clear|afternoon", -0.35, 12.0, 1_700_000_000),
+            )
+        conn.execute("PRAGMA user_version=10")
+        conn.commit()
+        conn.close()
+        return path
+
+    def test_the_fitted_scopes_are_dropped(self, tmp_path):
+        store = Store(self._v10_database(tmp_path))
+        store.connect()
+        try:
+            for scope in self.SCOPES_REBUILT:
+                assert store.load_effects(scope) == {}, scope
+        finally:
+            store.close()
+
+    def test_everything_else_survives_unchanged(self, tmp_path):
+        """Not merely non-empty: the kept scopes keep their exact values.
+
+        A migration that rewrote or rounded them would pass a non-emptiness
+        check, and the conversion curves are the expensive thing in here.
+        ``load_effects`` returns value and n_eff, which is what the model is
+        rebuilt from; ``updated_at`` is not read back and not asserted.
+        """
+        store = Store(self._v10_database(tmp_path))
+        store.connect()
+        try:
+            for scope in self.SCOPES_KEPT:
+                assert store.load_effects(scope) == {
+                    "clear|afternoon": (-0.35, 12.0)
+                }, scope
+        finally:
+            store.close()
+
+    def test_a_new_install_keeps_what_it_learned_first(self, tmp_path):
+        """The delete runs once at the version step, not on every connect.
+
+        A fresh database is stamped v11 on its first connect, so the second
+        connect must leave its learning alone -- the failure this guards
+        against is a migration keyed on something other than the version.
+        """
+        path = tmp_path / "fresh.db"
+        store = Store(path)
+        store.connect()
+        store.replace_effects("plant", {"clear|midday": (0.1, 5.0)}, 1_700_000_000)
+        store.close()
+
+        store = Store(path)
+        store.connect()
+        try:
+            assert store.load_effects("plant") == {"clear|midday": (0.1, 5.0)}
+        finally:
+            store.close()
+
+    def test_running_it_twice_keeps_what_was_relearned(self, tmp_path):
+        """The delete must not fire again on a database already at v11."""
+        path = self._v10_database(tmp_path)
+        store = Store(path)
+        store.connect()
+        store.close()
+
+        store = Store(path)
+        store.connect()
+        store.replace_effects("plant", {"clear|morning": (0.2, 3.0)}, 1_700_000_100)
+        store.close()
+
+        store = Store(path)
+        store.connect()
+        try:
+            assert store.load_effects("plant") == {"clear|morning": (0.2, 3.0)}
+        finally:
+            store.close()

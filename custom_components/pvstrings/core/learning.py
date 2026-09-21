@@ -84,16 +84,22 @@ def horizon_bucket(horizon_h: float) -> str:
     return "48h+"
 
 
-def daypart(ts_utc: float, solar_noon_ts_utc: float) -> str:
+def daypart(hours_from_solar_noon: float) -> str:
     """Daypart relative to the sun, not to the clock.
 
     Clock-based dayparts drift by an hour twice a year and by up to half an
     hour across a time zone; solar noon does not.
+
+    Takes the offset rather than two timestamps, because computing it from a
+    timestamp pair is what went wrong: the caller had to name the calendar day
+    the noon belonged to, and no answer to that is right everywhere.  See
+    ``PhysicsEngine.hours_from_solar_noon``.  The input wraps in [-12, +12), so
+    solar midnight is the seam between afternoon and morning -- which matters
+    only under the polar day, the one place a learnable hour sits there.
     """
-    delta_h = (ts_utc - solar_noon_ts_utc) / 3600.0
-    if delta_h < -2.0:
+    if hours_from_solar_noon < -2.0:
         return "morning"
-    if delta_h <= 2.0:
+    if hours_from_solar_noon <= 2.0:
         return "midday"
     return "afternoon"
 

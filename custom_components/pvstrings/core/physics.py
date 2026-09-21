@@ -186,26 +186,34 @@ class PhysicsEngine:
             linke_turbidity=self.linke_turbidity(index),
         )
 
-    @functools.lru_cache(maxsize=512)
-    def solar_noon_ts(self, day_ordinal: int) -> float:
-        """Epoch seconds of solar transit for a given proleptic day ordinal.
+    def hours_from_solar_noon(self, ts_utc: float) -> float:
+        """Hours before (negative) or after solar noon, in [-12, +12).
 
-        Cached: the daypart classification asks for this on every interval.
+        The hour angle, divided by fifteen.  Deliberately not "the distance to
+        the solar transit of some calendar day": resolving a transit needs a
+        date, and the date a timestamp belongs to is a question with no good
+        answer.  A UTC date puts the local morning of a site far enough east on
+        the previous day and measures it against the wrong noon; picking the
+        nearest of several days breaks near the antimeridian, where the SPA's
+        own transit dates jump and a day can go missing from its answers
+        entirely.  The hour angle needs no date at all.
         """
-        day = datetime.fromordinal(day_ordinal).replace(tzinfo=timezone.utc)
-        index = pd.DatetimeIndex([pd.Timestamp(day)])
-        transit = pvlib.solarposition.sun_rise_set_transit_spa(
-            index, self.latitude, self.longitude
-        )["transit"]
-        value = transit.iloc[0]
-        if pd.isna(value):
-            # Polar day or night: fall back to local apparent noon.
-            return day.timestamp() + 12 * 3600 - self.longitude / 15.0 * 3600
-        return float(value.timestamp())
+        return float(self.hours_from_solar_noon_many([ts_utc])[0])
 
-    def solar_noon_for(self, ts_utc: float) -> float:
-        day = datetime.fromtimestamp(ts_utc, tz=timezone.utc).date()
-        return self.solar_noon_ts(day.toordinal())
+    def hours_from_solar_noon_many(self, timestamps: Sequence[float]) -> np.ndarray:
+        """Vectorised :meth:`hours_from_solar_noon`.
+
+        One SPA call for the whole batch: per-timestamp calls cost seventy
+        times as much, and the callers all hold a day or three of hours.
+        """
+        index = to_index(list(timestamps))
+        eot_min = self.solar_position(index)["equation_of_time"].to_numpy()
+        utc_hours = np.asarray(timestamps, dtype=float) % 86400.0 / 3600.0
+        # Mean solar time at the site's own meridian, corrected to apparent
+        # solar time.  The equation of time runs to a quarter of an hour, so
+        # leaving it out would move the bucket edges by up to four degrees.
+        solar_hours = utc_hours + self.longitude / 15.0 + eot_min / 60.0
+        return (solar_hours - 12.0 + 12.0) % 24.0 - 12.0
 
     @functools.lru_cache(maxsize=512)
     def daylight_window_ts(self, day_ordinal: int) -> tuple[float, float] | None:

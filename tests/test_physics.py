@@ -7,11 +7,16 @@ component closure test, and the interval-midpoint rule.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
 import numpy as np
 import pandas as pd
+import pvlib
 import pytest
 
 from core.config import GeometrySegment
+from core.learning import daypart
 from core.physics import PhysicsEngine, clamp_to_daylight, to_index
 
 LAT, LON = 53.5, 10.0
@@ -33,15 +38,18 @@ def _clear_conditions(engine: PhysicsEngine, index: pd.DatetimeIndex):
 
 
 class TestSolarGeometry:
-    def test_solar_noon_is_near_local_apparent_noon(self, engine: PhysicsEngine):
-        noon = engine.solar_noon_for(SUMMER_NOON)
-        # 10 deg east -> solar noon a bit before 12:00 UTC.
-        assert SUMMER_NOON - 3600 < noon < SUMMER_NOON
+    def test_offset_is_near_zero_at_local_apparent_noon(self, engine: PhysicsEngine):
+        # 10 deg east -> solar noon a bit before 12:00 UTC, so 12:00 UTC sits
+        # just after it.
+        offset = engine.hours_from_solar_noon(SUMMER_NOON)
+        assert 0.0 < offset < 1.0
 
-    def test_solar_noon_is_cached_per_day(self, engine: PhysicsEngine):
-        first = engine.solar_noon_for(SUMMER_NOON)
-        second = engine.solar_noon_for(SUMMER_NOON + 1800)
-        assert first == second
+    def test_offset_advances_within_the_day(self, engine: PhysicsEngine):
+        # The old noon lookup was cached per day and returned the same value
+        # all day; the offset must not.
+        first = engine.hours_from_solar_noon(SUMMER_NOON)
+        second = engine.hours_from_solar_noon(SUMMER_NOON + 1800)
+        assert second == pytest.approx(first + 0.5, abs=1e-3)
 
     def test_sun_is_below_horizon_at_midnight(self, engine: PhysicsEngine):
         index = to_index([SUMMER_NOON - 12 * 3600])
@@ -58,7 +66,7 @@ class TestDaylightWindow:
         window = engine.daylight_window_for(SUMMER_NOON)
         assert window is not None
         sunrise, sunset = window
-        assert sunrise < engine.solar_noon_for(SUMMER_NOON) < sunset
+        assert sunrise < SUMMER_NOON < sunset
         # ~17 hours of daylight at 53.5 deg north in June.
         assert 15 * 3600 < sunset - sunrise < 19 * 3600
 
@@ -538,3 +546,136 @@ class TestMissingComponentsAreNotPlausibleComponents:
         # A 1.8 kWp south-facing array under 643 W/m2 makes hundreds of watts,
         # not the ~14 W that ground reflection alone would give.
         assert result.dc_power_w.iloc[0] > 400.0
+
+
+class TestHoursFromSolarNoon:
+    """The daypart offset, and the two ways of computing it that were wrong.
+
+    Both failures were invisible in Europe and load-bearing everywhere else, so
+    these cases name their sites: a regression here is a regression for someone
+    whose plant nobody in this repo can look at.
+    """
+
+    #: Equator on the antimeridian, half an hour after solar noon.  The SPA's
+    #: transit dates jump either side of UTC midnight here, so resolving a noon
+    #: by calendar day -- whether the timestamp's own day or the nearest of
+    #: three -- lands almost a day out and buckets this as morning.  The sun
+    #: stands at 79 degrees.
+    ANTIMERIDIAN_TS = 1788827400.0  # 2026-09-02 00:30 UTC
+
+    @pytest.mark.parametrize("longitude", [180.0, -180.0])
+    def test_antimeridian_noon_is_midday(self, longitude: float):
+        engine = PhysicsEngine(latitude=0.0, longitude=longitude)
+        offset = engine.hours_from_solar_noon(self.ANTIMERIDIAN_TS)
+        assert offset == pytest.approx(0.5, abs=0.05)
+        assert daypart(offset) == "midday"
+
+    def test_both_antimeridian_signs_agree(self):
+        east = PhysicsEngine(latitude=0.0, longitude=180.0)
+        west = PhysicsEngine(latitude=0.0, longitude=-180.0)
+        assert east.hours_from_solar_noon(
+            self.ANTIMERIDIAN_TS
+        ) == pytest.approx(west.hours_from_solar_noon(self.ANTIMERIDIAN_TS), abs=1e-9)
+
+    @pytest.mark.parametrize(
+        "name,latitude,longitude,zone",
+        [
+            # East of the date line's reach: the local morning carries
+            # yesterday's UTC date.  These plants had no morning bucket at all.
+            ("sydney", -33.87, 151.21, "Australia/Sydney"),
+            ("auckland", -36.85, 174.76, "Pacific/Auckland"),
+            ("fiji", -18.14, 178.44, "Pacific/Fiji"),
+            ("tokyo", 35.68, 139.69, "Asia/Tokyo"),
+            # West: the local evening carries tomorrow's, and was learned as
+            # morning -- the worse case, because the bucket looked populated.
+            ("los_angeles", 34.05, -118.24, "America/Los_Angeles"),
+            ("anchorage", 61.22, -149.90, "America/Anchorage"),
+            # Never affected, and must stay that way.
+            ("berlin", 53.60, 9.90, "Europe/Berlin"),
+            ("new_york", 40.71, -74.01, "America/New_York"),
+        ],
+    )
+    def test_dayparts_run_in_order_over_local_daylight(
+        self, name: str, latitude: float, longitude: float, zone: str
+    ):
+        """Morning, then midday, then afternoon, by the local clock.
+
+        Daylight hours only, and away from the solstices: under the polar day
+        daylight spans solar midnight, where afternoon correctly wraps back to
+        morning.  That seam is tested separately.
+        """
+        tz = ZoneInfo(zone)
+        engine = PhysicsEngine(latitude=latitude, longitude=longitude)
+        seen: dict[str, list[int]] = {}
+        for hour in range(6, 19):
+            ts = (
+                datetime(2026, 9, 21, hour, tzinfo=tz).timestamp() + 1800
+            )
+            seen.setdefault(daypart(engine.hours_from_solar_noon(ts)), []).append(hour)
+
+        assert set(seen) == {"morning", "midday", "afternoon"}, f"{name}: {seen}"
+        assert max(seen["morning"]) < min(seen["midday"]), f"{name}: {seen}"
+        assert max(seen["midday"]) < min(seen["afternoon"]), f"{name}: {seen}"
+
+    def test_offset_stays_within_half_a_day_across_longitudes(self):
+        """The invariant the calendar-day lookup violated by up to 22 hours."""
+        for longitude in range(-180, 181, 15):
+            engine = PhysicsEngine(latitude=0.0, longitude=float(longitude))
+            for hour in range(0, 24, 3):
+                ts = datetime(
+                    2026, 3, 11, hour, tzinfo=timezone.utc
+                ).timestamp()
+                assert -12.0 <= engine.hours_from_solar_noon(ts) < 12.0
+
+    def test_batch_matches_one_at_a_time(self, engine: PhysicsEngine):
+        stamps = [SUMMER_NOON + n * 1800 for n in range(12)]
+        batch = engine.hours_from_solar_noon_many(stamps)
+        # Length first: zip() over a truncated result silently checks only the
+        # rows that survived, and a batch that returns one row for twelve
+        # timestamps would pass every other assertion here.
+        assert len(batch) == len(stamps)
+        for ts, value in zip(stamps, batch):
+            assert float(value) == pytest.approx(
+                engine.hours_from_solar_noon(ts), abs=1e-9
+            )
+
+    def test_batch_preserves_order_and_duplicates(self, engine: PhysicsEngine):
+        stamps = [
+            SUMMER_NOON + 3600,
+            SUMMER_NOON - 7200,
+            SUMMER_NOON + 3600,
+            SUMMER_NOON,
+        ]
+        batch = engine.hours_from_solar_noon_many(stamps)
+        assert len(batch) == len(stamps)
+        assert float(batch[0]) == pytest.approx(float(batch[2]), abs=1e-9)
+        assert float(batch[1]) < float(batch[3]) < float(batch[0])
+
+    @pytest.mark.parametrize(
+        "when,label",
+        [
+            (datetime(2026, 11, 3, 12, tzinfo=timezone.utc), "equation of time at +16 min"),
+            (datetime(2026, 2, 11, 12, tzinfo=timezone.utc), "equation of time at -14 min"),
+            (datetime(2026, 6, 14, 12, tzinfo=timezone.utc), "equation of time near zero"),
+        ],
+    )
+    def test_offset_agrees_with_the_spa_transit(self, when: datetime, label: str):
+        """Cross-check against the SPA, at the two turning points of the year.
+
+        Berlin, far from UTC midnight, is where resolving a transit by calendar
+        day happens to be right -- so the SPA is a valid second opinion here and
+        the two must agree to within a minute.  Dropping the equation-of-time
+        term still passes every other test in this class while moving the
+        bucket edges by up to a quarter of an hour; this is the test that
+        notices.
+        """
+        engine = PhysicsEngine(latitude=53.60, longitude=9.90)
+        ts = when.timestamp()
+        day = pd.DatetimeIndex([pd.Timestamp(when.date())]).tz_localize("UTC")
+        transit = pvlib.solarposition.sun_rise_set_transit_spa(
+            day, engine.latitude, engine.longitude
+        )["transit"].iloc[0]
+        from_spa = (ts - transit.timestamp()) / 3600.0
+        assert engine.hours_from_solar_noon(ts) == pytest.approx(
+            from_spa, abs=60 / 3600
+        ), label

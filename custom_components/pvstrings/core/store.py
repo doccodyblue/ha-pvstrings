@@ -36,7 +36,7 @@ SHADING_THIN_DAYS = 120
 
 _LOGGER = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS string_geometry (
@@ -371,6 +371,31 @@ class Store:
                 }
                 if "beam" in columns:
                     self._conn.execute("UPDATE shading_obs SET beam = NULL")
+            if current < 11:
+                # Every effect below was learned against a daypart that could
+                # be wrong -- see the v11 note in the changelog.  A plant far
+                # enough east never reached "morning" at all and filed those
+                # hours as afternoon; one far enough west did the reverse.
+                # The three scopes go together because they are fitted
+                # together: ``string`` learns what ``plant`` left unexplained,
+                # so a misfiled plant bucket moved it too.
+                #
+                # Dropped rather than corrected: an effect is a decayed mean,
+                # and the observations that formed it are not recoverable from
+                # it.  They refill from new hours within days.  The GHI bias,
+                # the shading map and the conversion curves never saw a daypart
+                # and are deliberately left alone.  No migration here had
+                # discarded learned state before this one -- ``reset_learning``
+                # does, but that is the owner asking for it.
+                #
+                # Before the version stamp, so a crash cannot leave a database
+                # marked v11 with the old effects still inside.  A fresh
+                # database runs this too, against empty tables; guarding it
+                # would be logic no test can tell apart from its absence.
+                self._conn.execute(
+                    "DELETE FROM model_effects WHERE scope IN (?, ?, ?)",
+                    ("plant", "string", "string_daypart"),
+                )
             if current < SCHEMA_VERSION:
                 _LOGGER.debug(
                     "pvstrings schema %s -> %s at %s", current, SCHEMA_VERSION, self.path

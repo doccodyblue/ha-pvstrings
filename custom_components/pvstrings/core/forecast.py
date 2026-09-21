@@ -1227,17 +1227,22 @@ class ForecastEngine:
             clouds=("clouds_pct", "mean"),
         )
         out: dict[int, tuple[str, str]] = {}
-        for hour, row in frame.iterrows():
-            hour_ts = int(hour)
+        hours = [int(hour) for hour in frame.index]
+        if not hours:
+            return out
+        # One SPA call for the batch rather than one per hour.
+        offsets = self.physics.hours_from_solar_noon_many(
+            [hour + HOUR / 2 for hour in hours]
+        )
+        for hour_ts, offset, (_, row) in zip(hours, offsets, frame.iterrows()):
             kc: float | None = None
             if row["cs_ghi"] and row["cs_ghi"] > 20.0:
                 kc = float(row["ghi"]) / float(row["cs_ghi"])
             clouds = None if pd.isna(row["clouds"]) else float(row["clouds"])
             rain = None if pd.isna(row["rain"]) else float(row["rain"])
-            solar_noon = self.physics.solar_noon_for(hour_ts + HOUR / 2)
             out[hour_ts] = (
                 weather_class(clearsky_index=kc, clouds_pct=clouds, rain_mm=rain),
-                daypart(hour_ts + HOUR / 2, solar_noon),
+                daypart(float(offset)),
             )
         return out
 
@@ -1848,7 +1853,6 @@ class ForecastEngine:
         written = 0
         payload: list[tuple[Any, ...]] = []
         for hour in range(floor_hour(start_ts), floor_hour(end_ts), HOUR):
-            solar_noon = self.physics.solar_noon_for(hour + HOUR / 2)
             mid_index = to_index([hour + HOUR / 2])
             elevation = float(
                 self.physics.solar_position(mid_index)["apparent_elevation"].iloc[0]

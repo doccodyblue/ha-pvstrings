@@ -23,11 +23,25 @@ from core.quality import assess
 
 class TestBuckets:
     def test_daypart_is_relative_to_solar_noon(self):
-        noon = 1_700_000_000.0
-        assert daypart(noon - 4 * 3600, noon) == "morning"
-        assert daypart(noon, noon) == "midday"
-        assert daypart(noon + 90 * 60, noon) == "midday"
-        assert daypart(noon + 4 * 3600, noon) == "afternoon"
+        assert daypart(-4.0) == "morning"
+        assert daypart(0.0) == "midday"
+        assert daypart(1.5) == "midday"
+        assert daypart(4.0) == "afternoon"
+
+    def test_daypart_edges_are_where_they_claim_to_be(self):
+        # Closed on the midday side at both ends, so an hour exactly two hours
+        # out is midday rather than falling either way with float noise.
+        assert daypart(-2.0) == "midday"
+        assert daypart(-2.000001) == "morning"
+        assert daypart(2.0) == "midday"
+        assert daypart(2.000001) == "afternoon"
+
+    def test_daypart_wraps_at_solar_midnight(self):
+        # The offset arrives wrapped to [-12, +12): solar midnight is the seam.
+        # Only the polar day puts a learnable hour there, but the seam must be
+        # a seam and not a crash.
+        assert daypart(11.9) == "afternoon"
+        assert daypart(-11.9) == "morning"
 
     def test_horizon_buckets(self):
         assert horizon_bucket(1) == "0-6h"
