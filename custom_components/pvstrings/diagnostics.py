@@ -85,6 +85,13 @@ async def async_get_config_entry_diagnostics(
                     int(dt_util.utcnow().timestamp()),
                 )
             ],
+            # Which hours the learning cycle refused, and the figures that
+            # decided it.  ``last_learn_cycle`` counts them by reason, which
+            # is enough to know that something is being dropped and never
+            # enough to know why: "ratio_out_of_range" reads the same whether
+            # the kWp is wrong by a factor of ten, a restart cut an hour in
+            # half, or a string really did produce what it claims.
+            "recent_exclusions": coordinator.store.recent_exclusions(),
         }
 
     stored = await hass.async_add_executor_job(collect)

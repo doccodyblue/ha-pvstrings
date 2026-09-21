@@ -2027,6 +2027,22 @@ class ForecastEngine:
             declined = self.model.decline_reason(observation)
             if declined is not None:
                 stats.skip(declined)
+                if declined != "censored_and_consistent":
+                    # Persist the numbers, not just the tally.  A counter that
+                    # says "ratio_out_of_range: 4" cannot be told apart from a
+                    # misconfigured kWp, a restart cutting an hour in half, or
+                    # a genuinely broken sensor -- and on someone else's plant
+                    # the counter is all support ever sees.  Consistent
+                    # censored hours are left out: they are a healthy state and
+                    # would bury the rest on any battery-coupled plant.
+                    self.store.add_exclusion(
+                        hour,
+                        declined,
+                        string_id,
+                        f"physics={physics_kwh:.4f} measured={row.energy_kwh:.4f}"
+                        f" ratio={row.energy_kwh / physics_kwh:.3f}"
+                        f" weight={quality.weight:.2f}",
+                    )
                 continue
             if self.model.observe(observation):
                 stats.observations_used += 1

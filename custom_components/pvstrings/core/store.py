@@ -2082,6 +2082,28 @@ class Store:
                 (ts_utc, string_id, reason, detail),
             )
 
+    def recent_exclusions(self, limit: int = 60) -> list[dict[str, Any]]:
+        """The most recent hours the learning cycle refused, newest first.
+
+        With the detail string, which carries the physics and measured figures
+        that decided it -- the two numbers a remote diagnosis otherwise has to
+        guess at.
+        """
+        rows = self._query(
+            "SELECT ts_utc, string_id, reason, detail FROM exclusions"
+            " ORDER BY ts_utc DESC LIMIT ?",
+            (int(limit),),
+        )
+        return [
+            {
+                "ts_utc": int(row["ts_utc"]),
+                "string_id": row["string_id"],
+                "reason": row["reason"],
+                "detail": row["detail"],
+            }
+            for row in rows
+        ]
+
     def get_cursor(self, name: str, default: int = 0) -> int:
         rows = self._query(
             "SELECT ts_utc FROM learning_cursor WHERE name = ?", (name,)

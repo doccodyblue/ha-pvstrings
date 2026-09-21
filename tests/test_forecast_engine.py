@@ -1264,6 +1264,46 @@ class TestSkipReasonsAreRecorded:
         stats = engine.learn(DAY_START + 5 * HOUR)
         assert "skipped_because" in stats.as_dict()
 
+    def test_a_refusal_records_the_figures_behind_it(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """The count says an hour was refused; only the numbers say why.
+
+        "ratio_out_of_range: 4" reads the same whether a kWp is wrong by a
+        factor of ten, a restart cut an hour in half, or a string really did
+        produce what it claims -- and on a plant nobody here can log into,
+        that count is the whole diagnosis.
+        """
+        assert engine.store.recent_exclusions() == []
+
+        # Fifty times the physics: past MAX_RATIO, so every hour is refused.
+        TestLearningCycle._prepare_day(
+            TestLearningCycle(), engine, seeded_store, ratio=50.0
+        )
+        stats = engine.learn(DAY_START + 24 * HOUR, max_hours=24)
+
+        assert stats.skipped.get("ratio_out_of_range")
+        assert stats.observations_used == 0
+
+        rows = engine.store.recent_exclusions()
+        row = next(r for r in rows if r["reason"] == "ratio_out_of_range")
+        for field in ("physics=", "measured=", "ratio="):
+            assert field in (row["detail"] or ""), row["detail"]
+        # The real figures, not placeholders.
+        assert "ratio=50." in row["detail"], row["detail"]
+
+    def test_a_healthy_day_records_nothing(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """The table is a finding, not a log: no refusals, no rows."""
+        TestLearningCycle._prepare_day(
+            TestLearningCycle(), engine, seeded_store, ratio=1.0
+        )
+        stats = engine.learn(DAY_START + 24 * HOUR, max_hours=24)
+
+        assert stats.observations_used > 0
+        assert engine.store.recent_exclusions() == []
+
 
 class TestUnshadedIsCarriedAlongside:
     """So a chart can show what the sky map is actually contributing.
