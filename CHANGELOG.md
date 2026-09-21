@@ -1,5 +1,56 @@
 # Changelog
 
+## v1.25.4 — 2026-09-21
+
+### Fixed
+
+- **Dayparts were wrong wherever daylight crosses the UTC date line.** The
+  morning/midday/afternoon buckets are measured from solar noon, which is
+  right — but *which* solar noon was looked up by the UTC calendar date of the
+  hour. Far enough east, the local morning still carries yesterday's date, so
+  every morning hour was measured against yesterday's noon, came out about
+  twenty hours off, and was filed as afternoon. How much of the morning is lost
+  depends on the longitude: on the reporting plant the bucket was unreachable
+  altogether, a little further west only the earliest hours fell out of it.
+  Far enough west the slip runs the other way and the late afternoon was
+  learned as morning, which is worse — the bucket looks populated and is
+  confidently wrong. Reported from Sydney, where every `morning` cell read
+  "never seen" while the plant showed exactly the symptom this produces:
+  mornings over-forecast, afternoons under-forecast, with no way for the model
+  to correct either.
+
+  The offset now comes from the hour angle, computed from the timestamp alone.
+  No calendar day is consulted, so the whole class of question — which day
+  does this instant belong to — stops being asked. This also fixes the case that
+  broke the obvious repair: near the antimeridian the solar transit's own dates
+  jump, and a day can go missing from the almanac entirely, so picking the
+  nearest of several days is wrong there too.
+
+  It is not a neat band of longitudes: what matters is whether usable daylight
+  falls on the far side of the UTC date line, so high latitudes in summer can
+  be affected at longitudes that are fine in winter.
+
+- **The correction factors fitted against those dayparts are rebuilt** (schema
+  11). The plant, string and string-daypart effects are fitted together — the
+  string offset learns what the plant level left unexplained — so all three
+  carried the error and all three are dropped on upgrade. They refill from new
+  hours over the following days.
+
+  No upgrade here had thrown learned state away before, and this one does not
+  do it lightly: an effect is a decayed mean, and the observations behind it
+  cannot be recovered from it, so a wrong one cannot be corrected, only
+  discarded.
+  Plants that were never affected pay a few days of relearning for a fix they
+  did not need; there is no reliable way to tell from inside a database which
+  those are. The irradiance bias model, the sky map and the conversion curves
+  never saw a daypart and are untouched.
+
+  The upgrade does not rewrite history: `potential_kwh`, `unshaded_kwh`,
+  `chain_kwh` and closed weekly scores keep the numbers they were computed
+  with, and past accuracy scores stay comparable to what you saw at the time.
+  One exception, in the ordinary way: a forecast re-issued within the same
+  hour as the upgrade overwrites that hour's row, as any re-run does.
+
 ## v1.25.3 — 2026-09-21
 
 ### Changed
