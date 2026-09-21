@@ -7,7 +7,7 @@ component closure test, and the interval-midpoint rule.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -679,3 +679,86 @@ class TestHoursFromSolarNoon:
         assert engine.hours_from_solar_noon(ts) == pytest.approx(
             from_spa, abs=60 / 3600
         ), label
+
+
+class TestDaylightWindowAcrossTheDateLine:
+    """The daylight window belongs to a local day, not to a UTC date.
+
+    Two separate faults, and only the first is obvious. A site far enough east
+    has its local day on yesterday's UTC date, so asking the almanac for "the
+    events of this UTC date" returned the wrong day's window. And near the
+    antimeridian the SPA's own event dates jump around UTC midnight, so a day
+    can be missing from its answers altogether -- which is why asking
+    neighbouring days is not a repair either.
+    """
+
+    @pytest.mark.parametrize(
+        "name,latitude,longitude,zone",
+        [
+            ("berlin", 53.60, 9.90, "Europe/Berlin"),
+            ("sydney", -33.87, 151.21, "Australia/Sydney"),
+            ("auckland", -36.85, 174.76, "Pacific/Auckland"),
+            ("fiji", -18.14, 178.44, "Pacific/Fiji"),
+            ("kiritimati", 1.87, -157.36, "Pacific/Kiritimati"),
+            ("los_angeles", 34.05, -118.24, "America/Los_Angeles"),
+        ],
+    )
+    def test_the_window_falls_on_the_day_it_was_asked_for(
+        self, name: str, latitude: float, longitude: float, zone: str
+    ):
+        """Across a whole year, so a fault cannot hide in one season."""
+        tz = ZoneInfo(zone)
+        engine = PhysicsEngine(
+            latitude=latitude, longitude=longitude, time_zone=zone
+        )
+        for offset in range(0, 365, 7):
+            day = datetime(2026, 1, 1, tzinfo=tz) + timedelta(days=offset)
+            window = engine.daylight_window_for(day.timestamp() + 43200)
+            assert window is not None, f"{name} {day.date()}"
+            sunrise = datetime.fromtimestamp(window[0], tz)
+            sunset = datetime.fromtimestamp(window[1], tz)
+            assert sunrise.date() == day.date(), f"{name} {day.date()}"
+            assert sunset.date() == day.date(), f"{name} {day.date()}"
+            assert sunrise < sunset
+
+    def test_the_day_the_almanac_skips(self):
+        """Equator on the antimeridian, 2 September 2026.
+
+        Asked for the 1st, the SPA returns a window ending that morning; asked
+        for the 2nd, one starting that evening. The whole of the 2nd falls
+        through the gap, so no amount of looking at neighbouring days finds it.
+        """
+        zone = "Pacific/Fiji"
+        tz = ZoneInfo(zone)
+        engine = PhysicsEngine(latitude=0.0, longitude=180.0, time_zone=zone)
+        day = datetime(2026, 9, 2, tzinfo=tz)
+        window = engine.daylight_window_for(day.timestamp() + 43200)
+
+        assert window is not None
+        sunrise = datetime.fromtimestamp(window[0], tz)
+        sunset = datetime.fromtimestamp(window[1], tz)
+        assert sunrise.date() == day.date()
+        assert sunset.date() == day.date()
+        # Twelve hours of daylight on the equator, near the equinox.
+        assert 11.5 * 3600 < window[1] - window[0] < 12.5 * 3600
+
+    def test_polar_day_and_night_still_say_nothing(self):
+        """``None`` where the sun never crosses the horizon, as before."""
+        zone = "Arctic/Longyearbyen"
+        tz = ZoneInfo(zone)
+        engine = PhysicsEngine(latitude=78.22, longitude=15.63, time_zone=zone)
+        midsummer = datetime(2026, 6, 21, tzinfo=tz).timestamp() + 43200
+        midwinter = datetime(2026, 12, 21, tzinfo=tz).timestamp() + 43200
+        assert engine.daylight_window_for(midsummer) is None
+        assert engine.daylight_window_for(midwinter) is None
+
+    def test_a_dst_day_is_not_cut_short(self):
+        """The local day is 23 or 25 hours around a change; the scan covers it."""
+        zone = "Europe/Berlin"
+        tz = ZoneInfo(zone)
+        engine = PhysicsEngine(latitude=53.60, longitude=9.90, time_zone=zone)
+        for day in (datetime(2026, 3, 29, tzinfo=tz), datetime(2026, 10, 25, tzinfo=tz)):
+            window = engine.daylight_window_for(day.timestamp() + 43200)
+            assert window is not None, day.date()
+            assert datetime.fromtimestamp(window[0], tz).date() == day.date()
+            assert datetime.fromtimestamp(window[1], tz).date() == day.date()

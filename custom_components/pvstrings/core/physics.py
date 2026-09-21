@@ -19,6 +19,7 @@ import functools
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from typing import Sequence
 
 import numpy as np
@@ -215,28 +216,58 @@ class PhysicsEngine:
         solar_hours = utc_hours + self.longitude / 15.0 + eot_min / 60.0
         return (solar_hours - 12.0 + 12.0) % 24.0 - 12.0
 
+    #: Sampling step for the daylight scan, in seconds.  Five minutes puts the
+    #: edges within a few minutes of the true horizon crossing, which is finer
+    #: than anything that reads this needs -- the callers clamp hourly coverage
+    #: statistics to it -- and costs under two milliseconds for a whole day.
+    _DAYLIGHT_STEP_S = 300
+
     @functools.lru_cache(maxsize=512)
     def daylight_window_ts(self, day_ordinal: int) -> tuple[float, float] | None:
-        """Epoch seconds of sunrise and sunset for a proleptic day ordinal.
+        """Sunrise and sunset bracketing one *local* calendar day.
 
-        ``None`` on polar day and polar night, where the SPA reports no rise or
-        set at all.  The two cases would need a solar-position lookup to tell
-        apart, and every caller so far wants the same answer for both: fall
-        back to the unclamped window rather than guess.
+        ``None`` under the polar day and the polar night, where the sun does
+        not cross the horizon at all.  Both cases want the same answer from
+        every caller so far -- fall back to the unclamped window rather than
+        guess which one it was.
+
+        Found by scanning the sun's elevation across the local day rather than
+        by asking the SPA for the events of a UTC date.  Two separate things
+        went wrong with the latter, and only the second is obvious.  A site far
+        enough east has its local day on yesterday's UTC date, so Auckland got
+        the previous day's window on 64 of 122 sampled days.  And near the
+        antimeridian the SPA's own event dates jump around UTC midnight, so a
+        day can be missing from its answers entirely: at the equator on
+        longitude 180, asking for 1 September yields a window ending that
+        morning and asking for the 2nd yields one starting that evening, with
+        the whole of the 2nd falling through the gap.  Asking neighbouring
+        days does not repair that -- the window it should return was never in
+        the almanac.  A scan has no dates in it and cannot lose one.
         """
-        day = datetime.fromordinal(day_ordinal).replace(tzinfo=timezone.utc)
-        index = pd.DatetimeIndex([pd.Timestamp(day)])
-        events = pvlib.solarposition.sun_rise_set_transit_spa(
-            index, self.latitude, self.longitude
-        )
-        sunrise = events["sunrise"].iloc[0]
-        sunset = events["sunset"].iloc[0]
-        if pd.isna(sunrise) or pd.isna(sunset):
+        tz = ZoneInfo(self.time_zone)
+        day = datetime.fromordinal(day_ordinal)
+        start = datetime(day.year, day.month, day.day, tzinfo=tz).timestamp()
+        # Twenty-five hours rather than twenty-four: a local day is 23 or 25
+        # long around a DST change.  No latitude that also observes DST has a
+        # sunset late enough for the extra hour to be load-bearing, so this is
+        # margin rather than a fix -- and it costs one more sample.
+        stamps = np.arange(start, start + 25 * 3600, self._DAYLIGHT_STEP_S)
+        elevation = self.solar_position(to_index(list(stamps)))[
+            "apparent_elevation"
+        ].to_numpy()
+
+        above = elevation >= 0.0
+        if not above.any() or above.all():
             return None
-        return float(sunrise.timestamp()), float(sunset.timestamp())
+        rises = np.flatnonzero(~above[:-1] & above[1:])
+        sets = np.flatnonzero(above[:-1] & ~above[1:])
+        if not rises.size or not sets.size:
+            return None
+        return float(stamps[rises[0] + 1]), float(stamps[sets[-1]])
 
     def daylight_window_for(self, ts_utc: float) -> tuple[float, float] | None:
-        day = datetime.fromtimestamp(ts_utc, tz=timezone.utc).date()
+        """The daylight of the local day this instant falls in."""
+        day = datetime.fromtimestamp(ts_utc, tz=ZoneInfo(self.time_zone)).date()
         return self.daylight_window_ts(day.toordinal())
 
     # -- irradiance components --------------------------------------------- #
