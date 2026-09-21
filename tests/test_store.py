@@ -1888,3 +1888,85 @@ class TestDaypartEffectMigration:
             assert store.load_effects("plant") == {"clear|morning": (0.2, 3.0)}
         finally:
             store.close()
+
+
+class TestBiasBucketAgeSurvivesTheRoundTrip:
+    """Each bias bucket keeps its own last-observed time across a save.
+
+    The estimator's whole point is that a bucket decays in real time with a
+    fortnight's half-life.  Persisting the *save* time to every row instead of
+    each bucket's own silently switched that off: saving happens on every learn
+    cycle, so after the next load every bucket looked freshly observed and
+    nothing ever aged.  A bucket that had seen nothing for four weeks came back
+    with more evidence than it went in with.
+    """
+
+    SOURCE = "open_meteo"
+    DAY = 86400
+    T0 = 1_750_000_000
+
+    def test_each_bucket_keeps_its_own_age(self, store: Store):
+        old = self.T0
+        recent = self.T0 + 20 * self.DAY
+        store.save_ghi_bias(
+            self.SOURCE,
+            {
+                (7, "6-24h"): (300.0, 400.0, 12.0, float(old)),
+                (12, "6-24h"): (900.0, 1000.0, 40.0, float(recent)),
+            },
+            # The save time, deliberately different from both.
+            self.T0 + 30 * self.DAY,
+        )
+        rows = store.load_ghi_bias(self.SOURCE)
+        assert rows[(7, "6-24h")][3] == float(old)
+        assert rows[(12, "6-24h")][3] == float(recent)
+
+    def test_a_never_observed_bucket_falls_back_to_the_save_time(
+        self, store: Store
+    ):
+        saved_at = self.T0 + 5 * self.DAY
+        store.save_ghi_bias(
+            self.SOURCE, {(12, "6-24h"): (900.0, 1000.0, 40.0, 0.0)}, saved_at
+        )
+        rows = store.load_ghi_bias(self.SOURCE)
+        assert rows[(12, "6-24h")][3] == float(saved_at)
+
+    def test_a_restart_does_not_change_what_the_model_concludes(
+        self, store: Store
+    ):
+        """The acceptance criterion: the same stream of observations must give
+        the same factor and the same evidence, whether or not the model was
+        saved and reloaded somewhere in the middle.
+        """
+        from core.learning import GhiBiasModel
+
+        def feed(model, days):
+            for day in days:
+                model.observe(
+                    hour_local=12,
+                    horizon_h=12,
+                    measured_ghi=500.0,
+                    forecast_ghi=1000.0,
+                    weight=10.0,
+                    ts_utc=self.T0 + day * self.DAY,
+                )
+
+        # Straight through, never persisted.
+        memory = GhiBiasModel()
+        feed(memory, range(10))
+        feed(memory, [38])
+
+        # The same stream, interrupted by a save and a load after a long gap
+        # -- and the save happens late, as it would on a running plant.
+        restarted = GhiBiasModel()
+        feed(restarted, range(10))
+        store.save_ghi_bias(
+            self.SOURCE, restarted.to_rows(), self.T0 + 38 * self.DAY
+        )
+        restarted = GhiBiasModel.from_rows(store.load_ghi_bias(self.SOURCE))
+        feed(restarted, [38])
+
+        a = memory.buckets[(12, "6-24h")]
+        b = restarted.buckets[(12, "6-24h")]
+        assert b.n_eff == pytest.approx(a.n_eff, rel=1e-9)
+        assert b.factor == pytest.approx(a.factor, rel=1e-9)

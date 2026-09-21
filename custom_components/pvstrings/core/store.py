@@ -2049,6 +2049,16 @@ class Store:
         bias: dict[tuple[int, str], tuple[float, float, float, float]],
         updated_at: int,
     ) -> None:
+        """Persist the bias buckets, each with *its own* last-observed time.
+
+        ``updated_at`` is only the fallback for a bucket that has never been
+        observed.  Writing it to every row instead -- which is what this did
+        until now -- silently disables the whole model: the decay runs in real
+        time from the bucket's own stamp, and saving happens on every learn
+        cycle, so on the next load every bucket looked freshly observed and
+        nothing ever aged.  A bucket four weeks idle came back with more
+        evidence than it went in with.
+        """
         if not bias:
             return
         with self._tx() as conn:
@@ -2065,8 +2075,16 @@ class Store:
                     updated_at   = excluded.updated_at
                 """,
                 [
-                    (source, hour, bucket, measured, forecast, n_eff, updated_at)
-                    for (hour, bucket), (measured, forecast, n_eff, _ts) in bias.items()
+                    (
+                        source,
+                        hour,
+                        bucket,
+                        measured,
+                        forecast,
+                        n_eff,
+                        int(ts) if ts else updated_at,
+                    )
+                    for (hour, bucket), (measured, forecast, n_eff, ts) in bias.items()
                 ],
             )
 
