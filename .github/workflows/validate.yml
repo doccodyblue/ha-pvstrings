@@ -23,3 +23,20 @@ jobs:
     steps:
       - uses: "actions/checkout@v4"
       - uses: "home-assistant/actions/hassfest@master"
+
+  # The two checks above validate the manifest and the repository layout, and
+  # say nothing at all about whether the forecast is right.  Until this job
+  # existed, a green tick before a release meant only that HACS would accept
+  # the download.
+  tests:
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: "actions/checkout@v4"
+      - uses: "actions/setup-python@v5"
+        with:
+          python-version: "3.13"
+          cache: "pip"
+      - name: Install test dependencies
+        run: pip install -r requirements-test.txt
+      - name: Run the suite
+        run: python -m pytest -q
