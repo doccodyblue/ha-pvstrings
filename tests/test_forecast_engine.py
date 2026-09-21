@@ -24,6 +24,7 @@ from core.forecast import (
     MIN_SCORED_DAYS,
     ForecastEngine,
     floor_hour,
+    local_midnight,
 )
 from core.learning import GhiBiasModel
 from core.physics import PhysicsEngine, to_index
@@ -1521,3 +1522,54 @@ class TestHourClassification:
             columns=["hour", "ts_utc", "ghi", "cs_ghi", "rain_mm", "clouds_pct"]
         )
         assert engine._classify_hours(empty) == {}
+
+
+class TestLocalMidnight:
+    """Two days a year are not 86400 seconds long.
+
+    Adding a fixed day to a timestamp lands an hour off local midnight across a
+    DST change, which is how "yesterday" comes to start at 01:00 and a day's
+    energy gets summed over the wrong window. Both transitions inside the
+    plants' own zones are pinned here: Sydney shortens 4 October 2026 to 23
+    hours, Berlin stretches 25 October to 25.
+    """
+
+    @pytest.mark.parametrize(
+        "zone,day,offset,expected",
+        [
+            # Berlin, the 25-hour day: the naive sum gives 25.10. 01:00.
+            ("Europe/Berlin", (2026, 10, 26), -1, (2026, 10, 25)),
+            ("Europe/Berlin", (2026, 10, 25), 1, (2026, 10, 26)),
+            # Sydney, the 23-hour day: the naive sum gives 05.10. 01:00.
+            ("Australia/Sydney", (2026, 10, 4), 1, (2026, 10, 5)),
+            ("Australia/Sydney", (2026, 10, 5), -1, (2026, 10, 4)),
+            # And the spring transition in Berlin, the other direction.
+            ("Europe/Berlin", (2026, 3, 30), -1, (2026, 3, 29)),
+            # An ordinary day must keep working.
+            ("Europe/Berlin", (2026, 6, 15), -1, (2026, 6, 14)),
+        ],
+    )
+    def test_it_lands_on_local_midnight(
+        self, zone: str, day: tuple, offset: int, expected: tuple
+    ):
+        tz = ZoneInfo(zone)
+        start = int(datetime(*day, tzinfo=tz).timestamp())
+        result = datetime.fromtimestamp(local_midnight(start, offset, tz), tz)
+
+        assert (result.year, result.month, result.day) == expected
+        assert (result.hour, result.minute) == (0, 0)
+
+    def test_a_week_back_from_a_transition_day(self):
+        """The savings week is built the same way, up to seven days back."""
+        tz = ZoneInfo("Europe/Berlin")
+        # Monday 26 October 2026, the day after the change.
+        monday = int(datetime(2026, 10, 26, tzinfo=tz).timestamp())
+        for back in range(8):
+            result = datetime.fromtimestamp(local_midnight(monday, -back, tz), tz)
+            assert (result.hour, result.minute) == (0, 0), back
+
+    def test_the_offset_is_calendar_days_not_elapsed_time(self):
+        """Across the 25-hour day the step really is longer than 86400 s."""
+        tz = ZoneInfo("Europe/Berlin")
+        start = int(datetime(2026, 10, 25, tzinfo=tz).timestamp())
+        assert local_midnight(start, 1, tz) - start == 25 * 3600

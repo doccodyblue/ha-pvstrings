@@ -43,7 +43,13 @@ from .core.aggregate import (
 from .core.config import INTERVAL_SECONDS, CurtailmentGroup, PlantConfig
 from .core.conversion import CURVE_NEUTRAL, ConversionResult, convert_group
 from .core.learning import SCOPE_CONVERSION_CURVE
-from .core.forecast import HOUR, ForecastEngine, LearnStats, floor_hour
+from .core.forecast import (
+    HOUR,
+    ForecastEngine,
+    LearnStats,
+    floor_hour,
+    local_midnight,
+)
 from .core.health import Health, learn_summary
 from .core.history import close_weeks
 from .core.physics import PhysicsEngine, clamp_to_daylight, to_index
@@ -564,11 +570,17 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         start = local.replace(hour=0, minute=0, second=0, microsecond=0)
         return int(start.timestamp()), int((start + timedelta(days=1)).timestamp())
 
+    def _local_midnight(self, day_start: int, days: int) -> int:
+        """Local midnight ``days`` away from the one at ``day_start``."""
+        return local_midnight(day_start, days, dt_util.DEFAULT_TIME_ZONE)
+
     def _build_data(self, now: datetime) -> PvStringsData:
         now_ts = int(now.timestamp())
         day_start, day_end = self._local_day_bounds(now)
-        tomorrow_start, tomorrow_end = day_end, day_end + 86400
-        day_after_start, day_after_end = tomorrow_end, tomorrow_end + 86400
+        tomorrow_start = day_end
+        tomorrow_end = self._local_midnight(day_start, 2)
+        day_after_start = tomorrow_end
+        day_after_end = self._local_midnight(day_start, 3)
 
         # Before the live run, on the same window: the live run owns the
         # nowcast state, and the baseline must see the same weather issue.
@@ -738,7 +750,7 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
                 day_start, now_ts, string.string_id
             )
 
-        yesterday_start = day_start - 86400
+        yesterday_start = self._local_midnight(day_start, -1)
         data.produced_yesterday_kwh = self.store.energy_kwh_between(
             yesterday_start, day_start
         )
@@ -1209,7 +1221,7 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         month_start = int(
             local.replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp()
         )
-        week_start = day_start - local.weekday() * 86400
+        week_start = self._local_midnight(day_start, -local.weekday())
         year_start = int(
             local.replace(
                 month=1, day=1, hour=0, minute=0, second=0, microsecond=0

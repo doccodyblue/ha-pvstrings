@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 import zlib
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from typing import Any, Iterable, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
@@ -396,6 +396,21 @@ def is_uncensored(value_kind: str | None, curtailed_fraction: float | None) -> b
 
 def floor_hour(ts_utc: float) -> int:
     return int(ts_utc // HOUR * HOUR)
+
+
+def local_midnight(ts_utc: int, days: int, tz: tzinfo) -> int:
+    """Local midnight ``days`` from the one that ``ts_utc`` falls in.
+
+    Not ``ts_utc + days * 86400``: two days a year are 23 or 25 hours long, and
+    on those the fixed arithmetic lands an hour off local midnight -- so
+    "yesterday" starts at 01:00 and a day's energy is summed over the wrong
+    window.  Adding a ``timedelta`` of days to an aware datetime walks the
+    calendar first and resolves the offset afterwards, which is the whole
+    difference.
+    """
+    local = datetime.fromtimestamp(ts_utc, tz=tz)
+    midnight = local.replace(hour=0, minute=0, second=0, microsecond=0)
+    return int((midnight + timedelta(days=days)).timestamp())
 
 
 class ForecastEngine:
