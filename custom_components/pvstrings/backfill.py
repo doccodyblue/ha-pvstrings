@@ -406,6 +406,7 @@ async def async_backfill_irradiance_check(
     verdict = await hass.async_add_executor_job(
         coordinator.store.irradiance_pairs, epoch
     )
+    coordinator.invalidate_irradiance_verdict()
 
     return {
         "entity": entity,

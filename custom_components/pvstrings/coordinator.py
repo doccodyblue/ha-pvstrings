@@ -1102,6 +1102,16 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
             )
         )
 
+    def invalidate_irradiance_verdict(self) -> None:
+        """Drop the memo so the next update recomputes it.
+
+        Called by the backfill service: it can add months of pairs in one go,
+        and without this the card would keep reporting the old answer until
+        the hour turned -- right after the one action that was supposed to
+        produce a new one.
+        """
+        self._irradiance_verdict_hour = None
+
     def _irradiance_verdict(self) -> dict[str, Any]:
         """The sensor's report card, recomputed once an hour.
 
