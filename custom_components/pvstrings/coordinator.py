@@ -532,7 +532,11 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
                 )
             except Exception:  # noqa: BLE001 - a diagnosis is not a forecast
                 _LOGGER.exception("pvstrings: banking irradiance hours failed")
-            await self._async_top_up_references(now)
+            # Scheduled, not awaited: two archive requests with a two-minute
+            # timeout each sit in front of the forecast otherwise, and a
+            # hanging endpoint would hold up publishing by four minutes on a
+            # plant that is not even running a trial.
+            self.hass.async_create_task(self._async_top_up_references(now))
 
         await self._async_maybe_purge(now)
 

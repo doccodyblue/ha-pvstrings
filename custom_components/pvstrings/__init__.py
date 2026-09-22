@@ -618,10 +618,18 @@ def _async_register_services(hass: HomeAssistant) -> None:
                 else coordinator.shadow.calibration.as_dict()
             ),
         }
-        for horizon in ("da", "now"):
-            result = compare(rows, zone, horizon)
-            result["verdict"] = decides(result)
-            out["day_ahead" if horizon == "da" else "short_term"] = result
+        def _both() -> dict[str, Any]:
+            # In the executor: the archive grows to hundreds of thousands of
+            # rows and a dashboard asking repeatedly would fold them in the
+            # event loop each time.
+            done: dict[str, Any] = {}
+            for horizon in ("da", "now"):
+                result = compare(rows, zone, horizon)
+                result["verdict"] = decides(result)
+                done["day_ahead" if horizon == "da" else "short_term"] = result
+            return done
+
+        out.update(await hass.async_add_executor_job(_both))
         out["note"] = (
             "Diagnosis of a trial, not a setting. The published forecast is"
             " the live branch until the criterion in core/experiment.py says"

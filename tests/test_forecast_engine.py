@@ -2121,3 +2121,23 @@ class TestTheTrialCannotChangeTheForecast:
         engine.censored_hours = {(NOON, "s1")}
         archive(engine, NOON, NOON + HOUR)
         assert seeded_store.experiment_hours()[0]["censored"] == 1
+
+
+class TestTheArchiveSkipsTheNight:
+    """A dark hour can never be selected, so storing it only grows a table
+    that nothing purges."""
+
+    def test_a_night_hour_is_not_archived(self, seeded_store, plant):
+        from core.experiment import archive
+
+        engine = ForecastEngine(plant, seeded_store)
+        engine.load_models()
+        midnight = DAY_START
+        seeded_store.upsert_hourly(
+            [(midnight, "s1", 0.0, 1.0, 0.0, None, None, None, "measured", "night")]
+        )
+        seeded_store.log_forecast(
+            [(midnight - HOUR, midnight, "s1", 0.0, "corrected", None, None, 0.0)]
+        )
+        archive(engine, midnight, midnight + HOUR)
+        assert seeded_store.experiment_hours() == []
