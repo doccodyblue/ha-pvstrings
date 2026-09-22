@@ -610,6 +610,20 @@
         }
       }
     },
+    "backfill_irradiance_check": {
+      "name": "Check the irradiance sensor",
+      "description": "Compare what the irradiance sensor recorded with an independent reanalysis archive, hour by hour and sorted by how high the sun stood. Diagnosis only: nothing in the forecast reads the result. Only run this if the sensor spent the whole period in the same place, clean and level -- a station that was moved, replaced or overgrown inside the window produces a verdict about a sensor that no longer exists.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Plant",
+          "description": "Which plant's sensor to check."
+        },
+        "days": {
+          "name": "Days of history",
+          "description": "How far back to look. Hours without statistics are skipped, and the archive trails real time by about a week."
+        }
+      }
+    },
     "clear_price_history": {
       "name": "Clear recorded prices",
       "description": "Forget every tariff price recorded from a date on. Those hours fall back to the fixed price. Use it after pointing at the wrong sensor, or at one reporting a different currency -- a wrong price is recorded, folded and then compacted, and a wrong money figure is not one anybody spots by looking at it.",

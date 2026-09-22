@@ -17,6 +17,7 @@ import pytest
 
 from core.backfill import (
     BACKFILL_WEIGHT,
+    hourly_means_from_statistics,
     MIDPOINT_OFFSET_S,
     MIN_ELEVATION_DEG,
     hourly_series,
@@ -418,3 +419,68 @@ class TestTheElevationFloor:
         the constant now breaks something.
         """
         assert MIN_ELEVATION_DEG == 3.0
+
+
+class TestStatisticsRowsBecomeHours:
+    """The recorder's own timestamps, in every shape it hands them out.
+
+    The same silence this module was written about: guess the unit of
+    ``start`` wrong and every reading lands in January 1970 with a sun
+    position to match -- no exception, just a diagnosis about a sensor that
+    was never there.
+    """
+
+    @pytest.mark.parametrize(
+        "start",
+        [
+            datetime(2025, 6, 21, 10, 0, tzinfo=timezone.utc),
+            1_750_500_000,
+            1_750_500_000_000,
+        ],
+        ids=["datetime", "epoch-seconds", "epoch-milliseconds"],
+    )
+    def test_every_form_lands_in_2025(self, start):
+        hours = hourly_means_from_statistics([{"mean": 300.0, "start": start}], "W/m²")
+        (stamp,) = hours
+        assert datetime.fromtimestamp(stamp, timezone.utc).year == 2025
+        assert stamp % HOUR == 0
+
+    def test_seconds_are_not_read_as_milliseconds(self):
+        """Home Assistant 2025.9 returns seconds through the database door."""
+        hours = hourly_means_from_statistics(
+            [{"mean": 300.0, "start": 1_750_500_000}], "W/m²"
+        )
+        assert list(hours) == [1_750_500_000 // HOUR * HOUR]
+
+    def test_a_kilowatt_station_is_converted_not_banked_verbatim(self):
+        """A thousandth of the reference would read as a dead sensor."""
+        hours = hourly_means_from_statistics(
+            [{"mean": 0.3, "start": 1_750_500_000}], "kW/m²"
+        )
+        assert list(hours.values()) == pytest.approx([300.0])
+
+    def test_a_lux_reading_is_dropped_rather_than_banked(self):
+        """``units.convert`` passes an unfamiliar symbol through unchanged.
+
+        Right for a forecast that can absorb a small scale error, wrong here:
+        the pair would be stored once and never corrected, so an implausible
+        figure has to fall out before it is written.
+        """
+        assert (
+            hourly_means_from_statistics(
+                [{"mean": 40000.0, "start": 1_750_500_000}], "lx"
+            )
+            == {}
+        )
+
+    def test_a_negative_mean_is_dropped(self):
+        """A sensor drifting below zero at night, not a dark sky."""
+        assert (
+            hourly_means_from_statistics(
+                [{"mean": -12.0, "start": 1_750_500_000}], "W/m²"
+            )
+            == {}
+        )
+
+    def test_rows_without_a_mean_are_skipped(self):
+        assert hourly_means_from_statistics([{"mean": None, "start": 1}], "W/m²") == {}

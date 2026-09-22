@@ -46,6 +46,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import pandas as pd
 
+from . import units
 from .config import GeometrySegment
 from .physics import PhysicsEngine, to_index
 
@@ -91,6 +92,10 @@ MIN_ELEVATION_DEG = 3.0
 #: One second moves it off the grid and costs nothing: the sun does not
 #: measurably move in a second.
 MIDPOINT_OFFSET_S = HOUR // 2 + 1
+
+#: No hour's mean irradiance reaches this anywhere on the planet; a figure
+#: above it is a unit nobody converted, most likely lux.
+MAX_PLAUSIBLE_WM2 = 1500.0
 
 #: Ratios outside this are not shading, they are a configuration error or a
 #: unit mismatch, and letting them into the fitter would poison a whole cell.
@@ -322,4 +327,45 @@ def hourly_series(statistics: Iterable[Mapping[str, Any]]) -> dict[int, float]:
             if seconds > _MILLISECOND_THRESHOLD:
                 seconds /= 1000.0
         out[int(seconds // HOUR * HOUR)] = float(mean)
+    return out
+
+
+def hourly_means_from_statistics(
+    rows: Iterable[Mapping[str, Any]], unit: str | None
+) -> dict[int, float]:
+    """Hourly means keyed by the epoch second their hour starts.
+
+    The recorder hands back ``start`` as a datetime, as epoch seconds, or as
+    epoch milliseconds depending on which door it was called through, and
+    guessing wrong by a factor of a thousand does not fail loudly -- it puts
+    every reading in January 1970 with a sun position to match.  Anything
+    below a plausible recent epoch is read as milliseconds.
+
+    The unit matters just as much: a station reporting kW/m2 banked verbatim
+    would read a thousandth of the reference, and the ``DO NOTHING`` guard
+    means a corrected re-run would not repair it.
+
+    ``units.convert`` passes an unfamiliar symbol through unchanged, which is
+    the right call for a forecast that can absorb a small scale error -- but
+    not here, where a lux reading would be banked as forty thousand W/m2 and
+    stay there.  Anything outside what the sky can produce is dropped.
+    """
+    out: dict[int, float] = {}
+    for row in rows:
+        mean = row.get("mean")
+        start = row.get("start")
+        if mean is None or start is None:
+            continue
+        if hasattr(start, "timestamp"):
+            stamp = int(start.timestamp())
+        else:
+            stamp = int(start)
+            # Seconds since 2001 are ~1e9; the same instant in milliseconds is
+            # ~1e12.  Nothing this integration sees is dated before 2001.
+            if stamp > 1_000_000_000_000:
+                stamp //= 1000
+        value = units.convert(float(mean), unit, units.IRRADIANCE)
+        if value is None or not 0.0 <= value <= MAX_PLAUSIBLE_WM2:
+            continue
+        out[stamp // HOUR * HOUR] = value
     return out

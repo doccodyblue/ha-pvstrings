@@ -2131,6 +2131,24 @@ class Store:
                 (ts_utc, string_id, reason, detail),
             )
 
+    def measured_ghi_hours(
+        self, start_ts: int, end_ts: int, min_samples: int = 9
+    ) -> dict[int, float]:
+        """Closed hours of measured irradiance, as hourly means.
+
+        Counted as well as averaged: an hour the collector only caught three
+        bright samples of averages to something the sky never did, and the
+        sensor check would read that as the sensor reading high.
+        """
+        rows = self._query(
+            "SELECT (ts_utc / 3600) * 3600 AS hour, AVG(ghi_wm2) AS mean,"
+            " COUNT(ghi_wm2) AS samples FROM weather_actual_5min"
+            " WHERE ts_utc >= ? AND ts_utc < ? AND ghi_wm2 IS NOT NULL"
+            " GROUP BY hour HAVING samples >= ? ORDER BY hour",
+            (int(start_ts), int(end_ts), int(min_samples)),
+        )
+        return {int(row["hour"]): float(row["mean"]) for row in rows}
+
     def bank_irradiance_hours(self, rows: Iterable[tuple[Any, ...]]) -> int:
         """Record measured hours, reference still unknown.
 

@@ -610,6 +610,20 @@
         }
       }
     },
+    "backfill_irradiance_check": {
+      "name": "Einstrahlungssensor prüfen",
+      "description": "Vergleicht die Aufzeichnung des Einstrahlungssensors stundenweise mit einem unabhängigen Reanalyse-Archiv, aufgeschlüsselt nach Sonnenstand. Reine Diagnose: die Prognose liest das Ergebnis nicht. Nur ausführen, wenn der Sensor im ganzen Zeitraum am selben Ort stand, sauber und waagerecht -- eine Station, die zwischendurch versetzt, getauscht oder zugewachsen ist, liefert ein Urteil über einen Sensor, den es nicht mehr gibt.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Anlage",
+          "description": "Welche Anlage geprüft wird."
+        },
+        "days": {
+          "name": "Tage Historie",
+          "description": "Wie weit zurückgeschaut wird. Stunden ohne Statistik werden übersprungen, und das Archiv hinkt der Echtzeit etwa eine Woche hinterher."
+        }
+      }
+    },
     "clear_price_history": {
       "name": "Aufgezeichnete Preise verwerfen",
       "description": "Vergisst jeden ab einem Datum aufgezeichneten Tarifpreis; die betroffenen Stunden fallen auf den Festpreis zurück. Für den Fall, dass der falsche Sensor eingetragen war oder einer in fremder Währung — ein falscher Preis wird aufgezeichnet, gefaltet und dann kompaktiert, und einen falschen Geldbetrag sieht man ihm nicht an.",

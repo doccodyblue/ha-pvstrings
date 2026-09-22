@@ -52,6 +52,12 @@ from .core.forecast import (
 )
 from .core.health import Health, learn_summary
 from .core.history import close_weeks
+from .core.irradiance_check import (
+    CURSOR_IRRADIANCE_EPOCH,
+    MIN_SAMPLES_PER_HOUR,
+    assess as assess_irradiance,
+    rows_to_bank,
+)
 from .core.physics import PhysicsEngine, clamp_to_daylight, to_index
 from .core.quality import NIGHT_ELEVATION_DEG
 from .core.store import Store
@@ -339,6 +345,8 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         self._baseline_failed = False
         self._monthly_weights: list[float] | None = None
         self.last_learn_stats = LearnStats()
+        self._irradiance_verdict_hour: int | None = None
+        self._irradiance_verdict_memo: dict[str, Any] = {}
         self.health = Health()
 
     # ------------------------------------------------------------------ #
@@ -498,6 +506,17 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
                 )
             except Exception:  # noqa: BLE001 - a missing week is not a broken plant
                 _LOGGER.exception("pvstrings: closing accuracy weeks failed")
+            try:
+                # Bank the hours the sensor has just closed.  No network here:
+                # the reference is fetched by the backfill service, which the
+                # owner runs knowingly.  Banking anyway means that by the time
+                # they do, the measurement side is already there -- including
+                # for the hours the recorder will have purged by then.
+                await self.hass.async_add_executor_job(
+                    self._bank_irradiance_hours, int(now.timestamp())
+                )
+            except Exception:  # noqa: BLE001 - a diagnosis is not a forecast
+                _LOGGER.exception("pvstrings: banking irradiance hours failed")
 
         await self._async_maybe_purge(now)
 
@@ -1026,6 +1045,7 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
             # reconstruction of past hours, as the share of today's daylight
             # intervals that carry a station value.  None without a sensor.
             "station_air_share_today": self._station_air_share(now_ts),
+            "sensor_check": self._irradiance_verdict(),
             "ghi_entity": sources.ghi_entity,
             "illuminance_entity": sources.illuminance_entity,
             # Reported rather than guessed: Home Assistant never exposes entry
@@ -1049,6 +1069,63 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
                 if entity
             },
         }
+
+    # ------------------------------------------------------------------ #
+    # is the irradiance sensor telling the truth?
+    # ------------------------------------------------------------------ #
+
+    #: How far back the live banking reaches on each pass.  Two days, so a
+    #: restart or a night of downtime does not leave a permanent gap: the
+    #: store refuses duplicates, so re-reading them costs one grouped query.
+    BANK_LOOKBACK_HOURS = 48
+
+    def _bank_irradiance_hours(self, now_ts: int) -> int:
+        """Put the hours that have just closed aside for the sensor check.
+
+        ``floor_hour`` and not ``now``: the running hour is still filling, and
+        a half hour's mean is not the hour's.  Re-banking is free -- the store
+        never overwrites an hour, so a reference already fetched beside it
+        stays put.
+        """
+        end = floor_hour(now_ts)
+        rows = self.store.measured_ghi_hours(
+            end - self.BANK_LOOKBACK_HOURS * HOUR, end, MIN_SAMPLES_PER_HOUR
+        )
+        if not rows:
+            return 0
+        return self.store.bank_irradiance_hours(
+            rows_to_bank(
+                self.physics,
+                rows,
+                self.store.get_cursor(CURSOR_IRRADIANCE_EPOCH, default=0),
+                "live",
+            )
+        )
+
+    def _irradiance_verdict(self) -> dict[str, Any]:
+        """The sensor's report card, recomputed once an hour.
+
+        Memoised because it reads every banked pair of the epoch and the
+        update cycle runs every few minutes, while the answer can only change
+        when an hour closes.
+        """
+        hour = floor_hour(dt_util.utcnow().timestamp())
+        if self._irradiance_verdict_hour == hour:
+            return self._irradiance_verdict_memo
+
+        epoch = self.store.get_cursor(CURSOR_IRRADIANCE_EPOCH, default=0)
+        verdict = assess_irradiance(self.store.irradiance_pairs(epoch))
+        payload = verdict.as_dict()
+        # What is banked but not yet paired: without it a card that says "not
+        # enough evidence yet" cannot distinguish a sensor nobody has run the
+        # backfill for from one that has no history at all.
+        payload["hours_awaiting_reference"] = len(
+            self.store.irradiance_hours_awaiting_reference(epoch, hour, 20000)
+        )
+        payload["epoch"] = epoch
+        self._irradiance_verdict_hour = hour
+        self._irradiance_verdict_memo = payload
+        return payload
 
     def _station_air_share(self, now_ts: int) -> dict[str, float | None]:
         """Share of today's daylight intervals carrying a station air value.

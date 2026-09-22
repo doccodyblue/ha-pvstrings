@@ -14,14 +14,19 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Iterable, Mapping
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .core import units
-from .core.backfill import BACKFILL_WEIGHT, hourly_series, shading_rows_from_history
-from .core.physics import to_index
+from .core.backfill import (
+    BACKFILL_WEIGHT,
+    hourly_means_from_statistics,
+    hourly_series,
+    shading_rows_from_history,
+)
+from .core.irradiance_check import CURSOR_IRRADIANCE_EPOCH, assess, rows_to_bank
 from .core.weather import OPEN_METEO_ARCHIVE_URL, open_meteo_archive_params
 
 _LOGGER = logging.getLogger(__name__)
@@ -42,14 +47,6 @@ ARCHIVE_LAG_DAYS = 6
 CHUNK_DAYS = 120
 
 ARCHIVE_TIMEOUT = 120
-
-#: Below this the reference grid resolves neither terrain nor horizon, and a
-#: disagreement says more about the model than about the sensor.
-MIN_ELEVATION_FOR_CHECK = 3.0
-
-#: Bumped when the owner tells us the instrument changed -- moved, replaced,
-#: cleaned, rewired.  Rows from different epochs are never pooled.
-CURSOR_IRRADIANCE_EPOCH = "irradiance_epoch"
 
 
 async def async_backfill_shading(
@@ -275,29 +272,12 @@ IRRADIANCE_REFERENCES: tuple[tuple[str, str, str], ...] = (
 )
 
 
-def _irradiance_rows(coordinator: Any, measured: dict[int, float]):
-    """Measured hours with the sun's position at each hour's midpoint."""
-    physics = coordinator.engine.physics
-    hours = sorted(measured)
-    if not hours:
-        return
-    index = to_index([hour + HOUR // 2 for hour in hours])
-    position = physics.solar_position(index)
-    elevations = position["apparent_elevation"].to_numpy()
-    azimuths = position["azimuth"].to_numpy()
-    epoch = coordinator.store.get_cursor(CURSOR_IRRADIANCE_EPOCH, default=0)
-    for hour, elevation, azimuth in zip(hours, elevations, azimuths):
-        if elevation < MIN_ELEVATION_FOR_CHECK:
-            continue
-        yield (
-            int(hour),
-            int(epoch),
-            float(measured[hour]),
-            "statistics",
-            float(elevation),
-            float(azimuth),
-            None,
-        )
+def _statistics_unit(hass: HomeAssistant, entity_id: str) -> str | None:
+    """The unit the statistics are stored in, if the entity still exists."""
+    state = hass.states.get(entity_id)
+    if state is None:
+        return None
+    return state.attributes.get("unit_of_measurement")
 
 
 async def _async_fill_reference(
@@ -329,7 +309,11 @@ async def _async_fill_reference(
             "start_date": datetime.fromtimestamp(first, timezone.utc)
             .date()
             .isoformat(),
-            "end_date": datetime.fromtimestamp(last, timezone.utc)
+            # The archive labels an hour by its end, so the measurement of
+            # 23:00-24:00 needs the stamp at 00:00 the next day.  Asking only
+            # to ``last`` leaves the final hour of every request unfilled --
+            # which in Sydney is the middle of the afternoon.
+            "end_date": datetime.fromtimestamp(last + HOUR, timezone.utc)
             .date()
             .isoformat(),
             "hourly": "shortwave_radiation",
@@ -383,7 +367,7 @@ async def async_backfill_irradiance_check(
     data would give that away.
     """
     plant = coordinator.plant
-    entity = getattr(plant.weather, "ghi_entity", None)
+    entity = plant.weather_sources.ghi_entity
     if not entity:
         return {"error": "no irradiance sensor configured"}
 
@@ -400,21 +384,28 @@ async def async_backfill_irradiance_check(
             "entity": entity,
         }
 
-    measured = {
-        int(row["start"].timestamp() if hasattr(row["start"], "timestamp")
-            else row["start"] / 1000): row["mean"]
-        for row in rows
-        if row.get("mean") is not None
-    }
+    measured = hourly_means_from_statistics(rows, _statistics_unit(hass, entity))
     if not measured:
         return {"error": "statistics carried no hourly means", "entity": entity}
 
     first, last = min(measured), max(measured)
     banked = await hass.async_add_executor_job(
         coordinator.store.bank_irradiance_hours,
-        list(_irradiance_rows(coordinator, measured)),
+        list(
+            rows_to_bank(
+                coordinator.engine.physics,
+                measured,
+                coordinator.store.get_cursor(CURSOR_IRRADIANCE_EPOCH, default=0),
+                "statistics",
+            )
+        ),
     )
     filled = await _async_fill_reference(hass, coordinator, first, last)
+
+    epoch = coordinator.store.get_cursor(CURSOR_IRRADIANCE_EPOCH, default=0)
+    verdict = await hass.async_add_executor_job(
+        coordinator.store.irradiance_pairs, epoch
+    )
 
     return {
         "entity": entity,
@@ -423,6 +414,10 @@ async def async_backfill_irradiance_check(
         "hours_measured": len(measured),
         "hours_banked": banked,
         "hours_referenced": filled,
+        # The answer, in the same call.  Without it the owner runs a service
+        # that reports three counts and has to go looking for the result on a
+        # sensor that only refreshes on the hour.
+        "verdict": assess(verdict).as_dict(),
         "note": (
             "Only run this if the sensor stayed in the same place, clean and"
             " level, for the whole period. Anything else teaches a verdict"

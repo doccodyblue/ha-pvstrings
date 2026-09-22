@@ -30,9 +30,8 @@ separate piece of work; a factor in front of them would correct it twice.
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 #: Elevation bands the ratio is reported in.  Bands rather than a fitted curve
 #: because the shape is what has to be read off first: a flat profile means a
@@ -47,6 +46,31 @@ ELEVATION_BANDS: tuple[tuple[float, float], ...] = (
     (45.0, 90.0),
 )
 
+#: The elevation window the east/west comparison runs in, and how finely it is
+#: sliced inside that window.  Slices rather than one pool: the sides have to
+#: be compared at matched sun heights or the spectral curve masquerades as a
+#: tilt.
+TILT_BAND: tuple[float, float] = (15.0, 45.0)
+TILT_BUCKET_DEG = 5.0
+
+#: Days each side must bring to a slice before it counts.
+MIN_TILT_DAYS = 5
+
+#: Bumped when the owner tells us the instrument changed -- moved, replaced,
+#: cleaned, rewired.  Rows from different epochs are never pooled, because a
+#: verdict averaged over two sensors describes neither.
+CURSOR_IRRADIANCE_EPOCH = "irradiance_epoch"
+
+#: Below this the sun is too low for the reference grid to mean anything --
+#: it resolves neither terrain shadow nor the horizon, and both bite hardest
+#: at dawn.  Hours below it are never banked, so they cost no storage either.
+MIN_ELEVATION_DEG = 3.0
+
+#: Five-minute samples an hour must carry before its mean stands for the hour.
+#: An hour the collector only caught the bright end of averages to something
+#: the sky never did, and the check would read that as a sensor reading high.
+MIN_SAMPLES_PER_HOUR = 9
+
 #: Below this the reference itself is unreliable -- a coarse grid resolves
 #: neither terrain shadow nor the horizon, and both bite hardest at dawn.
 MIN_REFERENCE_WM2 = 60.0
@@ -60,19 +84,6 @@ MIN_BAND_ENERGY_KWH = 1.0
 #: And not from too few days: hours of one overcast afternoon are one weather
 #: event, not twelve independent looks at the sensor.
 MIN_BAND_DAYS = 5
-
-
-def _ratio(measured: Sequence[float], reference: Sequence[float]) -> float | None:
-    """Ratio of the sums, never the mean of the ratios.
-
-    A mean of hourly quotients lets a dim hour with a wild quotient outvote a
-    bright one, which is the same mistake the source-bias estimator was
-    rebuilt to stop making.
-    """
-    total_ref = sum(reference)
-    if total_ref <= 0.0:
-        return None
-    return sum(measured) / total_ref
 
 
 @dataclass(slots=True)
@@ -174,21 +185,49 @@ class Verdict:
         }
 
     def reading(self) -> str:
-        """The shape in one word, or why there is not one yet."""
-        if self.ratio is None or not any(b.usable for b in self.bands):
+        """The shape in one sentence, or why there is not one yet.
+
+        Order matters and is not the order of severity.  The overall ratio is
+        checked *last*, because a band at 0.80 and one at 1.20 average to 1.00
+        and would otherwise be reported as agreement -- the one verdict that
+        stops anybody looking further.
+        """
+        usable = [b for b in self.bands if b.usable and b.ratio is not None]
+        if self.ratio is None or not usable:
             return "not enough evidence yet"
         if self.tilt_hint is not None and abs(self.tilt_hint) >= 0.08:
             return "differs east to west -- check that the sensor is level"
+
+        lowest = min(b.ratio for b in usable)
+        highest = max(b.ratio for b in usable)
+        # Which way it is wrong and what shape that error has are two
+        # questions.  Reading the shape off the slope and then asserting the
+        # direction from it reported a sensor reading 1.05 to 1.25 as "reads
+        # low", which is the opposite of the truth.
+        if highest < 0.95:
+            direction = "reads low"
+        elif lowest > 1.05:
+            direction = "reads high"
+        else:
+            direction = "crosses the reference"
+
         slope = self.slope
         if slope is None:
             return "one elevation band only -- no shape yet"
-        if abs(1.0 - self.ratio) < 0.05:
-            return "agrees with the reference"
         if slope >= 0.08:
-            return "reads low, and lower as the sun drops"
+            return f"{direction}, and more so as the sun drops"
         if slope <= -0.08:
-            return "reads low, and lower as the sun rises -- unusual"
-        return "reads consistently off, flat across the sky"
+            return f"{direction}, and more so as the sun rises -- unusual"
+
+        # Flat, so one number describes it -- but only if the bands really do
+        # agree with each other, not merely at their ends.
+        if highest - lowest >= 0.08:
+            return "uneven across the sky, with no clear trend"
+        if max(abs(1.0 - b.ratio) for b in usable) < 0.05:
+            return "agrees with the reference"
+        if direction == "crosses the reference":
+            return "close to the reference, but not evenly so"
+        return f"{direction} by about the same amount at every sun height"
 
 
 def assess(
@@ -204,7 +243,8 @@ def assess(
     days_seen: list[set[int]] = [set() for _ in built]
     all_days: set[int] = set()
     hours = measured = reference = 0.0
-    east_m = east_r = west_m = west_r = 0.0
+    tilt_east: dict[int, list] = {}
+    tilt_west: dict[int, list] = {}
     sources: set[str] = set()
 
     for pair in pairs:
@@ -223,8 +263,17 @@ def assess(
         if pair.get("reference_src"):
             sources.add(str(pair["reference_src"]))
 
+        last = len(built) - 1
         for index, band in enumerate(built):
-            if band.low <= elevation < band.high:
+            # The top band closes at its upper edge: 90 degrees is a real
+            # elevation between the tropics and would otherwise fall out of
+            # every band and be counted nowhere.
+            inside = (
+                band.low <= elevation <= band.high
+                if index == last
+                else band.low <= elevation < band.high
+            )
+            if inside:
                 band.hours += 1
                 band.measured_kwh += float(meas) / 1000.0
                 band.reference_kwh += float(ref) / 1000.0
@@ -232,19 +281,22 @@ def assess(
                 break
 
         azimuth = pair.get("azimuth_deg")
-        # Only the bands where both sides of noon are actually represented:
-        # comparing a bright afternoon against a dim morning would report the
-        # weather as a tilt.
-        if azimuth is not None and 15.0 <= elevation < 45.0:
-            if azimuth < 180.0:
-                east_m += float(meas)
-                east_r += float(ref)
-            else:
-                west_m += float(meas)
-                west_r += float(ref)
+        if azimuth is not None and TILT_BAND[0] <= elevation < TILT_BAND[1]:
+            # Bucketed by elevation, so the two sides are compared at matched
+            # sun heights.  Pooling a whole 15-45 degree window would let a
+            # low morning face a high afternoon and report the spectral curve
+            # as a tilt -- which sends the owner up a ladder for nothing.
+            slot = int((elevation - TILT_BAND[0]) // TILT_BUCKET_DEG)
+            side = tilt_east if azimuth < 180.0 else tilt_west
+            entry = side.setdefault(slot, [0.0, 0.0, set()])
+            entry[0] += float(meas)
+            entry[1] += float(ref)
+            entry[2].add(day)
 
     for band, days in zip(built, days_seen):
         band.days = len(days)
+
+    east, west = _matched_sides(tilt_east, tilt_west)
 
     return Verdict(
         ratio=(measured / reference) if reference > 0 else None,
@@ -252,7 +304,69 @@ def assess(
         days=len(all_days),
         reference_kwh=reference,
         bands=built,
-        east=_ratio([east_m], [east_r]) if east_r > 0 else None,
-        west=_ratio([west_m], [west_r]) if west_r > 0 else None,
+        east=east,
+        west=west,
         sources=tuple(sorted(sources)),
     )
+
+
+def _matched_sides(
+    east: dict[int, list], west: dict[int, list]
+) -> tuple[float | None, float | None]:
+    """East and west ratios over the elevation slots both sides actually share.
+
+    A slot counts only when each side brings its own days: one stray afternoon
+    hour against a week of mornings is not a comparison, and before this it
+    was enough to raise a tilt warning.
+    """
+    shared = [
+        slot
+        for slot in set(east) & set(west)
+        if len(east[slot][2]) >= MIN_TILT_DAYS
+        and len(west[slot][2]) >= MIN_TILT_DAYS
+        and east[slot][1] > 0
+        and west[slot][1] > 0
+    ]
+    if not shared:
+        return None, None
+    em = sum(east[s][0] for s in shared)
+    er = sum(east[s][1] for s in shared)
+    wm = sum(west[s][0] for s in shared)
+    wr = sum(west[s][1] for s in shared)
+    return em / er, wm / wr
+
+
+def rows_to_bank(
+    physics: Any,
+    measured: Mapping[int, float],
+    epoch: int,
+    source: str,
+) -> Iterator[tuple[Any, ...]]:
+    """Measured hours with the sun's position at each hour's midpoint.
+
+    Shared by the live cycle and the backfill service so both bank the same
+    geometry: an hour banked live and the same hour re-derived from the
+    recorder must land on the same elevation, or the bands would disagree
+    with themselves.
+    """
+    from .physics import to_index
+
+    hours = sorted(measured)
+    if not hours:
+        return
+    index = to_index([hour + 1800 for hour in hours])
+    position = physics.solar_position(index)
+    elevations = position["apparent_elevation"].to_numpy()
+    azimuths = position["azimuth"].to_numpy()
+    for hour, elevation, azimuth in zip(hours, elevations, azimuths):
+        if elevation < MIN_ELEVATION_DEG:
+            continue
+        yield (
+            int(hour),
+            int(epoch),
+            float(measured[hour]),
+            source,
+            float(elevation),
+            float(azimuth),
+            None,
+        )

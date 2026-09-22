@@ -2001,3 +2001,142 @@ class TestBiasBucketAgeSurvivesTheRoundTrip:
         b = restarted.buckets[(12, "6-24h")]
         assert b.n_eff == pytest.approx(a.n_eff, rel=1e-9)
         assert b.factor == pytest.approx(a.factor, rel=1e-9)
+
+
+class TestIrradianceReferencePairs:
+    """Measured hours banked now, reference attached a week later.
+
+    The archive lags about six days, so the two halves of a pair arrive at
+    different times and from different code paths -- live collection and an
+    owner-invoked backfill. Neither may double-count an hour, and a second
+    reference product may not overwrite the first.
+    """
+
+    HOUR = 3600
+    T0 = 1_750_000_000 // 3600 * 3600
+
+    def _rows(self, store: Store, count: int = 3, epoch: int = 0):
+        return [
+            (self.T0 + n * self.HOUR, epoch, 300.0 + n, "statistics", 30.0, 180.0, None)
+            for n in range(count)
+        ]
+
+    def test_hours_are_banked_before_the_reference_exists(self, store: Store):
+        store.bank_irradiance_hours(self._rows(store))
+        pending = store.irradiance_hours_awaiting_reference(0, self.T0 + 99 * self.HOUR)
+        assert pending == [self.T0, self.T0 + self.HOUR, self.T0 + 2 * self.HOUR]
+        # Nothing to fit from yet: a pair needs both halves.
+        assert store.irradiance_pairs(0) == []
+
+    def test_banking_the_same_hour_twice_changes_nothing(self, store: Store):
+        store.bank_irradiance_hours(self._rows(store))
+        store.fill_irradiance_reference([(400.0, "era5", 1, self.T0, 0)])
+        # A backfill later walks over the same hour with the same measurement.
+        store.bank_irradiance_hours(self._rows(store))
+
+        pairs = store.irradiance_pairs(0)
+        assert len(pairs) == 1
+        assert pairs[0]["reference_wm2"] == 400.0
+        assert pairs[0]["reference_src"] == "era5"
+
+    def test_a_second_reference_does_not_overwrite_the_first(self, store: Store):
+        """Two products may disagree; the first answer stands.
+
+        Otherwise the stored verdict would depend on the order the fetches
+        happened to complete in, and one plant's history could hold a silent
+        mix of two references.
+        """
+        store.bank_irradiance_hours(self._rows(store, count=1))
+        store.fill_irradiance_reference([(400.0, "satellite", 1, self.T0, 0)])
+        written = store.fill_irradiance_reference([(999.0, "era5", 2, self.T0, 0)])
+
+        assert written == 0
+        pairs = store.irradiance_pairs(0)
+        assert pairs[0]["reference_wm2"] == 400.0
+        assert pairs[0]["reference_src"] == "satellite"
+
+    def test_filled_hours_leave_the_pending_queue(self, store: Store):
+        store.bank_irradiance_hours(self._rows(store))
+        store.fill_irradiance_reference([(400.0, "era5", 1, self.T0, 0)])
+        pending = store.irradiance_hours_awaiting_reference(0, self.T0 + 99 * self.HOUR)
+        assert self.T0 not in pending
+        assert len(pending) == 2
+
+    def test_dim_hours_are_held_back_from_the_fit(self, store: Store):
+        """Filtered on the reference, never on the measurement."""
+        store.bank_irradiance_hours(self._rows(store, count=2))
+        store.fill_irradiance_reference(
+            [
+                (30.0, "era5", 1, self.T0, 0),                    # reference too dim
+                (400.0, "era5", 1, self.T0 + self.HOUR, 0),       # bright enough
+            ]
+        )
+        pairs = store.irradiance_pairs(0, min_reference_wm2=60.0)
+        assert [p["ts_utc"] for p in pairs] == [self.T0 + self.HOUR]
+
+    def test_epochs_are_never_pooled(self, store: Store):
+        """A moved or replaced sensor starts a new epoch and its own history."""
+        store.bank_irradiance_hours(self._rows(store, count=1, epoch=0))
+        store.bank_irradiance_hours(self._rows(store, count=1, epoch=1))
+        store.fill_irradiance_reference([(400.0, "era5", 1, self.T0, 0)])
+        store.fill_irradiance_reference([(500.0, "era5", 1, self.T0, 1)])
+
+        assert store.irradiance_pairs(0)[0]["reference_wm2"] == 400.0
+        assert store.irradiance_pairs(1)[0]["reference_wm2"] == 500.0
+
+
+class TestMeasuredGhiHours:
+    """Hourly means for the sensor check, and only from complete hours.
+
+    A collector that caught three bright samples of a broken hour averages to
+    something the sky never did -- and the check would report that as a
+    sensor reading high, which is the opposite of the fault it exists to
+    find.
+    """
+
+    @staticmethod
+    def fill(store, hour: int, values):
+        store.upsert_weather_actual(
+            [
+                (hour + slot * 300, None, None, None, None, None, value, None)
+                for slot, value in enumerate(values)
+            ]
+        )
+
+    def test_a_full_hour_gives_its_mean(self, store):
+        self.fill(store, 3600, [100.0] * 6 + [200.0] * 6)
+        assert store.measured_ghi_hours(0, 7200) == {3600: pytest.approx(150.0)}
+
+    def test_a_thin_hour_is_left_out(self, store):
+        self.fill(store, 3600, [800.0] * 3)
+        assert store.measured_ghi_hours(0, 7200) == {}
+
+    def test_the_threshold_is_the_one_the_caller_states(self, store):
+        self.fill(store, 3600, [800.0] * 3)
+        assert store.measured_ghi_hours(0, 7200, min_samples=3) == {
+            3600: pytest.approx(800.0)
+        }
+
+    def test_nulls_do_not_count_towards_completeness(self, store):
+        """Rows exist for other quantities all night; none of them is a sample."""
+        self.fill(store, 3600, [500.0] * 4 + [None] * 8)
+        assert store.measured_ghi_hours(0, 7200) == {}
+
+    def test_hours_are_kept_apart(self, store):
+        self.fill(store, 3600, [100.0] * 12)
+        self.fill(store, 7200, [400.0] * 12)
+        assert store.measured_ghi_hours(0, 10800) == {
+            3600: pytest.approx(100.0),
+            7200: pytest.approx(400.0),
+        }
+
+    def test_the_window_is_half_open(self, store):
+        """The running hour must not be averaged before it has finished.
+
+        Asked with ``min_samples=1`` so the boundary itself is what decides:
+        with the completeness rule in the way, a closed window would look the
+        same as an open one for anything but the first sample of the hour.
+        """
+        self.fill(store, 3600, [100.0] * 12)
+        self.fill(store, 7200, [400.0] * 12)
+        assert list(store.measured_ghi_hours(0, 7200, min_samples=1)) == [3600]
