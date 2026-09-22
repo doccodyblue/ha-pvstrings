@@ -593,6 +593,10 @@ def _async_register_services(hass: HomeAssistant) -> None:
         offset_s = 0 if offset is None else int(offset.total_seconds())
         out: dict[str, Any] = {
             "running": coordinator.shadow is not None,
+            # The question a reader actually has, answered without inference:
+            # a trial that is running is still only a trial.
+            "published_branch": "live",
+            "applied": False,
             "curve": (
                 None
                 if coordinator.shadow is None

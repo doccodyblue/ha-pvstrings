@@ -197,7 +197,17 @@ def decides(
             f"level {shadow_level:.3f} drifted further than {live_level:.3f}"
         )
 
-    return {"decided": not reasons, "blocking": reasons}
+    return {
+        "decided": not reasons,
+        "blocking": reasons,
+        # Spelled out rather than left inside the sentences above: a card that
+        # had to parse "needs 15" out of prose would break the first time the
+        # prose changed.
+        "days": result.get("days", 0),
+        "days_needed": min_days,
+        "min_improvement": MIN_IMPROVEMENT,
+        "max_level_drift": MAX_LEVEL_DRIFT,
+    }
 
 
 def compare(
