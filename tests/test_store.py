@@ -2207,3 +2207,82 @@ class TestTheSecondReference:
         store.fill_irradiance_reference([(400.0, "satellite", 99, 7200, 1)])
         assert store.irradiance_hours_awaiting_cross(1, 10800) == [7200]
         assert store.fill_irradiance_cross([(390.0, "era5", 7200, 0)]) == 0
+
+
+class TestOpeningAnOlderDatabase:
+    """Every migration is exercised against a database that predates it.
+
+    The tests above all start from a store the current schema created, which
+    is the one case migration cannot get wrong. A partial index naming a
+    column the ALTERs have not added yet raises on connect and takes the whole
+    integration down with it -- setup_retry, no entities, on every installation
+    at once. That happened; this is why it cannot happen twice.
+    """
+
+    @staticmethod
+    def old_shape(path):
+        import sqlite3
+
+        conn = sqlite3.connect(path)
+        conn.executescript(
+            """
+            CREATE TABLE irradiance_reference (
+                ts_utc        INTEGER NOT NULL,
+                epoch         INTEGER NOT NULL DEFAULT 0,
+                measured_wm2  REAL    NOT NULL,
+                measured_from TEXT    NOT NULL,
+                reference_wm2 REAL,
+                reference_src TEXT,
+                fetched_at    INTEGER,
+                elevation_deg REAL,
+                azimuth_deg   REAL,
+                air_mass      REAL,
+                PRIMARY KEY (ts_utc, epoch)
+            );
+            CREATE INDEX ix_irradiance_reference_pending
+                ON irradiance_reference (ts_utc) WHERE reference_wm2 IS NULL;
+            """
+        )
+        conn.execute(
+            "INSERT INTO irradiance_reference"
+            " (ts_utc, epoch, measured_wm2, measured_from, reference_wm2,"
+            "  reference_src, elevation_deg, azimuth_deg)"
+            " VALUES (3600, 0, 300.0, 'live', 400.0, 'satellite', 30.0, 180.0)"
+        )
+        conn.execute("PRAGMA user_version = 12")
+        conn.commit()
+        conn.close()
+
+    def test_it_opens_and_gains_the_new_columns(self, tmp_path):
+        from core.store import Store
+
+        path = tmp_path / "old.db"
+        self.old_shape(path)
+
+        store = Store(path)
+        store.connect()
+        try:
+            # The row survived, and it is now visible to the new queue.
+            assert store.irradiance_hours_awaiting_cross(0, 7200) == [3600]
+            assert store.fill_irradiance_cross([(390.0, "era5", 3600, 0)]) == 1
+            pair = store.irradiance_pairs(0)[0]
+            assert pair["cross_wm2"] == pytest.approx(390.0)
+        finally:
+            store.close()
+
+    def test_opening_it_twice_is_harmless(self, tmp_path):
+        """The ALTER block runs on every connect, not once."""
+        from core.store import Store
+
+        path = tmp_path / "old.db"
+        self.old_shape(path)
+        for _ in range(3):
+            store = Store(path)
+            store.connect()
+            store.close()
+        store = Store(path)
+        store.connect()
+        try:
+            assert store.irradiance_hours_awaiting_cross(0, 7200) == [3600]
+        finally:
+            store.close()

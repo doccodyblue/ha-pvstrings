@@ -291,11 +291,10 @@ CREATE TABLE IF NOT EXISTS irradiance_reference (
 );
 CREATE INDEX IF NOT EXISTS ix_irradiance_reference_pending
     ON irradiance_reference (ts_utc) WHERE reference_wm2 IS NULL;
--- Its own queue: an hour that already has a primary reference is invisible to
--- the index above, so without this the 889 hours banked before the second
--- product existed would never be revisited.
-CREATE INDEX IF NOT EXISTS ix_irradiance_reference_cross_pending
-    ON irradiance_reference (ts_utc) WHERE cross_wm2 IS NULL;
+-- ``ix_irradiance_reference_cross_pending`` belongs with the ALTERs below,
+-- not here: this script runs first, so on a database that predates the
+-- column a partial index naming it fails -- and takes the whole setup with
+-- it.
 
 CREATE TABLE IF NOT EXISTS exclusions (
     ts_utc    INTEGER NOT NULL,
@@ -476,6 +475,14 @@ class Store:
                     self._conn.execute(
                         f"ALTER TABLE irradiance_reference ADD COLUMN {column} {kind}"
                     )
+            # Only now can a partial index name the column.  An hour that
+            # already has a primary reference is invisible to the pending
+            # index, so without this queue the whole back catalogue would
+            # never be revisited for a second opinion.
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS ix_irradiance_reference_cross_pending"
+                " ON irradiance_reference (ts_utc) WHERE cross_wm2 IS NULL"
+            )
             log_columns = {
                 row[1]
                 for row in self._conn.execute("PRAGMA table_info(forecast_log)")
