@@ -36,7 +36,7 @@ SHADING_THIN_DAYS = 120
 
 _LOGGER = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS string_geometry (
@@ -278,6 +278,11 @@ CREATE TABLE IF NOT EXISTS irradiance_reference (
     measured_from TEXT    NOT NULL,
     reference_wm2 REAL,
     reference_src TEXT,
+    -- A second product's reading of the same hour.  One reanalysis product
+    -- cannot state its own error; where two disagree, at least one is wrong,
+    -- and the band they disagree in keeps less of its correction.
+    cross_wm2     REAL,
+    cross_src     TEXT,
     fetched_at    INTEGER,
     elevation_deg REAL,
     azimuth_deg   REAL,
@@ -286,6 +291,11 @@ CREATE TABLE IF NOT EXISTS irradiance_reference (
 );
 CREATE INDEX IF NOT EXISTS ix_irradiance_reference_pending
     ON irradiance_reference (ts_utc) WHERE reference_wm2 IS NULL;
+-- Its own queue: an hour that already has a primary reference is invisible to
+-- the index above, so without this the 889 hours banked before the second
+-- product existed would never be revisited.
+CREATE INDEX IF NOT EXISTS ix_irradiance_reference_cross_pending
+    ON irradiance_reference (ts_utc) WHERE cross_wm2 IS NULL;
 
 CREATE TABLE IF NOT EXISTS exclusions (
     ts_utc    INTEGER NOT NULL,
@@ -455,6 +465,17 @@ class Store:
                 self._conn.execute(
                     "ALTER TABLE string_hourly ADD COLUMN chain_kwh REAL"
                 )
+            irradiance_columns = {
+                row[1]
+                for row in self._conn.execute(
+                    "PRAGMA table_info(irradiance_reference)"
+                )
+            }
+            for column, kind in (("cross_wm2", "REAL"), ("cross_src", "TEXT")):
+                if column not in irradiance_columns:
+                    self._conn.execute(
+                        f"ALTER TABLE irradiance_reference ADD COLUMN {column} {kind}"
+                    )
             log_columns = {
                 row[1]
                 for row in self._conn.execute("PRAGMA table_info(forecast_log)")
@@ -2185,6 +2206,51 @@ class Store:
         )
         return [int(row["ts_utc"]) for row in rows]
 
+    def irradiance_hours_awaiting_cross(
+        self, epoch: int, before_ts: int, limit: int = 500
+    ) -> list[int]:
+        """Banked hours that have a reference but no second opinion yet.
+
+        A separate queue on purpose: ``irradiance_hours_awaiting_reference``
+        only sees rows whose primary reference is still missing, so every hour
+        banked before the cross product existed would stay invisible to it
+        forever -- and the whole back catalogue would never gain the one
+        number that says how far the references can be trusted.
+        """
+        rows = self._query(
+            "SELECT ts_utc FROM irradiance_reference"
+            " WHERE epoch = ? AND cross_wm2 IS NULL AND ts_utc < ?"
+            " ORDER BY ts_utc LIMIT ?",
+            (int(epoch), int(before_ts), int(limit)),
+        )
+        return [int(row["ts_utc"]) for row in rows]
+
+    def fill_irradiance_cross(self, rows: Iterable[tuple[Any, ...]]) -> int:
+        """Attach a second product's reading to hours already banked.
+
+        Refuses to write the product that is already the primary reference:
+        a row whose two columns name the same source would report perfect
+        agreement and hand the band a confidence nobody measured.
+        """
+        # The source is bound twice: once to be written, once to be compared
+        # against the primary.  Building the fifth value here rather than
+        # asking every caller for it keeps the guard where it cannot be
+        # forgotten.
+        payload = [
+            (value, src, ts, epoch, src) for value, src, ts, epoch in rows
+        ]
+        if not payload:
+            return 0
+        with self._tx() as conn:
+            cur = conn.executemany(
+                "UPDATE irradiance_reference"
+                " SET cross_wm2 = ?, cross_src = ?"
+                " WHERE ts_utc = ? AND epoch = ? AND cross_wm2 IS NULL"
+                "   AND reference_src IS NOT ?",
+                payload,
+            )
+            return cur.rowcount
+
     def fill_irradiance_reference(self, rows: Iterable[tuple[Any, ...]]) -> int:
         """Attach the reference to hours already banked.
 
@@ -2215,7 +2281,8 @@ class Store:
         """
         rows = self._query(
             "SELECT ts_utc, measured_wm2, reference_wm2, reference_src,"
-            " elevation_deg, azimuth_deg, air_mass FROM irradiance_reference"
+            " cross_wm2, cross_src, elevation_deg, azimuth_deg, air_mass"
+            " FROM irradiance_reference"
             " WHERE epoch = ? AND reference_wm2 IS NOT NULL AND reference_wm2 >= ?"
             " ORDER BY ts_utc",
             (int(epoch), float(min_reference_wm2)),

@@ -139,3 +139,11 @@ get_weeks:
       selector:
         config_entry:
           integration: pvstrings
+
+new_irradiance_sensor:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: pvstrings

@@ -624,6 +624,16 @@
         }
       }
     },
+    "new_irradiance_sensor": {
+      "name": "Einstrahlungssensor hat sich geändert",
+      "description": "Teilt der Prüfung mit, dass die Station versetzt, getauscht, gereinigt oder neu verkabelt wurde. Messwerte von vorher behalten ihr eigenes Urteil und werden nie mit dem vermischt, was danach kommt -- ein frischer Sensor darf die Korrektur seines Vorgängers nicht erben. Über den neuen Sensor sagt die Prüfung nichts, bis sie eigene Evidenz gesammelt hat; das dauert ein paar Wochen.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Anlage",
+          "description": "Welche Anlage betroffen ist."
+        }
+      }
+    },
     "clear_price_history": {
       "name": "Aufgezeichnete Preise verwerfen",
       "description": "Vergisst jeden ab einem Datum aufgezeichneten Tarifpreis; die betroffenen Stunden fallen auf den Festpreis zurück. Für den Fall, dass der falsche Sensor eingetragen war oder einer in fremder Währung — ein falscher Preis wird aufgezeichnet, gefaltet und dann kompaktiert, und einen falschen Geldbetrag sieht man ihm nicht an.",

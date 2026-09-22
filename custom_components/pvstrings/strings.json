@@ -624,6 +624,16 @@
         }
       }
     },
+    "new_irradiance_sensor": {
+      "name": "The irradiance sensor changed",
+      "description": "Tell the check that the station was moved, replaced, cleaned or rewired. Readings from before now keep their own verdict and are never pooled with what comes after -- a fresh sensor must not inherit its predecessor's correction. The check says nothing about the new sensor until it has gathered its own evidence, which takes a few weeks.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Plant",
+          "description": "Which plant's sensor changed."
+        }
+      }
+    },
     "clear_price_history": {
       "name": "Clear recorded prices",
       "description": "Forget every tariff price recorded from a date on. Those hours fall back to the fixed price. Use it after pointing at the wrong sensor, or at one reporting a different currency -- a wrong price is recorded, folded and then compacted, and a wrong money figure is not one anybody spots by looking at it.",

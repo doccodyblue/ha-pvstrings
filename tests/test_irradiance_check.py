@@ -12,9 +12,11 @@ from __future__ import annotations
 import pytest
 
 from core.irradiance_check import (
+    MAX_APPLIED_FACTOR,
     MIN_BAND_DAYS,
     MIN_REFERENCE_WM2,
     assess,
+    calibration,
     rows_to_bank,
 )
 from core.physics import to_index
@@ -24,23 +26,34 @@ NOON = 1_750_000_000 // DAY * DAY + 12 * 3600
 
 
 def pairs(
-    ratio_by_elevation, days: int = 20, azimuth_of=lambda elevation: 170.0
+    ratio_by_elevation,
+    days: int = 20,
+    azimuth_of=lambda elevation: 170.0,
+    cross: float | None = 1.0,
 ):
-    """Synthetic hours: one per elevation per day, at a stated ratio."""
+    """Synthetic hours: one per elevation per day, at a stated ratio.
+
+    ``cross`` is what the second reference product says, as a multiple of the
+    first. The default is perfect agreement; ``None`` means the hour has no
+    cross reference at all, which is what a plant looks like before the
+    backfill has fetched both products.
+    """
     out = []
     for day in range(days):
         for index, (elevation, ratio) in enumerate(ratio_by_elevation):
             reference = 400.0
-            out.append(
-                {
-                    "ts_utc": NOON + day * DAY + index * 3600,
-                    "measured_wm2": reference * ratio,
-                    "reference_wm2": reference,
-                    "reference_src": "satellite_radiation_seamless",
-                    "elevation_deg": elevation,
-                    "azimuth_deg": azimuth_of(elevation),
-                }
-            )
+            row = {
+                "ts_utc": NOON + day * DAY + index * 3600,
+                "measured_wm2": reference * ratio,
+                "reference_wm2": reference,
+                "reference_src": "satellite_radiation_seamless",
+                "elevation_deg": elevation,
+                "azimuth_deg": azimuth_of(elevation),
+            }
+            if cross is not None:
+                row["cross_wm2"] = reference * cross
+                row["cross_src"] = "era5"
+            out.append(row)
     return out
 
 
@@ -352,3 +365,243 @@ class TestWhatGetsBanked:
         physics = self.engine()
         (row,) = rows_to_bank(physics, {NOON: 500.0}, 7, "live")
         assert row[1] == 7
+
+
+class TestTheCurveItWouldApply:
+    """From a verdict to a multiplier -- and usually to none at all.
+
+    The curve is the dangerous half of this feature: the diagnosis can only
+    be wrong on a card, an applied factor is wrong in the forecast. These
+    pin the three refusals that keep it from inventing one.
+    """
+
+    def test_a_healthy_sensor_gets_no_curve(self):
+        """Not recognised as healthy -- there is simply nothing to be sure of.
+
+        Trust is signal against noise, so a sensor that agrees with the
+        reference has a signal of zero and earns a correction of zero. The
+        no-op for a good sensor is a property of the arithmetic, not a case
+        anybody has to remember to handle.
+        """
+        verdict = assess(pairs([(10, 1.0), (20, 1.0), (30, 1.0), (40, 1.0), (50, 1.0)]))
+        curve = calibration(verdict)
+        assert not curve.active
+        assert curve.factor(20.0) == 1.0
+        assert curve.factor(75.0) == 1.0
+
+    def test_a_real_curve_is_applied_nearly_whole(self):
+        """Andy's plant, rounded: consistent days, so little is shrunk away."""
+        verdict = assess(
+            pairs([(9, 0.60), (20, 0.65), (30, 0.73), (40, 0.75), (55, 0.78)])
+        )
+        curve = calibration(verdict)
+        assert curve.active
+        # 1/0.78 = 1.282 at the top, and the days agree, so almost all of it.
+        assert curve.factor(55.0) == pytest.approx(1.28, abs=0.02)
+
+    def test_a_band_whose_days_disagree_keeps_less_of_its_correction(self):
+        """Scatter between days is the only honest measure of a band's claim.
+
+        Both bands below report the same ratio. One got it from days that
+        agree, the other from days that swing between 0.3 and 1.4 and happen
+        to average to it. The second has not earned the same correction, and
+        the factor -- not just the trust figure -- has to show that.
+        """
+        def rows(ratios):
+            out = []
+            for day, ratio in enumerate(ratios):
+                out.append(
+                    {
+                        "ts_utc": NOON + day * DAY,
+                        "measured_wm2": 400.0 * ratio,
+                        "reference_wm2": 400.0,
+                        "reference_src": "satellite_radiation_seamless",
+                        "cross_wm2": 400.0,
+                        "cross_src": "era5",
+                        "elevation_deg": 30.0,
+                        "azimuth_deg": 180.0,
+                    }
+                )
+            return out
+
+        calm = assess(rows([0.70] * 6)).bands[2]
+        wild = assess(rows([0.30, 1.40, 0.30, 1.40, 0.30, 0.50])).bands[2]
+        assert wild.trust < calm.trust
+        # What actually reaches the forecast:
+        assert 1.0 < wild.factor < calm.factor
+
+    def test_two_days_cannot_state_their_own_scatter(self):
+        """A variance over one day divides by zero; over two it is a coin toss.
+
+        Unreachable while a band needs five days to be usable at all -- which
+        is exactly why it is asserted here rather than left to that rule to
+        enforce from a distance.
+        """
+        from core.irradiance_check import Band
+
+        band = Band(25.0, 35.0, daily={1: [280.0, 400.0], 2: [300.0, 400.0]})
+        assert band.standard_error is None
+        assert band.trust == 0.0
+
+    def test_the_knot_sits_where_the_evidence_is(self):
+        """The top band is thirty degrees of sky a German plant barely enters.
+
+        Its arithmetic middle is 67 degrees; pinning the knot there would
+        stretch the curve across elevations no hour was recorded at.
+        """
+        verdict = assess(pairs([(20, 0.65), (48, 0.78)]))
+        top = verdict.bands[-1]
+        assert top.centre == pytest.approx(48.0, abs=0.5)
+
+    def test_the_curve_fades_out_beyond_its_evidence(self):
+        """Holding the last knot flat is itself a claim, and a big one.
+
+        A curve learned in autumn tops out around 35 degrees. Held flat, it
+        would apply that correction to a June noon at 60 degrees -- a sun
+        height and a season it has never seen. So it fades back to no
+        correction instead, over one band's width, which also means the sun
+        crossing the edge of the evidence does not step.
+        """
+        verdict = assess(pairs([(20, 0.65), (40, 0.75)]))
+        curve = calibration(verdict)
+        edge = curve.factor(40.0)
+        assert edge > 1.2
+
+        # Half a ramp out: half the correction left.
+        assert curve.factor(45.0) == pytest.approx(1.0 + (edge - 1.0) * 0.5)
+        # A full ramp out: nothing left, and nothing beyond either.
+        assert curve.factor(50.0) == pytest.approx(1.0)
+        assert curve.factor(89.0) == pytest.approx(1.0)
+        # Same at the bottom, where the true error is largest -- under-
+        # correcting an unseen dawn is the conservative direction.
+        assert curve.factor(10.0) == pytest.approx(1.0)
+        assert curve.factor(-5.0) == pytest.approx(1.0)
+
+    def test_the_fade_has_no_step_at_the_edge(self):
+        verdict = assess(pairs([(20, 0.65), (40, 0.75)]))
+        curve = calibration(verdict)
+        inside = curve.factor(40.0)
+        assert curve.factor(40.0001) == pytest.approx(inside, abs=1e-4)
+
+    def test_the_curve_names_itself_and_its_evidence(self):
+        """A reading has to be attributable to the curve that was in force.
+
+        The plausibility cache keys on the revision, the shadow branch
+        freezes it, and an observation learned under one curve must never be
+        pooled with one learned under another.
+        """
+        # Ratios below the cap, or both would flatten onto it and the two
+        # curves really would be the same.
+        curve = calibration(assess(pairs([(20, 0.75), (40, 0.80)])))
+        other = calibration(assess(pairs([(20, 0.72), (40, 0.80)])))
+        assert curve.revision != other.revision
+        assert curve.revision == calibration(
+            assess(pairs([(20, 0.75), (40, 0.80)]))
+        ).revision
+        assert calibration(assess(pairs([(20, 1.0), (40, 1.0)]))).revision == "unity"
+        low, high = curve.evidence_range
+        assert 15.0 < low < 25.0 and 35.0 < high < 45.0
+
+    def test_between_knots_it_interpolates_without_a_step(self):
+        verdict = assess(pairs([(20, 0.65), (40, 0.75)]))
+        curve = calibration(verdict)
+        a, b = curve.knots[0][0], curve.knots[1][0]
+        mid = curve.factor((a + b) / 2)
+        assert min(curve.factor(a), curve.factor(b)) < mid < max(
+            curve.factor(a), curve.factor(b)
+        )
+        # continuous at the knots themselves
+        assert curve.factor(a + 1e-9) == pytest.approx(curve.factor(a), abs=1e-6)
+
+    def test_an_extreme_correction_is_capped_and_says_so(self):
+        """Beyond a third low, the reference is the likelier culprit."""
+        verdict = assess(pairs([(20, 0.35), (40, 0.75)]))
+        curve = calibration(verdict)
+        assert curve.capped
+        assert max(f for _, f in curve.knots) == pytest.approx(MAX_APPLIED_FACTOR)
+
+    def test_one_band_alone_is_not_a_curve(self):
+        """A flat offset is the source bias model's job, and it does it better."""
+        verdict = assess(pairs([(30, 0.7)]))
+        curve = calibration(verdict)
+        assert len(curve.knots) <= 1
+        assert not curve.active
+        assert curve.factor(30.0) == 1.0
+
+
+class TestOneProductCannotStateItsOwnError:
+    """A reanalysis product is a model, not an instrument.
+
+    The scatter between days says how precisely the band's ratio is known. It
+    says nothing about whether the yardstick is straight, and more days do not
+    make it straighter -- so a band that has only ever been measured against
+    one product must not bend the curve.
+    """
+
+    def test_a_band_without_a_second_reference_bends_nothing(self):
+        verdict = assess(pairs([(20, 0.65), (40, 0.75)], cross=None))
+        assert all(b.cross_share == 0.0 for b in verdict.bands)
+        assert all(b.trust == 0.0 for b in verdict.bands if b.usable)
+        assert not calibration(verdict).active
+
+    def test_half_the_evidence_must_carry_one(self):
+        """Thin cross coverage is the same as none: the share is the gate."""
+        rows = pairs([(30, 0.7)], days=20, cross=1.0)
+        for row in rows[:16]:  # leave four of twenty with a cross
+            row.pop("cross_wm2")
+            row.pop("cross_src")
+        band = assess(rows).bands[2]
+        assert band.usable
+        assert band.cross_share == pytest.approx(0.2, abs=0.01)
+        assert band.trust == 0.0
+
+    def test_a_cross_product_that_reports_nothing_is_not_a_cross_product(self):
+        """Unreachable through assess(), which only banks positive readings.
+
+        Asserted directly anyway: the guard is what stops a None from
+        reaching the quadrature, and a fold that one day banks a zero would
+        otherwise crash the whole learn cycle rather than decline one band.
+        """
+        from core.irradiance_check import Band
+
+        band = Band(
+            25.0,
+            35.0,
+            days=20,
+            measured_kwh=1.4,
+            reference_kwh=2.0,
+            cross_primary_kwh=2.0,
+            cross_kwh=0.0,
+            daily={d: [280.0, 400.0] for d in range(20)},
+        )
+        assert band.usable
+        assert band.cross_share == pytest.approx(1.0)
+        assert band.systematic is None
+        assert band.trust == 0.0
+
+    def test_products_that_disagree_shrink_the_correction(self):
+        """Where they disagree, at least one of them is wrong."""
+        agree = assess(pairs([(30, 0.7)], cross=1.0)).bands[2]
+        differ = assess(pairs([(30, 0.7)], cross=1.25)).bands[2]
+        assert differ.systematic > agree.systematic
+        assert differ.trust < agree.trust
+        assert 1.0 < differ.factor < agree.factor
+
+    def test_it_does_not_save_a_sensor_from_a_shared_reference_error(self):
+        """The limit of this safeguard, pinned so nobody oversells it.
+
+        Both products five percent high, agreeing perfectly: the disagreement
+        term is zero, and a healthy sensor is handed a correction. Survivable
+        for the shadow branch -- a level error is the one thing the log-ratio
+        layer resolves well -- but it is not protection, and a test that
+        claimed otherwise would be a lie.
+        """
+        # Sensor right at 500, both references reading 526.3.
+        rows = pairs([(20, 1.0), (40, 1.0)], cross=1.0)
+        for row in rows:
+            row["reference_wm2"] = row["measured_wm2"] / 0.95
+            row["cross_wm2"] = row["reference_wm2"]
+        verdict = assess(rows)
+        band = next(b for b in verdict.bands if b.usable)
+        assert band.systematic == pytest.approx(0.0, abs=1e-9)
+        assert band.factor == pytest.approx(1.0 / 0.95, abs=0.01)

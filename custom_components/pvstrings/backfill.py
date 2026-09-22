@@ -280,75 +280,129 @@ def _statistics_unit(hass: HomeAssistant, entity_id: str) -> str | None:
     return state.attributes.get("unit_of_measurement")
 
 
-async def _async_fill_reference(
-    hass: HomeAssistant, coordinator: Any, first: int, last: int
-) -> int:
-    """Fetch a reference for every banked hour that still lacks one."""
-    epoch = coordinator.store.get_cursor(CURSOR_IRRADIANCE_EPOCH, default=0)
-    pending = await hass.async_add_executor_job(
-        coordinator.store.irradiance_hours_awaiting_reference,
-        epoch,
-        last + HOUR,
-        20000,
-    )
-    if not pending:
-        return 0
-
+async def _async_series(
+    hass: HomeAssistant,
+    coordinator: Any,
+    name: str,
+    url: str,
+    model: str,
+    first: int,
+    last: int,
+) -> dict[int, float]:
+    """One product's hourly irradiance over the range, keyed by hour start."""
     plant = coordinator.plant
     session = async_get_clientsession(hass)
-    wanted = set(pending)
-    filled = 0
-    now = int(datetime.now(timezone.utc).timestamp())
+    params = {
+        "latitude": plant.latitude,
+        "longitude": plant.longitude,
+        "start_date": datetime.fromtimestamp(first, timezone.utc).date().isoformat(),
+        # The archive labels an hour by its end, so the measurement of
+        # 23:00-24:00 needs the stamp at 00:00 the next day.  Asking only to
+        # ``last`` leaves the final hour of every request unfilled -- which in
+        # Sydney is the middle of the afternoon.
+        "end_date": datetime.fromtimestamp(last + HOUR, timezone.utc)
+        .date()
+        .isoformat(),
+        "hourly": "shortwave_radiation",
+        "timezone": "UTC",
+        "timeformat": "unixtime",
+        "models": model,
+    }
+    try:
+        async with session.get(url, params=params, timeout=ARCHIVE_TIMEOUT) as response:
+            response.raise_for_status()
+            payload = await response.json()
+    except Exception:  # noqa: BLE001 - a missing reference is not an error
+        _LOGGER.debug("pvstrings: reference %s unavailable", name)
+        return {}
 
+    hourly = payload.get("hourly") or {}
+    stamps = hourly.get("time") or []
+    values = hourly.get("shortwave_radiation") or []
+    # The archive labels an hour with its end, as the forecast API does.
+    return {
+        int(stamp) - HOUR: float(value)
+        for stamp, value in zip(stamps, values)
+        if value is not None
+    }
+
+
+async def _async_fill_reference(
+    hass: HomeAssistant, coordinator: Any, first: int, last: int
+) -> tuple[int, int]:
+    """Give every banked hour a reference, and a second opinion on it.
+
+    Both products are fetched, not just the first that answers: one
+    reanalysis product cannot state its own error, and the hours banked
+    before the second product existed have their own queue because the
+    primary one cannot see them.
+    """
+    store = coordinator.store
+    epoch = store.get_cursor(CURSOR_IRRADIANCE_EPOCH, default=0)
+    horizon = last + HOUR
+    pending, crossless = await hass.async_add_executor_job(
+        _irradiance_queues, store, epoch, horizon
+    )
+    if not pending and not crossless:
+        return 0, 0
+
+    now = int(datetime.now(timezone.utc).timestamp())
+    series: dict[str, dict[int, float]] = {}
     for name, url, model in IRRADIANCE_REFERENCES:
+        series[name] = await _async_series(
+            hass, coordinator, name, url, model, first, last
+        )
+
+    filled = 0
+    wanted = set(pending)
+    for name, _url, _model in IRRADIANCE_REFERENCES:
         if not wanted:
             break
-        params = {
-            "latitude": plant.latitude,
-            "longitude": plant.longitude,
-            "start_date": datetime.fromtimestamp(first, timezone.utc)
-            .date()
-            .isoformat(),
-            # The archive labels an hour by its end, so the measurement of
-            # 23:00-24:00 needs the stamp at 00:00 the next day.  Asking only
-            # to ``last`` leaves the final hour of every request unfilled --
-            # which in Sydney is the middle of the afternoon.
-            "end_date": datetime.fromtimestamp(last + HOUR, timezone.utc)
-            .date()
-            .isoformat(),
-            "hourly": "shortwave_radiation",
-            "timezone": "UTC",
-            "timeformat": "unixtime",
-            "models": model,
-        }
-        try:
-            async with session.get(
-                url, params=params, timeout=ARCHIVE_TIMEOUT
-            ) as response:
-                response.raise_for_status()
-                payload = await response.json()
-        except Exception:  # noqa: BLE001 - a missing reference is not an error
-            _LOGGER.debug("pvstrings: reference %s unavailable", name)
-            continue
-
-        hourly = payload.get("hourly") or {}
-        stamps = hourly.get("time") or []
-        values = hourly.get("shortwave_radiation") or []
-        # The archive labels an hour with its end, as the forecast API does.
         updates = [
-            (float(value), name, now, int(stamp) - HOUR, int(epoch))
-            for stamp, value in zip(stamps, values)
-            if value is not None and (int(stamp) - HOUR) in wanted
+            (value, name, now, hour, int(epoch))
+            for hour, value in series[name].items()
+            if hour in wanted
+        ]
+        if not updates:
+            continue
+        filled += await hass.async_add_executor_job(
+            store.fill_irradiance_reference, updates
+        )
+        wanted -= {row[3] for row in updates}
+
+    # Whatever is still short of a second opinion, including everything banked
+    # before this column existed.  The store refuses a product that is already
+    # the primary, so offering every product in turn is safe.
+    crossed = 0
+    outstanding = set(crossless) | (set(pending) - wanted)
+    for name, _url, _model in IRRADIANCE_REFERENCES:
+        if not outstanding:
+            break
+        updates = [
+            (value, name, hour, int(epoch))
+            for hour, value in series[name].items()
+            if hour in outstanding
         ]
         if not updates:
             continue
         written = await hass.async_add_executor_job(
-            coordinator.store.fill_irradiance_reference, updates
+            store.fill_irradiance_cross, updates
         )
-        filled += written
-        wanted -= {row[3] for row in updates}
+        crossed += written
+        if written:
+            outstanding -= {row[2] for row in updates}
 
-    return filled
+    return filled, crossed
+
+
+def _irradiance_queues(
+    store: Any, epoch: int, horizon: int
+) -> tuple[list[int], list[int]]:
+    """Both waiting lists in one executor hop."""
+    return (
+        store.irradiance_hours_awaiting_reference(epoch, horizon, 20000),
+        store.irradiance_hours_awaiting_cross(epoch, horizon, 20000),
+    )
 
 
 async def async_backfill_irradiance_check(
@@ -400,7 +454,7 @@ async def async_backfill_irradiance_check(
             )
         ),
     )
-    filled = await _async_fill_reference(hass, coordinator, first, last)
+    filled, crossed = await _async_fill_reference(hass, coordinator, first, last)
 
     epoch = coordinator.store.get_cursor(CURSOR_IRRADIANCE_EPOCH, default=0)
     verdict = await hass.async_add_executor_job(
@@ -415,6 +469,7 @@ async def async_backfill_irradiance_check(
         "hours_measured": len(measured),
         "hours_banked": banked,
         "hours_referenced": filled,
+        "hours_cross_referenced": crossed,
         # The answer, in the same call.  Without it the owner runs a service
         # that reports three counts and has to go looking for the result on a
         # sensor that only refreshes on the hour.

@@ -95,6 +95,7 @@ from .const import (
     ATTR_FROM_DATE,
     SERVICE_BACKFILL,
     SERVICE_BACKFILL_IRRADIANCE,
+    SERVICE_NEW_IRRADIANCE_SENSOR,
     SERVICE_CLEAR_PRICES,
     SERVICE_GET_DAY,
     SERVICE_GET_WEEKS,
@@ -550,6 +551,36 @@ def _async_register_services(hass: HomeAssistant) -> None:
             hass, coordinator, call.data["days"]
         )
 
+    async def _new_irradiance_sensor(call: ServiceCall) -> dict[str, Any]:
+        from .core.irradiance_check import (
+            CURSOR_IRRADIANCE_EPOCH,
+            CURSOR_IRRADIANCE_EPOCH_SINCE,
+        )
+
+        coordinator = _coordinator_for(hass, call.data[ATTR_CONFIG_ENTRY_ID])
+        store = coordinator.store
+        epoch = int(store.get_cursor(CURSOR_IRRADIANCE_EPOCH, default=0)) + 1
+        now = int(dt_util.utcnow().timestamp())
+
+        def _bump() -> None:
+            # The start matters as much as the counter: the live banking
+            # reaches back two days, and without a floor the old instrument's
+            # last hours would be stamped with the new epoch.
+            store.set_cursor(CURSOR_IRRADIANCE_EPOCH, epoch)
+            store.set_cursor(CURSOR_IRRADIANCE_EPOCH_SINCE, now)
+
+        await hass.async_add_executor_job(_bump)
+        coordinator.invalidate_irradiance_verdict()
+        return {
+            "epoch": epoch,
+            "since": dt_util.utc_from_timestamp(now).isoformat(),
+            "note": (
+                "Hours measured before now stay where they are and keep their"
+                " own verdict. The new sensor starts with no evidence, so the"
+                " check says nothing about it until it has gathered some."
+            ),
+        }
+
     async def _get_day(call: ServiceCall) -> dict[str, Any]:
         from .core.history import day_payload
 
@@ -625,6 +656,13 @@ def _async_register_services(hass: HomeAssistant) -> None:
         SERVICE_BACKFILL_IRRADIANCE,
         _backfill_irradiance_check,
         schema=BACKFILL_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_NEW_IRRADIANCE_SENSOR,
+        _new_irradiance_sensor,
+        schema=ENTRY_SERVICE_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
     )
     # Read-only and response-only: nothing lands in the recorder, and no admin

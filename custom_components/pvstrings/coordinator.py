@@ -54,8 +54,10 @@ from .core.health import Health, learn_summary
 from .core.history import close_weeks
 from .core.irradiance_check import (
     CURSOR_IRRADIANCE_EPOCH,
+    CURSOR_IRRADIANCE_EPOCH_SINCE,
     MIN_SAMPLES_PER_HOUR,
     assess as assess_irradiance,
+    calibration as irradiance_calibration,
     rows_to_bank,
 )
 from .core.physics import PhysicsEngine, clamp_to_daylight, to_index
@@ -347,6 +349,7 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         self.last_learn_stats = LearnStats()
         self._irradiance_verdict_hour: int | None = None
         self._irradiance_verdict_memo: dict[str, Any] = {}
+        self._reference_fill_day: int | None = None
         self.health = Health()
 
     # ------------------------------------------------------------------ #
@@ -517,6 +520,7 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
                 )
             except Exception:  # noqa: BLE001 - a diagnosis is not a forecast
                 _LOGGER.exception("pvstrings: banking irradiance hours failed")
+            await self._async_top_up_references(now)
 
         await self._async_maybe_purge(now)
 
@@ -1074,6 +1078,47 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
     # is the irradiance sensor telling the truth?
     # ------------------------------------------------------------------ #
 
+    #: Days of recently banked hours the daily top-up tries to complete.  The
+    #: archive trails real time by about a week, so yesterday's hours are not
+    #: available yet and a window shorter than the lag would never catch
+    #: anything.  The back catalogue is the manual service's job, not this
+    #: one's: it is the owner who knows whether the sensor stood still.
+    REFERENCE_TOP_UP_DAYS = 10
+
+    async def _async_top_up_references(self, now: datetime) -> None:
+        """Once a day, fetch what the archive has caught up with.
+
+        Without this the live banking produces hours that never gain a
+        reference, so the pairs stay incomplete and the verdict never learns
+        anything new -- the owner would have to run the service by hand to
+        see a single day's progress.
+        """
+        day = int(now.timestamp()) // 86400
+        if self._reference_fill_day == day:
+            return
+        self._reference_fill_day = day
+        if not self.plant.weather_sources.ghi_entity:
+            return
+        from .backfill import _async_fill_reference
+
+        end = floor_hour(int(now.timestamp()))
+        start = end - self.REFERENCE_TOP_UP_DAYS * 86400
+        try:
+            filled, crossed = await _async_fill_reference(
+                self.hass, self, start, end
+            )
+        except Exception:  # noqa: BLE001 - a diagnosis is not a forecast
+            _LOGGER.exception("pvstrings: topping up irradiance references failed")
+            return
+        if filled or crossed:
+            self.invalidate_irradiance_verdict()
+            _LOGGER.info(
+                "pvstrings: %s: %s reference hours, %s cross-checked",
+                self.plant.name,
+                filled,
+                crossed,
+            )
+
     #: How far back the live banking reaches on each pass.  Two days, so a
     #: restart or a night of downtime does not leave a permanent gap: the
     #: store refuses duplicates, so re-reading them costs one grouped query.
@@ -1088,18 +1133,20 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         stays put.
         """
         end = floor_hour(now_ts)
-        rows = self.store.measured_ghi_hours(
-            end - self.BANK_LOOKBACK_HOURS * HOUR, end, MIN_SAMPLES_PER_HOUR
-        )
+        epoch = self.store.get_cursor(CURSOR_IRRADIANCE_EPOCH, default=0)
+        # The epoch's own start is the floor, not just the lookback window.
+        # Without it, telling the integration "I replaced the sensor" would
+        # drag the last two days of the *old* instrument into the new epoch --
+        # and a healthy replacement would inherit its predecessor's verdict.
+        since = self.store.get_cursor(CURSOR_IRRADIANCE_EPOCH_SINCE, default=0)
+        start = max(end - self.BANK_LOOKBACK_HOURS * HOUR, int(since))
+        if start >= end:
+            return 0
+        rows = self.store.measured_ghi_hours(start, end, MIN_SAMPLES_PER_HOUR)
         if not rows:
             return 0
         return self.store.bank_irradiance_hours(
-            rows_to_bank(
-                self.physics,
-                rows,
-                self.store.get_cursor(CURSOR_IRRADIANCE_EPOCH, default=0),
-                "live",
-            )
+            rows_to_bank(self.physics, rows, epoch, "live")
         )
 
     def invalidate_irradiance_verdict(self) -> None:
@@ -1132,7 +1179,16 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         payload["hours_awaiting_reference"] = len(
             self.store.irradiance_hours_awaiting_reference(epoch, hour, 20000)
         )
+        payload["hours_awaiting_cross"] = len(
+            self.store.irradiance_hours_awaiting_cross(epoch, hour, 20000)
+        )
+        # The curve the verdict would justify.  Reported, not applied: what
+        # reads it today is a card, and the shadow branch when it exists.
+        payload["calibration"] = irradiance_calibration(verdict).as_dict()
         payload["epoch"] = epoch
+        payload["epoch_since"] = int(
+            self.store.get_cursor(CURSOR_IRRADIANCE_EPOCH_SINCE, default=0)
+        )
         self._irradiance_verdict_hour = hour
         self._irradiance_verdict_memo = payload
         return payload

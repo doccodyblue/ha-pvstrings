@@ -2140,3 +2140,70 @@ class TestMeasuredGhiHours:
         self.fill(store, 3600, [100.0] * 12)
         self.fill(store, 7200, [400.0] * 12)
         assert list(store.measured_ghi_hours(0, 7200, min_samples=1)) == [3600]
+
+
+class TestTheSecondReference:
+    """One reanalysis product cannot state its own error.
+
+    A second product's reading of the same hour is what turns "the sensor
+    disagrees with the model" into "and here is how far the models disagree
+    with each other" -- the only part of the uncertainty that more days
+    cannot shrink.
+    """
+
+    @staticmethod
+    def bank(store, hours, epoch=0):
+        store.bank_irradiance_hours(
+            [
+                (h, epoch, 300.0, "live", 30.0, 180.0, None)
+                for h in hours
+            ]
+        )
+
+    def test_the_back_catalogue_is_visible_to_its_own_queue(self, store):
+        """The hours banked before the cross product existed.
+
+        They already have a primary reference, so the pending index cannot
+        see them -- and without a second queue the whole back catalogue would
+        never gain a second opinion.
+        """
+        self.bank(store, [3600, 7200])
+        store.fill_irradiance_reference(
+            [(400.0, "satellite", 99, 3600, 0), (410.0, "satellite", 99, 7200, 0)]
+        )
+        assert store.irradiance_hours_awaiting_reference(0, 10800) == []
+        assert store.irradiance_hours_awaiting_cross(0, 10800) == [3600, 7200]
+
+    def test_a_product_is_not_its_own_second_opinion(self, store):
+        """Two columns naming the same source would report perfect agreement."""
+        self.bank(store, [3600])
+        store.fill_irradiance_reference([(400.0, "satellite", 99, 3600, 0)])
+        assert store.fill_irradiance_cross([(390.0, "satellite", 3600, 0)]) == 0
+        assert store.fill_irradiance_cross([(390.0, "era5", 3600, 0)]) == 1
+        assert store.irradiance_hours_awaiting_cross(0, 10800) == []
+
+    def test_a_cross_is_written_once(self, store):
+        """A re-run must not turn one observation into two."""
+        self.bank(store, [3600])
+        store.fill_irradiance_reference([(400.0, "satellite", 99, 3600, 0)])
+        store.fill_irradiance_cross([(390.0, "era5", 3600, 0)])
+        assert store.fill_irradiance_cross([(999.0, "era5", 3600, 0)]) == 0
+        pair = store.irradiance_pairs(0)[0]
+        assert pair["cross_wm2"] == pytest.approx(390.0)
+
+    def test_pairs_carry_both_products(self, store):
+        self.bank(store, [3600])
+        store.fill_irradiance_reference([(400.0, "satellite", 99, 3600, 0)])
+        store.fill_irradiance_cross([(390.0, "era5", 3600, 0)])
+        pair = store.irradiance_pairs(0)[0]
+        assert pair["reference_src"] == "satellite"
+        assert pair["cross_src"] == "era5"
+
+    def test_epochs_keep_their_own_queues(self, store):
+        """A sensor swap must not let the old instrument's hours be filled."""
+        self.bank(store, [3600], epoch=0)
+        self.bank(store, [7200], epoch=1)
+        store.fill_irradiance_reference([(400.0, "satellite", 99, 3600, 0)])
+        store.fill_irradiance_reference([(400.0, "satellite", 99, 7200, 1)])
+        assert store.irradiance_hours_awaiting_cross(1, 10800) == [7200]
+        assert store.fill_irradiance_cross([(390.0, "era5", 7200, 0)]) == 0
