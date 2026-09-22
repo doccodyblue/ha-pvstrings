@@ -155,6 +155,19 @@ GET_DAY_SCHEMA = ENTRY_SERVICE_SCHEMA.extend({vol.Required(ATTR_DATE): cv.date})
 RESET_LEARNING_SCHEMA = ENTRY_SERVICE_SCHEMA.extend(
     {vol.Optional(ATTR_STRING_ID): cv.string}
 )
+#: The irradiance check has its own bounds, and they have to be the ones the
+#: UI offers: a service called from a script without ``days`` would otherwise
+#: reach three times as far back as the form suggests, over a period the owner
+#: never said the sensor stood still for.
+IRRADIANCE_BACKFILL_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
+        vol.Optional("days", default=180): vol.All(
+            vol.Coerce(int), vol.Range(min=14, max=730)
+        ),
+    }
+)
+
 BACKFILL_SCHEMA = vol.Schema(
     {
         vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
@@ -589,8 +602,10 @@ def _async_register_services(hass: HomeAssistant) -> None:
         rows = await hass.async_add_executor_job(
             coordinator.store.experiment_hours
         )
-        offset = coordinator.engine._tz.utcoffset(dt_util.utcnow())
-        offset_s = 0 if offset is None else int(offset.total_seconds())
+        # The zone itself, not one offset frozen at the moment of asking: a
+        # six-week autumn trial crosses the clock change, and a September noon
+        # would otherwise be filed as eleven o'clock.
+        zone = coordinator.engine._tz
         out: dict[str, Any] = {
             "running": coordinator.shadow is not None,
             # The question a reader actually has, answered without inference:
@@ -604,7 +619,7 @@ def _async_register_services(hass: HomeAssistant) -> None:
             ),
         }
         for horizon in ("da", "now"):
-            result = compare(rows, offset_s, horizon)
+            result = compare(rows, zone, horizon)
             result["verdict"] = decides(result)
             out["day_ahead" if horizon == "da" else "short_term"] = result
         out["note"] = (
@@ -689,7 +704,7 @@ def _async_register_services(hass: HomeAssistant) -> None:
         DOMAIN,
         SERVICE_BACKFILL_IRRADIANCE,
         _backfill_irradiance_check,
-        schema=BACKFILL_SCHEMA,
+        schema=IRRADIANCE_BACKFILL_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register(

@@ -1899,15 +1899,24 @@ class Store:
 
         Key shapes owned by the learning layer: scope "string" keys on the
         bare id, "string_daypart" on ``id|part``.
+
+        Every branch's copy, not only the published one's.  A branch running
+        beside it holds the same string under ``string#cal`` -- and rebuilds
+        itself from the database afterwards, so a scope left behind would
+        walk straight back into memory and the reset would appear not to have
+        worked.
         """
         with self._tx() as conn:
             conn.execute(
-                "DELETE FROM model_effects WHERE scope = 'string' AND key = ?",
+                "DELETE FROM model_effects"
+                " WHERE (scope = 'string' OR scope LIKE 'string#%') AND key = ?",
                 (string_id,),
             )
             conn.execute(
-                "DELETE FROM model_effects "
-                "WHERE scope = 'string_daypart' AND key LIKE ? || '|%'",
+                "DELETE FROM model_effects"
+                " WHERE (scope = 'string_daypart'"
+                "        OR scope LIKE 'string_daypart#%')"
+                "   AND key LIKE ? || '|%'",
                 (string_id,),
             )
 

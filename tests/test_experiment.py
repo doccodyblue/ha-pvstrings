@@ -11,6 +11,7 @@ import pytest
 
 from core.experiment import (
     MIN_CLEAR_DAYS,
+    _local_hour,
     MIN_TRIAL_DAYS,
     clear_hours,
     clearness,
@@ -240,3 +241,71 @@ class TestTheArithmetic:
         assert list(profile(clear_hours(rows), "live_da_kwh")) == [0]
         shifted = profile(clear_hours(rows, 2 * 3600), "live_da_kwh", 2 * 3600)
         assert list(shifted) == [2]
+
+
+class TestOneSampleForBothBranches:
+    """Every figure has to come from the same hours, not merely the same
+    hours *of the day*.
+
+    A branch that failed for most of the trial still appears at every hour of
+    the day, so an intersection on the clock lets it be judged on the days it
+    happened to survive -- while the day count and the level come from the
+    other branch's fuller record.
+    """
+
+    def test_a_branch_that_mostly_failed_cannot_win_on_what_is_left(self):
+        rows = []
+        for day in range(45):
+            row = hour_row(day, 12, 1.0, 2.0, 1.0)
+            if day >= 5:
+                # It ran for five days and then stopped answering.
+                row["shadow_da_kwh"] = None
+            rows.append(row)
+
+        result = compare(rows)
+        # Judged on the five days both branches actually covered, which is
+        # not enough to conclude anything.
+        assert result["days"] <= 5
+        assert not decides(result)["decided"]
+
+    def test_the_level_comes_from_the_same_hours_as_the_profile(self):
+        rows = []
+        for day in range(45):
+            rows.append(hour_row(day, 12, 1.0, 1.0, 1.0))
+            # An hour only the live branch reached, and wildly wrong.
+            miss = hour_row(day, 15, 1.0, 5.0, None)
+            rows.append(miss)
+        result = compare(rows)
+        assert result["live_level"] == pytest.approx(1.0, abs=0.01)
+
+
+class TestTheClockChange:
+    """A six-week autumn trial crosses it, and an Australian one too."""
+
+    def test_an_hour_keeps_its_local_place_across_the_change(self):
+        from zoneinfo import ZoneInfo
+
+        berlin = ZoneInfo("Europe/Berlin")
+        # 12:00 local on either side of the last Sunday in October 2026.
+        summer = int(
+            __import__("datetime").datetime(
+                2026, 9, 15, 12, tzinfo=berlin
+            ).timestamp()
+        )
+        winter = int(
+            __import__("datetime").datetime(
+                2026, 11, 15, 12, tzinfo=berlin
+            ).timestamp()
+        )
+        rows = [
+            {"ts_utc": summer, "actual_kwh": 1.0, "live_da_kwh": 1.0,
+             "shadow_da_kwh": 1.0, "clearness": 0.9, "censored": 0},
+            {"ts_utc": winter, "actual_kwh": 1.0, "live_da_kwh": 1.0,
+             "shadow_da_kwh": 1.0, "clearness": 0.9, "censored": 0},
+        ]
+        hours = {_local_hour(row["ts_utc"], berlin) for row in rows}
+        assert hours == {12}
+
+        # A fixed offset taken in winter files the September hour at eleven.
+        frozen = {_local_hour(row["ts_utc"], 3600) for row in rows}
+        assert frozen == {11, 12}

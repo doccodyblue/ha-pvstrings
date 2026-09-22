@@ -2067,3 +2067,57 @@ class TestTheSharedMapReachesBothBranches:
         shade.learn(NOON + 3 * HOUR + DAY_SECONDS)
 
         assert shade._shading_fitted_day != fitted_at
+
+
+class TestTheTrialCannotChangeTheForecast:
+    """The rule that makes a trial safe to ship to someone else's roof.
+
+    A second branch running beside the forecast must leave it bit for bit as
+    it was. The first version broke this quietly: both branches learned on
+    the union of their curtailment verdicts, which looked like fairness and
+    meant the published model discarded hours it would otherwise have learned
+    from, because a branch nobody asked about disagreed about them.
+    """
+
+    def test_a_peer_verdict_never_reaches_the_learning(
+        self, seeded_store, plant
+    ):
+        engine = ForecastEngine(plant, seeded_store)
+        engine.load_models()
+        TestLearningCycle()._prepare_day(engine, seeded_store, ratio=0.80)
+        alone = engine.learn(DAY_START + 24 * HOUR, max_hours=24)
+        assert alone.observations_used > 0, "the day must be learnable at all"
+        learned_alone = engine.model.factor("s1", "clear", "midday")
+
+        # The same day again from the same starting point, with a peer that
+        # calls every hour curtailed.  The models have to be wound back too,
+        # or the second run would simply be learning the day twice.
+        seeded_store.clear_effects(None)
+        seeded_store.set_cursor(CURSOR_LEARN, 0)
+        beside_engine = ForecastEngine(plant, seeded_store)
+        beside_engine.load_models()
+        beside_engine.censored_hours = {
+            (hour, string.string_id)
+            for hour in range(DAY_START, DAY_START + 25 * HOUR, HOUR)
+            for string in plant.strings
+        }
+        beside = beside_engine.learn(DAY_START + 24 * HOUR, max_hours=24)
+
+        assert beside.observations_used == alone.observations_used
+        assert beside.censored_hours == alone.censored_hours
+        assert beside_engine.model.factor(
+            "s1", "clear", "midday"
+        ) == pytest.approx(learned_alone)
+
+    def test_the_archive_still_excludes_what_either_branch_doubted(
+        self, seeded_store, plant
+    ):
+        """Where the two verdicts do meet: the comparison, not the training."""
+        from core.experiment import archive
+
+        engine = ForecastEngine(plant, seeded_store)
+        engine.load_models()
+        TestTheTrialArchive.seed(seeded_store, engine, NOON)
+        engine.censored_hours = {(NOON, "s1")}
+        archive(engine, NOON, NOON + HOUR)
+        assert seeded_store.experiment_hours()[0]["censored"] == 1

@@ -33,6 +33,7 @@ whichever branch is being scored.
 from __future__ import annotations
 
 import math
+from datetime import datetime
 from typing import Any, Iterable, Mapping, Sequence
 
 from .quality import VALUE_MEASURED
@@ -60,8 +61,18 @@ def clearness(measured_wm2: float | None, clearsky_wm2: float | None) -> float |
     return float(measured_wm2) / float(clearsky_wm2)
 
 
-def _local_hour(ts_utc: int, offset_s: int) -> int:
-    return ((int(ts_utc) + offset_s) // HOUR) % 24
+def _local_hour(ts_utc: int, offset: Any) -> int:
+    """The hour of the day a timestamp fell in, where the plant stands.
+
+    ``offset`` is a zone, or a fixed number of seconds for callers that have
+    no zone to hand.  A single offset for a whole archive is what a six-week
+    autumn trial cannot use: after the clocks go back, a September noon would
+    be filed as eleven o'clock and two different hours of the day would share
+    a bucket.
+    """
+    if isinstance(offset, (int, float)):
+        return ((int(ts_utc) + int(offset)) // HOUR) % 24
+    return datetime.fromtimestamp(int(ts_utc), tz=offset).hour
 
 
 def clear_hours(
@@ -223,13 +234,21 @@ def compare(
     the nowcast.  They answer different questions and the trial reports both.
     """
     suffix = "_da_kwh" if horizon == "da" else "_kwh"
-    selected = clear_hours(rows, offset_s)
+    # One sample, built before anything is measured on it.  Taking the hours
+    # of the day the two branches happen to share is not enough: a branch
+    # that failed for ten of fifteen days still appears in every hour of the
+    # day, and every figure -- its profile, its level, the day count -- would
+    # then come from a different set of hours than the branch it is compared
+    # with.  A counterexample scored 100 percent improvement on five real
+    # days of evidence.
+    selected = [
+        row
+        for row in clear_hours(rows, offset_s)
+        if row.get(f"live{suffix}") is not None
+        and row.get(f"shadow{suffix}") is not None
+    ]
     live = profile(selected, f"live{suffix}", offset_s)
     shadow = profile(selected, f"shadow{suffix}", offset_s)
-
-    # Only the hours of the day both branches reached: a branch that failed
-    # for a few hours would otherwise be judged on an easier set than the one
-    # it is being compared with.
     shared = sorted(set(live) & set(shadow))
     live = {hour: live[hour] for hour in shared}
     shadow = {hour: shadow[hour] for hour in shared}
@@ -279,9 +298,16 @@ def archive(engine: Any, start_ts: int, end_ts: int) -> int:
         return 0
 
     day_ahead: dict[tuple[int, str], Any] = {}
-    for day_start in _local_days(engine, start_ts, end_ts):
+    for day_start, day_end in _local_days(engine, start_ts, end_ts):
         cutoff = engine.day_ahead_cutoff(day_start)
-        for row in store.forecast_vs_actual_before(start_ts, end_ts, cutoff):
+        # Each cutoff over its own day, not over the whole window.  A pass
+        # catching up on several days would otherwise re-query every earlier
+        # day with a later cutoff and overwrite its evening-before figure
+        # with one issued the same morning -- and the trial would judge
+        # short-term forecasts as if they were day-ahead ones.
+        for row in store.forecast_vs_actual_before(
+            max(day_start, start_ts), min(day_end, end_ts), cutoff
+        ):
             day_ahead[(int(row["ts_utc"]), row["string_id"])] = row
 
     measured = store.measured_ghi_hours(start_ts, end_ts, min_samples=1)
@@ -312,16 +338,19 @@ def archive(engine: Any, start_ts: int, end_ts: int) -> int:
     return store.archive_experiment_hours(rows)
 
 
-def _local_days(engine: Any, start_ts: int, end_ts: int) -> list[int]:
-    """The local midnights the window touches, for the day-ahead cutoffs."""
+def _local_days(
+    engine: Any, start_ts: int, end_ts: int
+) -> list[tuple[int, int]]:
+    """The local days the window touches, each as its own half-open range."""
     from .forecast import local_midnight
 
     tz = engine._tz
-    out: list[int] = []
+    out: list[tuple[int, int]] = []
     day = local_midnight(start_ts, 0, tz)
     while day < end_ts:
-        out.append(day)
-        day = local_midnight(day, 1, tz)
+        nxt = local_midnight(day, 1, tz)
+        out.append((day, nxt))
+        day = nxt
     return out
 
 

@@ -2331,3 +2331,29 @@ class TestTheThirdForecastVariant:
         store.log_forecast([(0, 3600, "s1", 1.2, "corrected", 1.1, 1.3, 0.9)])
         row = store.forecast_log_as_of(0, 7200)[0]
         assert row["calibrated_kwh"] == pytest.approx(0.9)
+
+
+class TestResettingOneStringReachesEveryBranch:
+    """A branch running beside the published one holds the same string.
+
+    And it rebuilds itself from the database, so a scope left behind walks
+    straight back into memory: the owner resets a string, watches nothing
+    change, and has no way to see why.
+    """
+
+    def test_both_branches_lose_the_string(self, store):
+        for scope in ("string", "string#cal"):
+            store.save_effects(scope, {"s1": (0.5, 30.0), "s2": (0.2, 10.0)}, 0)
+        for scope in ("string_daypart", "string_daypart#cal"):
+            store.save_effects(
+                scope, {"s1|morning": (0.5, 30.0), "s2|morning": (0.1, 5.0)}, 0
+            )
+
+        store.clear_effects_for_string("s1")
+
+        for scope in ("string", "string#cal"):
+            assert "s1" not in store.load_effects(scope)
+            assert "s2" in store.load_effects(scope), "a sibling must survive"
+        for scope in ("string_daypart", "string_daypart#cal"):
+            assert "s1|morning" not in store.load_effects(scope)
+            assert "s2|morning" in store.load_effects(scope)

@@ -2199,9 +2199,14 @@ class ForecastEngine:
             if row.quality == QUALITY_NIGHT or row.energy_kwh is None:
                 stats.skip("night" if row.quality == QUALITY_NIGHT else "no_energy")
                 continue
+            # Its own verdict, never the other branch's.  Learning on the
+            # union looked like fairness -- both branches seeing one set of
+            # hours -- but it changes the published model the moment a trial
+            # starts beside it: an hour the live branch would have learned
+            # from is discarded because a branch nobody asked about disagreed.
+            # The comparison is where the two verdicts have to meet, and the
+            # archive already carries their union for exactly that.
             value_kind = row.value_kind
-            if (hour, string_id) in self.censored_hours:
-                value_kind = VALUE_LOWER_BOUND
             if value_kind == VALUE_LOWER_BOUND:
                 stats.censored_hours += 1
 
