@@ -2118,7 +2118,15 @@ class ForecastEngine:
         if self.plant.learning_enabled:
             self._learn_effects(start, end, stats)
 
-        if stats.shading_observations:
+        # A shadow branch collects no observations of its own -- the map is
+        # shared and has one author -- so its counter is always zero and this
+        # trigger would never fire for it.  It still has to refit: the rows
+        # underneath are the same ones, they keep growing, and a branch
+        # forecasting all trial long with the map it loaded at startup would
+        # lose the comparison for a reason that has nothing to do with the
+        # calibration.  ``fit_shading`` decides for itself whether the
+        # evidence has moved enough to be worth the work.
+        if stats.shading_observations or self.shadow:
             self.fit_shading(now_ts)
         # After the censoring stamp above, so a curtailed interval cannot
         # reach the fit.  Cheap: a few thousand rows grouped in memory.  The

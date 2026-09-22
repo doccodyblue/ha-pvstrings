@@ -33,6 +33,7 @@ from core.store import Store
 #: 2025-06-21, local midnight in Europe/Berlin, on the hour grid.
 DAY_START = 1_750_456_800
 NOON = DAY_START + 12 * HOUR
+DAY_SECONDS = 86400
 
 
 @pytest.fixture
@@ -2033,3 +2034,36 @@ class TestTheTrialArchive:
         archive(engine, NOON, NOON + HOUR)
         archive(engine, NOON, NOON + HOUR)
         assert len(seeded_store.experiment_hours()) == 1
+
+
+class TestTheSharedMapReachesBothBranches:
+    """The map is shared, and the branch that does not write it still reads it.
+
+    A shadow branch collects no shading observations -- one author, by
+    design -- so the growth trigger that refits the map never fires for it.
+    Left alone it would forecast the whole trial with the map it loaded at
+    startup, and lose for a reason that has nothing to do with calibration.
+    """
+
+    def test_the_shadow_refits_from_the_shared_observations(
+        self, seeded_store, plant
+    ):
+        from core.irradiance_check import Calibration
+
+        shade = ForecastEngine(
+            plant,
+            seeded_store,
+            variant="cal",
+            shadow=True,
+            calibration=Calibration(((10.0, 1.40), (65.0, 1.20))),
+        )
+        shade.load_models()
+        fitted_at = shade._shading_fitted_day
+
+        # A day later, with the shared table grown by the live branch.
+        live = ForecastEngine(plant, seeded_store)
+        live.load_models()
+        live.learn(NOON + 3 * HOUR)
+        shade.learn(NOON + 3 * HOUR + DAY_SECONDS)
+
+        assert shade._shading_fitted_day != fitted_at
