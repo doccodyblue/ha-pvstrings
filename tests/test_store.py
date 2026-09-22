@@ -2286,3 +2286,48 @@ class TestOpeningAnOlderDatabase:
             assert store.irradiance_hours_awaiting_cross(0, 7200) == [3600]
         finally:
             store.close()
+
+
+class TestTheThirdForecastVariant:
+    """A second branch's prediction, beside the published one and the baseline.
+
+    All three live in one row on purpose: the pairing picks an issue with a
+    subquery and then reads the whole row, so a potential and a variant can
+    never come from different runs. The price is that every write has to carry
+    every variant.
+    """
+
+    @staticmethod
+    def seed(store, hour=3600):
+        store.upsert_hourly(
+            [(hour, "s1", 1.0, 1.0, 0.0, None, None, None, "measured", "exact")]
+        )
+
+    def test_it_is_written_and_read_back(self, store):
+        self.seed(store)
+        store.log_forecast([(0, 3600, "s1", 1.2, "corrected", 1.1, 1.3, 0.9)])
+        row = store.forecast_vs_actual(0, 7200)[0]
+        assert row["potential_kwh"] == pytest.approx(1.2)
+        assert row["baseline_kwh"] == pytest.approx(1.1)
+        assert row["calibrated_kwh"] == pytest.approx(0.9)
+
+    def test_a_later_run_that_omits_it_blanks_it(self, store):
+        """Documented, and the reason every variant goes in one call.
+
+        The conflict branch replaces the whole row. That is what keeps a
+        baseline from one run sitting next to a potential from another -- and
+        it means a run that left a variant out would silently drop the hour
+        from that variant's comparison rather than keep a stale number.
+        """
+        self.seed(store)
+        store.log_forecast([(0, 3600, "s1", 1.2, "corrected", 1.1, 1.3, 0.9)])
+        store.log_forecast([(0, 3600, "s1", 1.4, "corrected", 1.1, 1.3)])
+        row = store.forecast_vs_actual(0, 7200)[0]
+        assert row["potential_kwh"] == pytest.approx(1.4)
+        assert row["calibrated_kwh"] is None
+
+    def test_the_as_of_view_carries_it_too(self, store):
+        self.seed(store)
+        store.log_forecast([(0, 3600, "s1", 1.2, "corrected", 1.1, 1.3, 0.9)])
+        row = store.forecast_log_as_of(0, 7200)[0]
+        assert row["calibrated_kwh"] == pytest.approx(0.9)

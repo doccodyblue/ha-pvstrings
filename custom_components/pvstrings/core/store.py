@@ -487,7 +487,7 @@ class Store:
                 row[1]
                 for row in self._conn.execute("PRAGMA table_info(forecast_log)")
             }
-            for column in ("baseline_kwh", "unshaded_kwh"):
+            for column in ("baseline_kwh", "unshaded_kwh", "calibrated_kwh"):
                 if column not in log_columns:
                     self._conn.execute(
                         f"ALTER TABLE forecast_log ADD COLUMN {column} REAL"
@@ -1503,14 +1503,16 @@ class Store:
     # -- forecast log ------------------------------------------------------ #
 
     def log_forecast(self, rows: Iterable[tuple[Any, ...]]) -> int:
-        """``(issued, ts, string_id, potential, method[, baseline, unshaded])``.
+        """``(issued, ts, string_id, potential, method[, baseline, unshaded, calibrated])``.
 
-        Five-field rows are padded with NULLs.  The conflict branch overwrites
-        the two optional columns as well: a later run in the same issue hour
-        replaces the whole row, and a baseline from the earlier run next to a
-        potential from the later one would compare different weather.
+        Short rows are padded with NULLs.  The conflict branch overwrites the
+        optional columns as well: a later run in the same issue hour replaces
+        the whole row, and a baseline from the earlier run next to a potential
+        from the later one would compare different weather.  The same rule is
+        why every variant has to be written in one call -- a run that omitted
+        one would blank it.
         """
-        payload = [tuple(row) + (None,) * (7 - len(row)) for row in rows]
+        payload = [tuple(row) + (None,) * (8 - len(row)) for row in rows]
         if not payload:
             return 0
         with self._tx() as conn:
@@ -1518,13 +1520,14 @@ class Store:
                 """
                 INSERT INTO forecast_log
                     (issued_at_utc, ts_utc, string_id, potential_kwh, method,
-                     baseline_kwh, unshaded_kwh)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                     baseline_kwh, unshaded_kwh, calibrated_kwh)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (issued_at_utc, ts_utc, string_id) DO UPDATE SET
                     potential_kwh = excluded.potential_kwh,
                     method        = excluded.method,
                     baseline_kwh  = excluded.baseline_kwh,
-                    unshaded_kwh  = excluded.unshaded_kwh
+                    unshaded_kwh  = excluded.unshaded_kwh,
+                    calibrated_kwh = excluded.calibrated_kwh
                 """,
                 payload,
             )
@@ -1542,7 +1545,8 @@ class Store:
     _FORECAST_VS_ACTUAL_SQL = """
         SELECT p.ts_utc, p.string_id, p.energy_kwh, p.quality, p.value_kind,
                p.curtailed_fraction, p.coverage, p.chain_kwh,
-               f.potential_kwh, f.baseline_kwh, f.unshaded_kwh, p.issued_at_utc
+               f.potential_kwh, f.baseline_kwh, f.unshaded_kwh,
+               f.calibrated_kwh, p.issued_at_utc
         FROM (
             SELECT h.ts_utc, h.string_id, h.energy_kwh, h.quality, h.value_kind,
                    h.curtailed_fraction, h.coverage, h.chain_kwh,
@@ -1641,7 +1645,7 @@ class Store:
         return self._query(
             f"""
             SELECT f.ts_utc, f.string_id, f.issued_at_utc, f.potential_kwh,
-                   f.baseline_kwh, f.unshaded_kwh
+                   f.baseline_kwh, f.unshaded_kwh, f.calibrated_kwh
               FROM forecast_log f
              WHERE f.ts_utc >= ? AND f.ts_utc < ?
                AND f.issued_at_utc = (

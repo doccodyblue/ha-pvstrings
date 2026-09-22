@@ -194,7 +194,10 @@ class HourForecast:
     fine: tuple[tuple[int, float], ...] = ()
 
     def as_log_row(
-        self, issued_at_utc: int, baseline_kwh: float | None = None
+        self,
+        issued_at_utc: int,
+        baseline_kwh: float | None = None,
+        calibrated_kwh: float | None = None,
     ) -> tuple[Any, ...]:
         return (
             issued_at_utc,
@@ -204,6 +207,7 @@ class HourForecast:
             self.method,
             None if baseline_kwh is None else round(baseline_kwh, 5),
             round(self.unshaded_kwh, 5),
+            None if calibrated_kwh is None else round(calibrated_kwh, 5),
         )
 
 
@@ -1320,6 +1324,7 @@ class ForecastEngine:
         issued_at_utc: int,
         rows: Sequence[HourForecast],
         baseline: Mapping[tuple[int, str], float] | None = None,
+        calibrated: Mapping[tuple[int, str], float] | None = None,
     ) -> int:
         """Record the prediction so it can be scored later.
 
@@ -1338,9 +1343,18 @@ class ForecastEngine:
         """
         issued_hour = floor_hour(issued_at_utc)
         baseline = baseline or {}
+        calibrated = calibrated or {}
+        # Every variant in the same call, because the upsert writes a whole
+        # row: a later run of the same issue hour that omitted one would set
+        # that column back to NULL, and the hour would silently drop out of
+        # the comparison.
         return self.store.log_forecast(
             [
-                row.as_log_row(issued_hour, baseline.get((row.ts_utc, row.string_id)))
+                row.as_log_row(
+                    issued_hour,
+                    baseline.get((row.ts_utc, row.string_id)),
+                    calibrated.get((row.ts_utc, row.string_id)),
+                )
                 for row in rows
                 if row.ts_utc > issued_hour
             ]
@@ -2006,6 +2020,45 @@ class ForecastEngine:
     # learning cycle
     # ------------------------------------------------------------------ #
 
+    def learn_window(
+        self, now_ts: int, max_hours: int = 48
+    ) -> tuple[int, int] | None:
+        """The hours the next learn pass would cover, without covering them.
+
+        Separate from ``learn`` so the caller can ask both branches what they
+        are about to look at and hand each the other's curtailment verdict for
+        those hours -- which has to happen before either of them learns, or
+        one would learn on a set of hours the other had already excluded.
+        """
+        last_closed = floor_hour(now_ts) - HOUR
+        # Default zero, not "one hour back": on a cold start there may already
+        # be days of collected data, and the ``max_hours`` clamp below is what
+        # keeps the catch-up bounded.
+        cursor = self.store.get_cursor(self._ns(CURSOR_LEARN), default=0)
+        if cursor <= 0:
+            # Cold start: look back a bounded window rather than crawling
+            # whatever happens to be in the database.  A shadow branch starts
+            # at the moment it was switched on instead: reaching back two days
+            # would teach it hours the archive has not caught up with, and
+            # "forward only" would already be broken on its first pass.
+            start = (
+                last_closed
+                if self.shadow
+                else max(0, last_closed - max_hours * HOUR)
+            )
+        else:
+            # Warm start: continue exactly where the last run stopped.  Taking
+            # max(cursor, now - max_hours) here would silently drop everything
+            # older than the window after any downtime longer than it, and the
+            # cursor would then jump past those hours for good.
+            start = cursor
+        if start > last_closed:
+            return None
+        # Advance by at most one window per run; the next hourly cycle picks up
+        # the rest, so a long outage catches up over a few cycles instead of
+        # blocking one of them for minutes.
+        return start, min(last_closed + HOUR, start + max_hours * HOUR)
+
     def learn(self, now_ts: int, max_hours: int = 48) -> LearnStats:
         """Process every hour that has closed since the last run.
 
@@ -2024,34 +2077,13 @@ class ForecastEngine:
         # timestamp is newer than the bucket's.
         if not self.shadow:
             stats.bias_backfilled = self.backfill_ghi_bias(now_ts)
-        last_closed = floor_hour(now_ts) - HOUR
-        # Default zero, not "one hour back": on a cold start there may already
-        # be days of collected data, and the ``max_hours`` clamp below is what
-        # keeps the catch-up bounded.
-        cursor = self.store.get_cursor(self._ns(CURSOR_LEARN), default=0)
-        if cursor <= 0:
-            # Cold start: look back a bounded window rather than crawling
-            # whatever happens to be in the database.  A shadow branch starts
-            # at the moment it was switched on instead: reaching back two days
-            # would teach it hours the archive has not caught up with, and
-            # "forward only" would already be broken on its first pass.
-            start = last_closed if self.shadow else max(0, last_closed - max_hours * HOUR)
-        else:
-            # Warm start: continue exactly where the last run stopped.  Taking
-            # max(cursor, now - max_hours) here would silently drop everything
-            # older than the window after any downtime longer than it, and the
-            # cursor would then jump past those hours for good.
-            start = cursor
-        if start > last_closed:
+        window = self.learn_window(now_ts, max_hours)
+        if window is None:
             return stats
-
-        # Advance by at most one window per run; the next hourly cycle picks up
-        # the rest, so a long outage catches up over a few cycles instead of
-        # blocking one of them for minutes.
-        end = min(last_closed + HOUR, start + max_hours * HOUR)
+        start, end = window
         #: The hours this pass covered.  Diagnostics, and the only way to see
         #: from outside that a branch started where it said it would.
-        self.last_window = (start, end)
+        self.last_window = window
 
         # Own verdict either way; only one branch records it.  The union with
         # the other branch's, which the caller supplies, is what both then

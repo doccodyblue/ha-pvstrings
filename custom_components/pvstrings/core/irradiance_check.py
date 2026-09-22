@@ -627,6 +627,38 @@ def _fade(factor: float, distance: float) -> float:
     return 1.0 + (factor - 1.0) * share
 
 
+#: Scope the frozen experiment curve is stored under, in the effects table.
+#: It belongs there rather than in a cursor because a cursor holds one
+#: integer, and this is a handful of (elevation, factor) pairs -- the same
+#: shape ``model_effects`` already carries for everything else.
+SCOPE_CALIBRATION = "irradiance_curve"
+
+
+def curve_to_rows(curve: Calibration) -> dict[str, tuple[float, float]]:
+    """The frozen curve in the shape ``save_effects`` takes.
+
+    The key is the knot's elevation as text, so the rows have to be sorted
+    numerically on the way back in -- "9.30" sorts after "48.00".
+    """
+    return {f"{x:.2f}": (y, 1.0) for x, y in curve.knots}
+
+
+def curve_from_rows(rows: Mapping[str, tuple[float, float]]) -> Calibration:
+    """Read a frozen curve back, in the shape ``load_effects`` returns.
+
+    Sorted numerically, not by key: the keys are elevations as text, and
+    "9.30" sorts after "48.00" -- which would leave the curve interpolating
+    backwards through its own knots.
+
+    Whether it was capped is not stored: that flag describes how the curve was
+    derived, and once frozen the only thing that matters is what it says.
+    """
+    knots = sorted(
+        (float(key), float(value)) for key, (value, _n_eff) in rows.items()
+    )
+    return Calibration(tuple(knots))
+
+
 def calibration(verdict: Verdict) -> Calibration:
     """Turn a verdict into the curve it justifies -- and usually into none.
 

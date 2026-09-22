@@ -56,8 +56,11 @@ from .core.irradiance_check import (
     CURSOR_IRRADIANCE_EPOCH,
     CURSOR_IRRADIANCE_EPOCH_SINCE,
     MIN_SAMPLES_PER_HOUR,
+    SCOPE_CALIBRATION,
     assess as assess_irradiance,
     calibration as irradiance_calibration,
+    curve_from_rows,
+    curve_to_rows,
     rows_to_bank,
 )
 from .core.physics import PhysicsEngine, clamp_to_daylight, to_index
@@ -339,6 +342,11 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
             time_zone=plant.time_zone,
         )
         self.engine = ForecastEngine(plant, store, self.physics)
+        #: The branch that reads the irradiance sensor through a calibration
+        #: curve, or ``None`` where there is no sensor, no evidence, or the
+        #: evidence says the sensor is fine.  Built in ``async_setup`` once the
+        #: stored pairs can be read.
+        self.shadow: ForecastEngine | None = None
         self.collector = Collector(hass, plant, store)
         self._weather_entity: str | None = None
         self._last_weather_fetch: datetime | None = None
@@ -350,6 +358,7 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         self._irradiance_verdict_hour: int | None = None
         self._irradiance_verdict_memo: dict[str, Any] = {}
         self._reference_fill_day: int | None = None
+        self._shadow_failed = False
         self.health = Health()
 
     # ------------------------------------------------------------------ #
@@ -371,6 +380,9 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
                 group_id,
             )
         await self.hass.async_add_executor_job(self.engine.load_models)
+        self.shadow = await self.hass.async_add_executor_job(
+            self.build_shadow, int(dt_util.utcnow().timestamp())
+        )
         await self.collector.async_start()
 
     async def async_shutdown(self) -> None:
@@ -483,7 +495,7 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         if self._last_learn_hour != current_hour:
             try:
                 self.last_learn_stats = await self.hass.async_add_executor_job(
-                    self.engine.learn, int(now.timestamp())
+                    self._learn_both, int(now.timestamp())
                 )
                 self._last_learn_hour = current_hour
                 stats = self.last_learn_stats.as_dict()
@@ -604,6 +616,111 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         """Local midnight ``days`` away from the one at ``day_start``."""
         return local_midnight(day_start, days, dt_util.DEFAULT_TIME_ZONE)
 
+    def build_shadow(self, now_ts: int) -> ForecastEngine | None:
+        """Start, or resume, the branch that reads the sensor through a curve.
+
+        The curve is frozen the first time it is used and read back from the
+        database afterwards.  A curve that moved with every restart would
+        leave the branch holding observations learned under two different
+        meanings of the same reading, which is the mistake this whole design
+        exists to avoid -- only inside one model instead of across two.
+
+        Returns ``None`` where there is no sensor, no evidence yet, or the
+        evidence says the sensor is fine.  That last case needs no special
+        handling: a healthy sensor produces the unity curve, and a unity
+        curve is not active.
+        """
+        if not self.plant.weather_sources.ghi_entity:
+            return None
+
+        stored = self.store.load_effects(SCOPE_CALIBRATION)
+        curve = curve_from_rows(stored) if stored else None
+        if curve is None or not curve.active:
+            epoch = self.store.get_cursor(CURSOR_IRRADIANCE_EPOCH, default=0)
+            verdict = assess_irradiance(self.store.irradiance_pairs(epoch))
+            curve = irradiance_calibration(verdict)
+            if not curve.active:
+                return None
+            self.store.save_effects(SCOPE_CALIBRATION, curve_to_rows(curve), now_ts)
+            _LOGGER.info(
+                "pvstrings: %s: calibrated branch starting, curve %s over %s",
+                self.plant.name,
+                curve.revision,
+                curve.evidence_range,
+            )
+
+        engine = ForecastEngine(
+            self.plant,
+            self.store,
+            self.physics,
+            variant="cal",
+            shadow=True,
+            calibration=curve,
+        )
+        engine.load_models()
+        return engine
+
+    def _learn_both(self, now_ts: int) -> LearnStats:
+        """Run the live branch's learn pass, and the calibrated one beside it.
+
+        Both are told which hours the *other* judged curtailed before either
+        learns, and both then learn on the union.  The verdict is computed
+        from irradiance, so the branches genuinely disagree about it -- and a
+        branch that learned a throttled interval the other had excluded would
+        book the limit as an honest loss.  Left alone, the comparison would
+        partly measure which branch compensates that better.
+        """
+        if self.shadow is None:
+            return self.engine.learn(now_ts)
+
+        window = self.engine.learn_window(now_ts)
+        if window is not None:
+            # The shadow's opinion of the live branch's hours, taken without
+            # recording it: only one branch owns the stamps in the database.
+            self.engine.censored_hours = self.shadow.evaluate_curtailment(
+                *window, write=False
+            )
+        stats = self.engine.learn(now_ts)
+
+        try:
+            self.shadow.censored_hours = self.engine.own_censored
+            shadow_stats = self.shadow.learn(now_ts)
+        except Exception:  # noqa: BLE001 - the published branch comes first
+            _LOGGER.exception("pvstrings: calibrated branch failed to learn")
+            return stats
+        # Reported separately so a branch that quietly stops learning is
+        # visible rather than merely absent from the comparison.
+        _LOGGER.debug(
+            "pvstrings: calibrated branch used %s observations, skipped %s",
+            shadow_stats.observations_used,
+            shadow_stats.observations_skipped,
+        )
+        return stats
+
+    def _shadow_forecast(
+        self, now_ts: int, day_start: int
+    ) -> dict[tuple[int, str], float] | None:
+        """What the calibrated branch predicts for the same hours.
+
+        Before the live run and on the same window, for the same reason the
+        baseline goes first: the live run owns the nowcast state, and a
+        comparison between two branches that saw different weather issues
+        would measure the issues.
+        """
+        if self.shadow is None:
+            return None
+        try:
+            rows = self.shadow.forecast(
+                now_ts, hours=FORECAST_HOURS, start_ts=day_start
+            )
+        except Exception:  # noqa: BLE001 - the published forecast comes first
+            if not self._shadow_failed:
+                _LOGGER.exception("pvstrings: calibrated forecast failed")
+            self._shadow_failed = True
+            return None
+        self._shadow_failed = False
+        return {(row.ts_utc, row.string_id): row.potential_kwh for row in rows}
+
     def _build_data(self, now: datetime) -> PvStringsData:
         now_ts = int(now.timestamp())
         day_start, day_end = self._local_day_bounds(now)
@@ -623,8 +740,12 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
             if not self._baseline_failed:
                 _LOGGER.exception("pvstrings: baseline forecast failed")
             self._baseline_failed = True
+        calibrated = self._shadow_forecast(now_ts, day_start)
         rows = self.engine.forecast(now_ts, hours=FORECAST_HOURS, start_ts=day_start)
-        self.engine.log_forecast(now_ts, rows, baseline)
+        # One call with every variant: the upsert replaces the whole row, so a
+        # write that left one out would blank it and drop the hour from the
+        # comparison.
+        self.engine.log_forecast(now_ts, rows, baseline, calibrated)
 
         strings: dict[str, StringForecast] = {
             string.string_id: StringForecast(string.string_id, string.name)
@@ -1550,4 +1671,13 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
             # would rebuild what the reset just discarded.
             await self.hass.async_add_executor_job(self.store.clear_conversion_obs)
         await self.hass.async_add_executor_job(self.engine.load_models)
+        # The calibrated branch too, and not only because its models were
+        # deleted with the rest: an engine held in memory would write the
+        # state that was just discarded straight back on its next save.  A
+        # plant-wide reset also drops the frozen curve, so the branch derives
+        # a fresh one from whatever evidence survived -- which is the pairs,
+        # since they are measurements and not something learned.
+        self.shadow = await self.hass.async_add_executor_job(
+            self.build_shadow, int(dt_util.utcnow().timestamp())
+        )
         await self.async_request_refresh()

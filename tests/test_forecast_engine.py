@@ -1822,6 +1822,33 @@ class TestTheShadowBranch:
         _state, reason = shade._sky_now(NOON + HOUR - 1)
         assert reason == persistence.REASON_FROZEN
 
+    def test_the_branch_reaches_the_log_beside_the_published_one(
+        self, seeded_store, plant
+    ):
+        """One call, every variant, one row.
+
+        The pairing picks an issue with a subquery and then reads the whole
+        row, so a potential and a variant can never come from different runs
+        -- at the price that a write leaving one out blanks it.
+        """
+        live = ForecastEngine(plant, seeded_store)
+        live.load_models()
+        issued = NOON
+        clear_sky_forecast(live, seeded_store, issued, issued, 6)
+        rows = live.forecast(issued, hours=6, start_ts=issued)
+        assert rows, "the fixture must produce something to log"
+        calibrated = {
+            (row.ts_utc, row.string_id): row.potential_kwh * 1.3 for row in rows
+        }
+        live.log_forecast(issued, rows, None, calibrated)
+
+        logged = seeded_store.forecast_log_as_of(issued, issued + 6 * HOUR)
+        assert logged
+        for row in logged:
+            assert row["calibrated_kwh"] == pytest.approx(
+                row["potential_kwh"] * 1.3, rel=1e-3
+            )
+
     def test_a_curve_changes_what_the_branch_believes_it_measured(
         self, seeded_store, plant
     ):
@@ -1861,3 +1888,58 @@ class TestTheShadowBranch:
 
         assert persistence.looks_frozen(raw.to_numpy())
         assert not persistence.looks_frozen(corrected.to_numpy())
+
+
+class TestTheFrozenCurve:
+    """The curve a branch reads with must not move underneath it.
+
+    A curve recomputed on every restart would leave one model holding
+    observations learned under two different meanings of the same reading --
+    the mistake the whole two-branch design exists to avoid, reproduced
+    inside a single branch.
+    """
+
+    def test_a_curve_survives_a_restart_unchanged(self, store):
+        from core.irradiance_check import (
+            SCOPE_CALIBRATION,
+            Calibration,
+            curve_from_rows,
+            curve_to_rows,
+        )
+
+        curve = Calibration(((9.3, 1.5), (19.8, 1.5), (30.1, 1.343), (48.0, 1.26)))
+        store.save_effects(SCOPE_CALIBRATION, curve_to_rows(curve), NOON)
+        read_back = curve_from_rows(store.load_effects(SCOPE_CALIBRATION))
+
+        assert read_back.revision == curve.revision
+        for elevation in (5.0, 9.3, 15.0, 30.1, 40.0, 48.0, 70.0):
+            assert read_back.factor(elevation) == pytest.approx(
+                curve.factor(elevation)
+            )
+
+    def test_an_inactive_curve_stores_nothing_to_read_back(self, store):
+        """A healthy sensor produces no knots, so there is nothing to freeze."""
+        from core.irradiance_check import (
+            SCOPE_CALIBRATION,
+            Calibration,
+            curve_from_rows,
+            curve_to_rows,
+        )
+
+        store.save_effects(SCOPE_CALIBRATION, curve_to_rows(Calibration()), NOON)
+        assert not curve_from_rows(store.load_effects(SCOPE_CALIBRATION)).active
+
+    def test_knots_come_back_in_order(self, store):
+        """They are keyed by elevation as text, and text sorts "9" after "48"."""
+        from core.irradiance_check import (
+            SCOPE_CALIBRATION,
+            Calibration,
+            curve_from_rows,
+            curve_to_rows,
+        )
+
+        curve = Calibration(((9.3, 1.5), (48.0, 1.26)))
+        store.save_effects(SCOPE_CALIBRATION, curve_to_rows(curve), NOON)
+        knots = curve_from_rows(store.load_effects(SCOPE_CALIBRATION)).knots
+        assert [x for x, _ in knots] == sorted(x for x, _ in knots)
+        assert knots[0][0] == pytest.approx(9.3)
