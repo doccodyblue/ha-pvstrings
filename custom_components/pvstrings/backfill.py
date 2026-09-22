@@ -21,6 +21,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .core import units
 from .core.backfill import BACKFILL_WEIGHT, hourly_series, shading_rows_from_history
+from .core.physics import to_index
 from .core.weather import OPEN_METEO_ARCHIVE_URL, open_meteo_archive_params
 
 _LOGGER = logging.getLogger(__name__)
@@ -41,6 +42,14 @@ ARCHIVE_LAG_DAYS = 6
 CHUNK_DAYS = 120
 
 ARCHIVE_TIMEOUT = 120
+
+#: Below this the reference grid resolves neither terrain nor horizon, and a
+#: disagreement says more about the model than about the sensor.
+MIN_ELEVATION_FOR_CHECK = 3.0
+
+#: Bumped when the owner tells us the instrument changed -- moved, replaced,
+#: cleaned, rewired.  Rows from different epochs are never pooled.
+CURSOR_IRRADIANCE_EPOCH = "irradiance_epoch"
 
 
 async def async_backfill_shading(
@@ -248,3 +257,175 @@ def _at(values: list[Any] | None, index: int) -> float | None:
         return None
     value = values[index]
     return None if value is None else float(value)
+
+
+#: Two independent references, tried in order.  The satellite product resolves
+#: about 5 km against the reanalysis grid's 25, which matters for a point
+#: sensor -- but it only covers the Meteosat disc, so the reanalysis has to
+#: stay as the fallback for everyone else.  Whichever answered is recorded per
+#: row: a verdict is worth what its reference is worth, and the two must be
+#: distinguishable afterwards.
+IRRADIANCE_REFERENCES: tuple[tuple[str, str, str], ...] = (
+    (
+        "satellite_radiation_seamless",
+        "https://satellite-api.open-meteo.com/v1/archive",
+        "satellite_radiation_seamless",
+    ),
+    ("era5", "https://archive-api.open-meteo.com/v1/archive", "era5"),
+)
+
+
+def _irradiance_rows(coordinator: Any, measured: dict[int, float]):
+    """Measured hours with the sun's position at each hour's midpoint."""
+    physics = coordinator.engine.physics
+    hours = sorted(measured)
+    if not hours:
+        return
+    index = to_index([hour + HOUR // 2 for hour in hours])
+    position = physics.solar_position(index)
+    elevations = position["apparent_elevation"].to_numpy()
+    azimuths = position["azimuth"].to_numpy()
+    epoch = coordinator.store.get_cursor(CURSOR_IRRADIANCE_EPOCH, default=0)
+    for hour, elevation, azimuth in zip(hours, elevations, azimuths):
+        if elevation < MIN_ELEVATION_FOR_CHECK:
+            continue
+        yield (
+            int(hour),
+            int(epoch),
+            float(measured[hour]),
+            "statistics",
+            float(elevation),
+            float(azimuth),
+            None,
+        )
+
+
+async def _async_fill_reference(
+    hass: HomeAssistant, coordinator: Any, first: int, last: int
+) -> int:
+    """Fetch a reference for every banked hour that still lacks one."""
+    epoch = coordinator.store.get_cursor(CURSOR_IRRADIANCE_EPOCH, default=0)
+    pending = await hass.async_add_executor_job(
+        coordinator.store.irradiance_hours_awaiting_reference,
+        epoch,
+        last + HOUR,
+        20000,
+    )
+    if not pending:
+        return 0
+
+    plant = coordinator.plant
+    session = async_get_clientsession(hass)
+    wanted = set(pending)
+    filled = 0
+    now = int(datetime.now(timezone.utc).timestamp())
+
+    for name, url, model in IRRADIANCE_REFERENCES:
+        if not wanted:
+            break
+        params = {
+            "latitude": plant.latitude,
+            "longitude": plant.longitude,
+            "start_date": datetime.fromtimestamp(first, timezone.utc)
+            .date()
+            .isoformat(),
+            "end_date": datetime.fromtimestamp(last, timezone.utc)
+            .date()
+            .isoformat(),
+            "hourly": "shortwave_radiation",
+            "timezone": "UTC",
+            "timeformat": "unixtime",
+            "models": model,
+        }
+        try:
+            async with session.get(
+                url, params=params, timeout=ARCHIVE_TIMEOUT
+            ) as response:
+                response.raise_for_status()
+                payload = await response.json()
+        except Exception:  # noqa: BLE001 - a missing reference is not an error
+            _LOGGER.debug("pvstrings: reference %s unavailable", name)
+            continue
+
+        hourly = payload.get("hourly") or {}
+        stamps = hourly.get("time") or []
+        values = hourly.get("shortwave_radiation") or []
+        # The archive labels an hour with its end, as the forecast API does.
+        updates = [
+            (float(value), name, now, int(stamp) - HOUR, int(epoch))
+            for stamp, value in zip(stamps, values)
+            if value is not None and (int(stamp) - HOUR) in wanted
+        ]
+        if not updates:
+            continue
+        written = await hass.async_add_executor_job(
+            coordinator.store.fill_irradiance_reference, updates
+        )
+        filled += written
+        wanted -= {row[3] for row in updates}
+
+    return filled
+
+
+async def async_backfill_irradiance_check(
+    hass: HomeAssistant,
+    coordinator: Any,
+    days: int,
+) -> dict[str, Any]:
+    """Pair past irradiance readings with an independent reference.
+
+    Deliberately a service and never automatic.  Home Assistant keeps hourly
+    statistics long after the raw states are purged, so this can reach back
+    months -- but only the owner knows whether the sensor spent those months
+    in the same place, clean, and pointing the same way.  A station that was
+    moved, replaced, or had a branch grow over it inside the window would
+    teach a verdict from a world that no longer exists, and nothing in the
+    data would give that away.
+    """
+    plant = coordinator.plant
+    entity = getattr(plant.weather, "ghi_entity", None)
+    if not entity:
+        return {"error": "no irradiance sensor configured"}
+
+    end = datetime.now(timezone.utc).replace(
+        minute=0, second=0, microsecond=0
+    ) - timedelta(days=ARCHIVE_LAG_DAYS)
+    start = end - timedelta(days=min(days, MAX_BACKFILL_DAYS))
+
+    stats = await _async_statistics(hass, [entity], start, end)
+    rows = stats.get(entity) or []
+    if not rows:
+        return {
+            "error": "no long-term statistics for the irradiance sensor",
+            "entity": entity,
+        }
+
+    measured = {
+        int(row["start"].timestamp() if hasattr(row["start"], "timestamp")
+            else row["start"] / 1000): row["mean"]
+        for row in rows
+        if row.get("mean") is not None
+    }
+    if not measured:
+        return {"error": "statistics carried no hourly means", "entity": entity}
+
+    first, last = min(measured), max(measured)
+    banked = await hass.async_add_executor_job(
+        coordinator.store.bank_irradiance_hours,
+        list(_irradiance_rows(coordinator, measured)),
+    )
+    filled = await _async_fill_reference(hass, coordinator, first, last)
+
+    return {
+        "entity": entity,
+        "from": datetime.fromtimestamp(first, timezone.utc).date().isoformat(),
+        "to": datetime.fromtimestamp(last, timezone.utc).date().isoformat(),
+        "hours_measured": len(measured),
+        "hours_banked": banked,
+        "hours_referenced": filled,
+        "note": (
+            "Only run this if the sensor stayed in the same place, clean and"
+            " level, for the whole period. Anything else teaches a verdict"
+            " from a sensor that no longer exists."
+        ),
+    }

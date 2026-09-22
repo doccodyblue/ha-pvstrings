@@ -36,7 +36,7 @@ SHADING_THIN_DAYS = 120
 
 _LOGGER = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS string_geometry (
@@ -257,6 +257,35 @@ CREATE TABLE IF NOT EXISTS ghi_bias_v2 (
     updated_at   INTEGER,
     PRIMARY KEY (source, hour_local, horizon_bkt)
 );
+
+-- What the irradiance sensor said, beside what an independent reference says
+-- it should have said.  Diagnosis only: nothing in the forecast reads this.
+--
+-- Raw pairs rather than a fitted ratio, because the fit is the part most
+-- likely to be wrong later: a station that reads low at dawn and true at noon
+-- needs the curve, and a curve cannot be recovered from a stored average.
+-- The reference may be NULL -- the archive lags about a week, so the measured
+-- hour is banked first and the reference filled in when it arrives.
+--
+-- ``epoch`` is the owner's answer to "is this still the same instrument in the
+-- same place": moving it, replacing it, cleaning a fouled dome or changing
+-- the lux divisor all start a new one, and rows from different epochs are
+-- never pooled.
+CREATE TABLE IF NOT EXISTS irradiance_reference (
+    ts_utc        INTEGER NOT NULL,
+    epoch         INTEGER NOT NULL DEFAULT 0,
+    measured_wm2  REAL    NOT NULL,
+    measured_from TEXT    NOT NULL,
+    reference_wm2 REAL,
+    reference_src TEXT,
+    fetched_at    INTEGER,
+    elevation_deg REAL,
+    azimuth_deg   REAL,
+    air_mass      REAL,
+    PRIMARY KEY (ts_utc, epoch)
+);
+CREATE INDEX IF NOT EXISTS ix_irradiance_reference_pending
+    ON irradiance_reference (ts_utc) WHERE reference_wm2 IS NULL;
 
 CREATE TABLE IF NOT EXISTS exclusions (
     ts_utc    INTEGER NOT NULL,
@@ -2101,6 +2130,79 @@ class Store:
                 "VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING",
                 (ts_utc, string_id, reason, detail),
             )
+
+    def bank_irradiance_hours(self, rows: Iterable[tuple[Any, ...]]) -> int:
+        """Record measured hours, reference still unknown.
+
+        Written the moment the hour closes, long before the archive covers it.
+        An existing row is never overwritten: the measurement is the ground
+        truth here, and a second pass over the same hour must not disturb a
+        reference already filled in beside it.
+        """
+        payload = list(rows)
+        if not payload:
+            return 0
+        with self._tx() as conn:
+            cur = conn.executemany(
+                """
+                INSERT INTO irradiance_reference
+                    (ts_utc, epoch, measured_wm2, measured_from,
+                     elevation_deg, azimuth_deg, air_mass)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (ts_utc, epoch) DO NOTHING
+                """,
+                payload,
+            )
+            return cur.rowcount
+
+    def irradiance_hours_awaiting_reference(
+        self, epoch: int, before_ts: int, limit: int = 500
+    ) -> list[int]:
+        """Banked hours the reference has not caught up with yet, oldest first."""
+        rows = self._query(
+            "SELECT ts_utc FROM irradiance_reference"
+            " WHERE epoch = ? AND reference_wm2 IS NULL AND ts_utc < ?"
+            " ORDER BY ts_utc LIMIT ?",
+            (int(epoch), int(before_ts), int(limit)),
+        )
+        return [int(row["ts_utc"]) for row in rows]
+
+    def fill_irradiance_reference(self, rows: Iterable[tuple[Any, ...]]) -> int:
+        """Attach the reference to hours already banked.
+
+        Only where it is still missing: a second reference product must be
+        able to disagree without silently replacing the first, and re-running
+        a fetch must not turn one observation into two.
+        """
+        payload = list(rows)
+        if not payload:
+            return 0
+        with self._tx() as conn:
+            cur = conn.executemany(
+                "UPDATE irradiance_reference"
+                " SET reference_wm2 = ?, reference_src = ?, fetched_at = ?"
+                " WHERE ts_utc = ? AND epoch = ? AND reference_wm2 IS NULL",
+                payload,
+            )
+            return cur.rowcount
+
+    def irradiance_pairs(
+        self, epoch: int, min_reference_wm2: float = 60.0
+    ) -> list[dict[str, Any]]:
+        """Every complete pair of one epoch, for the diagnosis to fit from.
+
+        Dim hours are excluded by the reference rather than by the
+        measurement: filtering on what the sensor reported would drop exactly
+        the hours where it reads lowest, which is the effect under study.
+        """
+        rows = self._query(
+            "SELECT ts_utc, measured_wm2, reference_wm2, reference_src,"
+            " elevation_deg, azimuth_deg, air_mass FROM irradiance_reference"
+            " WHERE epoch = ? AND reference_wm2 IS NOT NULL AND reference_wm2 >= ?"
+            " ORDER BY ts_utc",
+            (int(epoch), float(min_reference_wm2)),
+        )
+        return [dict(row) for row in rows]
 
     def recent_exclusions(self, limit: int = 60) -> list[dict[str, Any]]:
         """The most recent hours the learning cycle refused, newest first.

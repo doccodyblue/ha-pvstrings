@@ -94,6 +94,7 @@ from .const import (
     SERVICE_ADD_GEOMETRY,
     ATTR_FROM_DATE,
     SERVICE_BACKFILL,
+    SERVICE_BACKFILL_IRRADIANCE,
     SERVICE_CLEAR_PRICES,
     SERVICE_GET_DAY,
     SERVICE_GET_WEEKS,
@@ -541,6 +542,14 @@ def _async_register_services(hass: HomeAssistant) -> None:
         coordinator = _coordinator_for(hass, call.data[ATTR_CONFIG_ENTRY_ID])
         return await async_backfill_shading(hass, coordinator, call.data["days"])
 
+    async def _backfill_irradiance_check(call: ServiceCall) -> dict[str, Any]:
+        from .backfill import async_backfill_irradiance_check
+
+        coordinator = _coordinator_for(hass, call.data[ATTR_CONFIG_ENTRY_ID])
+        return await async_backfill_irradiance_check(
+            hass, coordinator, call.data["days"]
+        )
+
     async def _get_day(call: ServiceCall) -> dict[str, Any]:
         from .core.history import day_payload
 
@@ -608,6 +617,13 @@ def _async_register_services(hass: HomeAssistant) -> None:
         DOMAIN,
         SERVICE_BACKFILL,
         _backfill,
+        schema=BACKFILL_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_BACKFILL_IRRADIANCE,
+        _backfill_irradiance_check,
         schema=BACKFILL_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
     )

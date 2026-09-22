@@ -104,6 +104,22 @@ backfill_shading:
           step: 1
           unit_of_measurement: d
 
+backfill_irradiance_check:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: pvstrings
+    days:
+      default: 180
+      selector:
+        number:
+          min: 14
+          max: 730
+          step: 1
+          unit_of_measurement: d
+
 get_day:
   fields:
     config_entry_id:
