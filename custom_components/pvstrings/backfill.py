@@ -26,7 +26,12 @@ from .core.backfill import (
     hourly_series,
     shading_rows_from_history,
 )
-from .core.irradiance_check import CURSOR_IRRADIANCE_EPOCH, assess, rows_to_bank
+from .core.irradiance_check import (
+    CURSOR_IRRADIANCE_EPOCH,
+    CURSOR_IRRADIANCE_EPOCH_SINCE,
+    assess,
+    rows_to_bank,
+)
 from .core.weather import OPEN_METEO_ARCHIVE_URL, open_meteo_archive_params
 
 _LOGGER = logging.getLogger(__name__)
@@ -441,6 +446,22 @@ async def async_backfill_irradiance_check(
     measured = hourly_means_from_statistics(rows, _statistics_unit(hass, entity))
     if not measured:
         return {"error": "statistics carried no hourly means", "entity": entity}
+
+    # Never across the boundary: hours measured before the owner said the
+    # instrument changed belong to the instrument that measured them, and
+    # banking them under the current epoch would hand a healthy replacement
+    # its predecessor's correction.
+    since = int(
+        coordinator.store.get_cursor(CURSOR_IRRADIANCE_EPOCH_SINCE, default=0)
+    )
+    if since:
+        measured = {hour: value for hour, value in measured.items() if hour >= since}
+        if not measured:
+            return {
+                "error": "no statistics since the sensor was declared new",
+                "entity": entity,
+                "since": datetime.fromtimestamp(since, timezone.utc).isoformat(),
+            }
 
     first, last = min(measured), max(measured)
     banked = await hass.async_add_executor_job(

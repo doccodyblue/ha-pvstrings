@@ -36,7 +36,7 @@ SHADING_THIN_DAYS = 120
 
 _LOGGER = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS string_geometry (
@@ -318,6 +318,12 @@ CREATE TABLE IF NOT EXISTS experiment_hours (
     -- no scale error can disturb.
     clearness   REAL,
     censored    INTEGER,
+    -- Which trial the row belongs to: the sensor epoch it was measured under
+    -- and the curve the calibrated branch was reading with.  Without them a
+    -- sensor swap or a reset would leave the old trial's hours in place and
+    -- the new one's verdict would be drawn mostly from them.
+    epoch       INTEGER NOT NULL DEFAULT 0,
+    curve       TEXT,
     PRIMARY KEY (ts_utc, string_id)
 );
 
@@ -495,6 +501,21 @@ class Store:
                     "PRAGMA table_info(irradiance_reference)"
                 )
             }
+            trial_columns = {
+                row[1]
+                for row in self._conn.execute(
+                    "PRAGMA table_info(experiment_hours)"
+                )
+            }
+            if trial_columns:
+                for column, kind in (
+                    ("epoch", "INTEGER NOT NULL DEFAULT 0"),
+                    ("curve", "TEXT"),
+                ):
+                    if column not in trial_columns:
+                        self._conn.execute(
+                            f"ALTER TABLE experiment_hours ADD COLUMN {column} {kind}"
+                        )
             for column, kind in (("cross_wm2", "REAL"), ("cross_src", "TEXT")):
                 if column not in irradiance_columns:
                     self._conn.execute(
@@ -2258,7 +2279,12 @@ class Store:
         day-ahead pairing is complete, and the next pass has to be able to
         fill it in.
         """
-        payload = list(rows)
+        # Short rows carry no trial identity, which means epoch zero and no
+        # curve -- the shape rows had before those columns existed.
+        payload = [
+            tuple(row) + ((0, None) if len(row) == 9 else ())
+            for row in rows
+        ]
         if not payload:
             return 0
         with self._tx() as conn:
@@ -2266,8 +2292,9 @@ class Store:
                 """
                 INSERT INTO experiment_hours
                     (ts_utc, string_id, actual_kwh, live_kwh, shadow_kwh,
-                     live_da_kwh, shadow_da_kwh, clearness, censored)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     live_da_kwh, shadow_da_kwh, clearness, censored,
+                     epoch, curve)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (ts_utc, string_id) DO UPDATE SET
                     actual_kwh    = excluded.actual_kwh,
                     live_kwh      = excluded.live_kwh,
@@ -2275,25 +2302,68 @@ class Store:
                     live_da_kwh   = excluded.live_da_kwh,
                     shadow_da_kwh = excluded.shadow_da_kwh,
                     clearness     = excluded.clearness,
-                    censored      = excluded.censored
+                    censored      = excluded.censored,
+                    epoch         = excluded.epoch,
+                    curve         = excluded.curve
                 """,
                 payload,
             )
         return len(payload)
 
     def experiment_hours(
-        self, start_ts: int = 0, end_ts: int | None = None
+        self,
+        start_ts: int = 0,
+        end_ts: int | None = None,
+        epoch: int | None = None,
+        curve: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Every archived hour of the trial, oldest first."""
-        end = 1 << 62 if end_ts is None else int(end_ts)
+        """One trial's archived hours, oldest first.
+
+        Filtered by epoch and curve unless asked otherwise: an hour measured
+        under a sensor that has since been replaced, or under a curve that has
+        since been re-derived, belongs to a different experiment.  Pooling
+        them would let a verdict about this week rest mostly on last month.
+        """
+        clauses = ["ts_utc >= ?", "ts_utc < ?"]
+        params: list[Any] = [int(start_ts), 1 << 62 if end_ts is None else int(end_ts)]
+        if epoch is not None:
+            clauses.append("epoch = ?")
+            params.append(int(epoch))
+        if curve is not None:
+            clauses.append("curve IS ?")
+            params.append(curve)
         return [
             dict(row)
             for row in self._query(
-                "SELECT * FROM experiment_hours"
-                " WHERE ts_utc >= ? AND ts_utc < ? ORDER BY ts_utc",
-                (int(start_ts), end),
+                "SELECT * FROM experiment_hours WHERE "
+                + " AND ".join(clauses)
+                + " ORDER BY ts_utc",
+                tuple(params),
             )
         ]
+
+    def clear_ghi_bias(self, source: str) -> None:
+        """One source's bias buckets.  Scoped, unlike ``clear_effects(None)``.
+
+        A branch's models have to be removable without taking the published
+        branch's with them -- ending a trial is not resetting the plant.
+        """
+        with self._tx() as conn:
+            conn.execute("DELETE FROM ghi_bias_v2 WHERE source = ?", (source,))
+
+    def set_cursors(self, values: Mapping[str, int]) -> None:
+        """Several cursors in one transaction.
+
+        A sensor swap writes the new epoch and the moment it began.  Written
+        separately, a crash between them leaves the new counter beside the old
+        boundary -- and the new instrument inherits its predecessor's hours.
+        """
+        with self._tx() as conn:
+            conn.executemany(
+                "INSERT INTO learning_cursor (name, ts_utc) VALUES (?, ?)"
+                " ON CONFLICT (name) DO UPDATE SET ts_utc = excluded.ts_utc",
+                [(name, int(value)) for name, value in values.items()],
+            )
 
     def irradiance_hours_awaiting_cross(
         self, epoch: int, before_ts: int, limit: int = 500

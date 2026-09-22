@@ -492,6 +492,9 @@ class ForecastEngine:
         #: hours therefore worth keeping past the compaction.  Set by the
         #: coordinator, because only it knows.
         self.trial_archive = False
+        #: Which curve the branch beside this one is reading with, so the
+        #: archive can say which experiment a row belongs to.
+        self.trial_curve: str | None = None
         self.own_censored: set[tuple[int, str]] = set()
         self.censored_hours: set[tuple[int, str]] = set()
 

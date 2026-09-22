@@ -8,6 +8,7 @@ learning cycle leaves the model where it was.  Neither takes the entities down.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -56,6 +57,7 @@ from .core.irradiance_check import (
     CURSOR_IRRADIANCE_EPOCH,
     CURSOR_IRRADIANCE_EPOCH_SINCE,
     MIN_SAMPLES_PER_HOUR,
+    CURSOR_CALIBRATION_EPOCH,
     SCOPE_CALIBRATION,
     assess as assess_irradiance,
     calibration as irradiance_calibration,
@@ -359,6 +361,12 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         self._irradiance_verdict_memo: dict[str, Any] = {}
         self._reference_fill_day: int | None = None
         self._shadow_failed = False
+        #: Held by anything that changes learned state: the hourly learn pass,
+        #: a reset, a sensor swap.  The store locks a transaction at a time,
+        #: which is not the same thing -- a learn pass that started before a
+        #: reset would save its old model straight back afterwards, and the
+        #: owner would watch the reset appear not to have worked.
+        self.state_lock = asyncio.Lock()
         self.health = Health()
 
     # ------------------------------------------------------------------ #
@@ -494,9 +502,10 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         current_hour = floor_hour(now.timestamp())
         if self._last_learn_hour != current_hour:
             try:
-                self.last_learn_stats = await self.hass.async_add_executor_job(
-                    self._learn_both, int(now.timestamp())
-                )
+                async with self.state_lock:
+                    self.last_learn_stats = await self.hass.async_add_executor_job(
+                        self._learn_both, int(now.timestamp())
+                    )
                 self._last_learn_hour = current_hour
                 stats = self.last_learn_stats.as_dict()
                 # Once an hour, in plain words.  Without it a quiet log means
@@ -637,15 +646,21 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         if not self.plant.weather_sources.ghi_entity:
             return None
 
+        epoch = int(self.store.get_cursor(CURSOR_IRRADIANCE_EPOCH, default=0))
         stored = self.store.load_effects(SCOPE_CALIBRATION)
-        curve = curve_from_rows(stored) if stored else None
+        # The curve is frozen under the epoch it was derived from.  Told that
+        # the instrument changed, the branch must not carry on reading the new
+        # one through the old one's correction -- that is the one case where a
+        # frozen curve is worse than none.
+        frozen_epoch = int(self.store.get_cursor(CURSOR_CALIBRATION_EPOCH, default=0))
+        curve = curve_from_rows(stored) if stored and frozen_epoch == epoch else None
         if curve is None or not curve.active:
-            epoch = self.store.get_cursor(CURSOR_IRRADIANCE_EPOCH, default=0)
             verdict = assess_irradiance(self.store.irradiance_pairs(epoch))
             curve = irradiance_calibration(verdict)
             if not curve.active:
                 return None
             self.store.save_effects(SCOPE_CALIBRATION, curve_to_rows(curve), now_ts)
+            self.store.set_cursors({CURSOR_CALIBRATION_EPOCH: epoch})
             _LOGGER.info(
                 "pvstrings: %s: calibrated branch starting, curve %s over %s",
                 self.plant.name,
@@ -664,7 +679,23 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         engine.load_models()
         return engine
 
+    def _maybe_start_shadow(self, now_ts: int) -> None:
+        """Start the calibrated branch the hour it becomes possible.
+
+        Built only at setup and after a reset, a plant that gathered enough
+        evidence on a Tuesday would start its trial at whatever restart came
+        next -- weeks later, or never on a machine nobody reboots, and then
+        as a surprise.
+        """
+        if self.shadow is not None or not self.plant.weather_sources.ghi_entity:
+            return
+        try:
+            self.shadow = self.build_shadow(now_ts)
+        except Exception:  # noqa: BLE001 - a trial is not a forecast
+            _LOGGER.exception("pvstrings: starting the calibrated branch failed")
+
     def _learn_both(self, now_ts: int) -> LearnStats:
+        self._maybe_start_shadow(now_ts)
         """Run the live branch's learn pass, and the calibrated one beside it.
 
         Both are told which hours the *other* judged curtailed before either
@@ -687,6 +718,7 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         # Told before it learns: the archive is written at the end of the
         # live pass, once both verdicts exist.
         self.engine.trial_archive = True
+        self.engine.trial_curve = self.shadow.calibration.revision
         stats = self.engine.learn(now_ts)
 
         try:
@@ -1652,6 +1684,13 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         and the siblings stay; whatever the bad string leaked into the plant
         scope relearns on its own.
         """
+        # Under the same lock as the learn pass: a pass that started before
+        # this one would otherwise save its old model straight back, and the
+        # owner would watch a reset appear not to have worked.
+        async with self.state_lock:
+            await self._async_reset_learning(string_id)
+
+    async def _async_reset_learning(self, string_id: str | None) -> None:
         if string_id:
             await self.hass.async_add_executor_job(
                 self.store.clear_effects_for_string, string_id

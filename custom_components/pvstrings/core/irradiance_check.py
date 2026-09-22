@@ -633,6 +633,12 @@ def _fade(factor: float, distance: float) -> float:
 #: shape ``model_effects`` already carries for everything else.
 SCOPE_CALIBRATION = "irradiance_curve"
 
+#: The sensor epoch the frozen curve was derived from.  Without it, telling
+#: the integration that the instrument changed would leave the new one being
+#: read through its predecessor's correction -- the one case where a frozen
+#: curve is worse than no curve.
+CURSOR_CALIBRATION_EPOCH = "irradiance_curve_epoch"
+
 
 def curve_to_rows(curve: Calibration) -> dict[str, tuple[float, float]]:
     """The frozen curve in the shape ``save_effects`` takes.

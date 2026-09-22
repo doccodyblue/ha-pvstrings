@@ -571,37 +571,75 @@ def _async_register_services(hass: HomeAssistant) -> None:
             CURSOR_IRRADIANCE_EPOCH_SINCE,
         )
 
+        from .core.irradiance_check import SCOPE_CALIBRATION
+
         coordinator = _coordinator_for(hass, call.data[ATTR_CONFIG_ENTRY_ID])
         store = coordinator.store
         epoch = int(store.get_cursor(CURSOR_IRRADIANCE_EPOCH, default=0)) + 1
         now = int(dt_util.utcnow().timestamp())
 
         def _bump() -> None:
-            # The start matters as much as the counter: the live banking
-            # reaches back two days, and without a floor the old instrument's
-            # last hours would be stamped with the new epoch.
-            store.set_cursor(CURSOR_IRRADIANCE_EPOCH, epoch)
-            store.set_cursor(CURSOR_IRRADIANCE_EPOCH_SINCE, now)
+            # Both cursors in one transaction: a crash between them would
+            # leave the new counter beside the old boundary, and the new
+            # instrument would inherit its predecessor's hours.
+            store.set_cursors(
+                {
+                    CURSOR_IRRADIANCE_EPOCH: epoch,
+                    CURSOR_IRRADIANCE_EPOCH_SINCE: now,
+                }
+            )
+            # And the trial ends here.  Its curve described the old sensor,
+            # and its models were learned through that curve; carrying either
+            # into the new instrument's life would be reading a replacement
+            # through its predecessor's correction.  The archived hours stay,
+            # stamped with the epoch they were measured under, so the old
+            # trial remains readable.
+            store.clear_effects(SCOPE_CALIBRATION)
+            for scope in ("plant#cal", "string#cal", "string_daypart#cal"):
+                store.clear_effects(scope)
+            store.clear_ghi_bias(f"{coordinator.plant.forecast_source}#cal")
+            store.set_cursors({"model_learned#cal": 0})
 
-        await hass.async_add_executor_job(_bump)
+        async with coordinator.state_lock:
+            await hass.async_add_executor_job(_bump)
+            coordinator.shadow = await hass.async_add_executor_job(
+                coordinator.build_shadow, now
+            )
         coordinator.invalidate_irradiance_verdict()
         return {
             "epoch": epoch,
             "since": dt_util.utc_from_timestamp(now).isoformat(),
+            "trial_restarted": coordinator.shadow is not None,
             "note": (
                 "Hours measured before now stay where they are and keep their"
-                " own verdict. The new sensor starts with no evidence, so the"
-                " check says nothing about it until it has gathered some."
+                " own verdict, and so does any trial that was running. The new"
+                " sensor starts with no evidence, so the check says nothing"
+                " about it until it has gathered some."
             ),
         }
 
     async def _calibration_trial(call: ServiceCall) -> dict[str, Any]:
         from .core.experiment import compare, decides
 
+        from .core.irradiance_check import CURSOR_IRRADIANCE_EPOCH
+
         coordinator = _coordinator_for(hass, call.data[ATTR_CONFIG_ENTRY_ID])
-        rows = await hass.async_add_executor_job(
-            coordinator.store.experiment_hours
-        )
+        shadow = coordinator.shadow
+
+        def _rows() -> list[dict[str, Any]]:
+            # This trial only.  Hours measured under a sensor that has since
+            # been replaced, or under a curve that has since been re-derived,
+            # describe a different experiment -- and pooling them would let a
+            # verdict about this week rest mostly on last month.
+            epoch = int(
+                coordinator.store.get_cursor(CURSOR_IRRADIANCE_EPOCH, default=0)
+            )
+            return coordinator.store.experiment_hours(
+                epoch=epoch,
+                curve=None if shadow is None else shadow.calibration.revision,
+            )
+
+        rows = await hass.async_add_executor_job(_rows)
         # The zone itself, not one offset frozen at the moment of asking: a
         # six-week autumn trial crosses the clock change, and a September noon
         # would otherwise be filed as eleven o'clock.

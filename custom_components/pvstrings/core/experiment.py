@@ -36,6 +36,7 @@ import math
 from datetime import datetime
 from typing import Any, Iterable, Mapping, Sequence
 
+from .irradiance_check import CURSOR_IRRADIANCE_EPOCH
 from .quality import VALUE_MEASURED
 
 HOUR = 3600
@@ -313,10 +314,11 @@ def archive(engine: Any, start_ts: int, end_ts: int) -> int:
     measured = store.measured_ghi_hours(start_ts, end_ts, min_samples=1)
     clear = _clearsky_by_hour(engine, sorted(measured))
 
-    censored = {
-        (hour, string_id)
-        for hour, string_id in set(engine.own_censored) | set(engine.censored_hours)
-    }
+    censored = set(engine.own_censored) | set(engine.censored_hours)
+    # Stamped with the trial the row belongs to, so a sensor swap or a reset
+    # starts a new experiment rather than extending the old one's evidence.
+    epoch = int(store.get_cursor(CURSOR_IRRADIANCE_EPOCH, default=0))
+    revision = engine.trial_curve
 
     rows = []
     for key, row in lead0.items():
@@ -338,6 +340,8 @@ def archive(engine: Any, start_ts: int, end_ts: int) -> int:
                 None if da is None else da["calibrated_kwh"],
                 sky,
                 1 if key in censored or row["value_kind"] != VALUE_MEASURED else 0,
+                epoch,
+                revision,
             )
         )
     return store.archive_experiment_hours(rows)

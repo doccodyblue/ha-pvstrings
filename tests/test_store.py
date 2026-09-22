@@ -2357,3 +2357,62 @@ class TestResettingOneStringReachesEveryBranch:
         for scope in ("string_daypart", "string_daypart#cal"):
             assert "s1|morning" not in store.load_effects(scope)
             assert "s2|morning" in store.load_effects(scope)
+
+
+class TestATrialIsTellableFromAnother:
+    """A sensor swap or a reset starts a new experiment, not a longer one.
+
+    Without a trial identity on the archived rows, a verdict about this
+    week's curve would be drawn mostly from hours measured under last
+    month's -- and the more evidence piled up, the more confident the wrong
+    answer would look.
+    """
+
+    @staticmethod
+    def row(hour, epoch, curve):
+        return (hour, "s1", 1.0, 1.1, 1.0, 1.1, 1.0, 0.9, 0, epoch, curve)
+
+    def test_hours_are_filtered_by_epoch_and_curve(self, store):
+        store.archive_experiment_hours(
+            [
+                self.row(3600, 0, "aaa"),
+                self.row(7200, 0, "bbb"),
+                self.row(10800, 1, "bbb"),
+            ]
+        )
+        assert len(store.experiment_hours()) == 3
+        assert [r["ts_utc"] for r in store.experiment_hours(epoch=0)] == [3600, 7200]
+        assert [
+            r["ts_utc"] for r in store.experiment_hours(epoch=0, curve="bbb")
+        ] == [7200]
+
+    def test_an_old_row_gains_the_default_epoch(self, store):
+        """Rows written before the columns existed belong to epoch zero."""
+        store.archive_experiment_hours([(3600, "s1", 1.0, 1.1, 1.0, 1.1, 1.0, 0.9, 0)])
+        assert store.experiment_hours()[0]["epoch"] == 0
+
+
+class TestCursorsThatBelongTogether:
+    def test_they_are_written_in_one_transaction(self, store):
+        """A sensor swap writes a counter and a boundary.
+
+        Separately, a crash between them leaves the new counter beside the
+        old boundary -- and the new instrument inherits its predecessor's
+        hours.
+        """
+        store.set_cursors({"irradiance_epoch": 3, "irradiance_epoch_since": 999})
+        assert store.get_cursor("irradiance_epoch") == 3
+        assert store.get_cursor("irradiance_epoch_since") == 999
+        store.set_cursors({"irradiance_epoch": 4})
+        assert store.get_cursor("irradiance_epoch") == 4
+        assert store.get_cursor("irradiance_epoch_since") == 999
+
+
+class TestEndingATrialLeavesTheForecastAlone:
+    def test_one_branch_loses_its_bias_buckets(self, store):
+        """Ending a trial is not resetting the plant."""
+        store.save_ghi_bias("open-meteo", {(12, "0-6h"): (100.0, 120.0, 5.0, 0)}, 0)
+        store.save_ghi_bias("open-meteo#cal", {(12, "0-6h"): (100.0, 90.0, 5.0, 0)}, 0)
+        store.clear_ghi_bias("open-meteo#cal")
+        assert store.load_ghi_bias("open-meteo")
+        assert not store.load_ghi_bias("open-meteo#cal")
