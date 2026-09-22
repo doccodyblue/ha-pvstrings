@@ -147,3 +147,11 @@ new_irradiance_sensor:
       selector:
         config_entry:
           integration: pvstrings
+
+calibration_trial:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: pvstrings

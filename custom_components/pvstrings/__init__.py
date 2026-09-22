@@ -95,6 +95,7 @@ from .const import (
     ATTR_FROM_DATE,
     SERVICE_BACKFILL,
     SERVICE_BACKFILL_IRRADIANCE,
+    SERVICE_CALIBRATION_TRIAL,
     SERVICE_NEW_IRRADIANCE_SENSOR,
     SERVICE_CLEAR_PRICES,
     SERVICE_GET_DAY,
@@ -581,6 +582,35 @@ def _async_register_services(hass: HomeAssistant) -> None:
             ),
         }
 
+    async def _calibration_trial(call: ServiceCall) -> dict[str, Any]:
+        from .core.experiment import compare, decides
+
+        coordinator = _coordinator_for(hass, call.data[ATTR_CONFIG_ENTRY_ID])
+        rows = await hass.async_add_executor_job(
+            coordinator.store.experiment_hours
+        )
+        offset = coordinator.engine._tz.utcoffset(dt_util.utcnow())
+        offset_s = 0 if offset is None else int(offset.total_seconds())
+        out: dict[str, Any] = {
+            "running": coordinator.shadow is not None,
+            "curve": (
+                None
+                if coordinator.shadow is None
+                else coordinator.shadow.calibration.as_dict()
+            ),
+        }
+        for horizon in ("da", "now"):
+            result = compare(rows, offset_s, horizon)
+            result["verdict"] = decides(result)
+            out["day_ahead" if horizon == "da" else "short_term"] = result
+        out["note"] = (
+            "Diagnosis of a trial, not a setting. The published forecast is"
+            " the live branch until the criterion in core/experiment.py says"
+            " otherwise, and that criterion was written down before the trial"
+            " began."
+        )
+        return out
+
     async def _get_day(call: ServiceCall) -> dict[str, Any]:
         from .core.history import day_payload
 
@@ -664,6 +694,13 @@ def _async_register_services(hass: HomeAssistant) -> None:
         _new_irradiance_sensor,
         schema=ENTRY_SERVICE_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_CALIBRATION_TRIAL,
+        _calibration_trial,
+        schema=ENTRY_SERVICE_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
     )
     # Read-only and response-only: nothing lands in the recorder, and no admin
     # requirement -- the dashboard calls these from wall tablets.

@@ -680,6 +680,9 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
             self.engine.censored_hours = self.shadow.evaluate_curtailment(
                 *window, write=False
             )
+        # Told before it learns: the archive is written at the end of the
+        # live pass, once both verdicts exist.
+        self.engine.trial_archive = True
         stats = self.engine.learn(now_ts)
 
         try:

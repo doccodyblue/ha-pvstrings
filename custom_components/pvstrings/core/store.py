@@ -36,7 +36,7 @@ SHADING_THIN_DAYS = 120
 
 _LOGGER = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS string_geometry (
@@ -295,6 +295,31 @@ CREATE INDEX IF NOT EXISTS ix_irradiance_reference_pending
 -- not here: this script runs first, so on a database that predates the
 -- column a partial index naming it fails -- and takes the whole setup with
 -- it.
+
+-- One row per scored hour of the calibration trial: what each branch
+-- predicted, what arrived, and how clear the sky was.  Its own table because
+-- the forecast log is compacted after 35 days -- of 56 trial days only 35
+-- day-ahead issues would survive -- and because a quantile over the whole
+-- trial cannot be rebuilt from weekly quantiles.  Never purged: it is a few
+-- hundred rows a month and it is the evidence the decision rests on.
+CREATE TABLE IF NOT EXISTS experiment_hours (
+    ts_utc      INTEGER NOT NULL,
+    string_id   TEXT    NOT NULL,
+    actual_kwh  REAL,
+    -- The last issue before the hour began, so the nowcast is included.
+    live_kwh    REAL,
+    shadow_kwh  REAL,
+    -- The evening-before issue, where the bias model and the weather class
+    -- dominate and the nowcast does not reach.
+    live_da_kwh REAL,
+    shadow_da_kwh REAL,
+    -- Raw measured irradiance over clear-sky.  Raw on purpose: it has to
+    -- select the same hours for both branches, and it is used by rank, which
+    -- no scale error can disturb.
+    clearness   REAL,
+    censored    INTEGER,
+    PRIMARY KEY (ts_utc, string_id)
+);
 
 CREATE TABLE IF NOT EXISTS exclusions (
     ts_utc    INTEGER NOT NULL,
@@ -2216,6 +2241,50 @@ class Store:
             (int(epoch), int(before_ts), int(limit)),
         )
         return [int(row["ts_utc"]) for row in rows]
+
+    def archive_experiment_hours(self, rows: Iterable[tuple[Any, ...]]) -> int:
+        """Record a scored hour of the trial, or correct one already recorded.
+
+        Replaces rather than ignores: an hour can be archived before its
+        day-ahead pairing is complete, and the next pass has to be able to
+        fill it in.
+        """
+        payload = list(rows)
+        if not payload:
+            return 0
+        with self._tx() as conn:
+            conn.executemany(
+                """
+                INSERT INTO experiment_hours
+                    (ts_utc, string_id, actual_kwh, live_kwh, shadow_kwh,
+                     live_da_kwh, shadow_da_kwh, clearness, censored)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (ts_utc, string_id) DO UPDATE SET
+                    actual_kwh    = excluded.actual_kwh,
+                    live_kwh      = excluded.live_kwh,
+                    shadow_kwh    = excluded.shadow_kwh,
+                    live_da_kwh   = excluded.live_da_kwh,
+                    shadow_da_kwh = excluded.shadow_da_kwh,
+                    clearness     = excluded.clearness,
+                    censored      = excluded.censored
+                """,
+                payload,
+            )
+        return len(payload)
+
+    def experiment_hours(
+        self, start_ts: int = 0, end_ts: int | None = None
+    ) -> list[dict[str, Any]]:
+        """Every archived hour of the trial, oldest first."""
+        end = 1 << 62 if end_ts is None else int(end_ts)
+        return [
+            dict(row)
+            for row in self._query(
+                "SELECT * FROM experiment_hours"
+                " WHERE ts_utc >= ? AND ts_utc < ? ORDER BY ts_utc",
+                (int(start_ts), end),
+            )
+        ]
 
     def irradiance_hours_awaiting_cross(
         self, epoch: int, before_ts: int, limit: int = 500

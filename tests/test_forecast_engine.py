@@ -1943,3 +1943,93 @@ class TestTheFrozenCurve:
         knots = curve_from_rows(store.load_effects(SCOPE_CALIBRATION)).knots
         assert [x for x, _ in knots] == sorted(x for x, _ in knots)
         assert knots[0][0] == pytest.approx(9.3)
+
+
+class TestTheTrialArchive:
+    """What the comparison will be decided on, kept where compaction cannot reach.
+
+    The forecast log is thinned after 35 days to one issue per hour. Of a
+    56-day trial only the last 35 evening-before issues would survive, and
+    the trial would end up judged on its own second half.
+    """
+
+    @staticmethod
+    def seed(store, engine, hour, actual=1.0, live=1.2, shadow=0.95):
+        store.upsert_hourly(
+            [(hour, "s1", actual, 1.0, 0.0, None, None, None, "measured", "exact")]
+        )
+        # Two issues: one from the evening before, one from just before the
+        # hour, which is what the two horizons in the archive mean.
+        day_start = local_midnight(hour, 0, engine._tz)
+        store.log_forecast(
+            [
+                (engine.day_ahead_cutoff(day_start), hour, "s1", live, "corrected",
+                 None, None, shadow),
+                (hour - HOUR, hour, "s1", live + 0.1, "corrected",
+                 None, None, shadow + 0.1),
+            ]
+        )
+        store.upsert_weather_actual(
+            [
+                (hour + step, None, None, None, None, None, 500.0, None)
+                for step in range(0, HOUR, 300)
+            ]
+        )
+
+    def test_both_horizons_land_in_one_row(self, seeded_store, plant):
+        from core.experiment import archive
+
+        engine = ForecastEngine(plant, seeded_store)
+        engine.load_models()
+        hour = NOON
+        self.seed(seeded_store, engine, hour)
+
+        assert archive(engine, hour, hour + HOUR) == 1
+        row = seeded_store.experiment_hours()[0]
+        assert row["actual_kwh"] == pytest.approx(1.0)
+        # The last issue before the hour, so the nowcast is in it.
+        assert row["live_kwh"] == pytest.approx(1.3)
+        assert row["shadow_kwh"] == pytest.approx(1.05)
+        # And the evening before, where the nowcast does not reach.
+        assert row["live_da_kwh"] == pytest.approx(1.2)
+        assert row["shadow_da_kwh"] == pytest.approx(0.95)
+
+    def test_it_records_how_clear_the_sky_measurably_was(
+        self, seeded_store, plant
+    ):
+        """From the raw sensor, so it selects the same hours for both branches."""
+        from core.experiment import archive
+
+        engine = ForecastEngine(plant, seeded_store)
+        engine.load_models()
+        self.seed(seeded_store, engine, NOON)
+        archive(engine, NOON, NOON + HOUR)
+        clearness = seeded_store.experiment_hours()[0]["clearness"]
+        assert clearness is not None and 0.3 < clearness < 1.2
+
+    def test_a_curtailed_hour_is_marked_by_either_branch(
+        self, seeded_store, plant
+    ):
+        """A bright hour held back is the one thing no forecast can be
+        blamed for, and the two branches disagree about which hours those
+        are -- so the archive takes the union."""
+        from core.experiment import archive
+
+        engine = ForecastEngine(plant, seeded_store)
+        engine.load_models()
+        self.seed(seeded_store, engine, NOON)
+        engine.censored_hours = {(NOON, "s1")}
+        archive(engine, NOON, NOON + HOUR)
+        assert seeded_store.experiment_hours()[0]["censored"] == 1
+
+    def test_a_later_pass_completes_a_row_rather_than_duplicating_it(
+        self, seeded_store, plant
+    ):
+        from core.experiment import archive
+
+        engine = ForecastEngine(plant, seeded_store)
+        engine.load_models()
+        self.seed(seeded_store, engine, NOON)
+        archive(engine, NOON, NOON + HOUR)
+        archive(engine, NOON, NOON + HOUR)
+        assert len(seeded_store.experiment_hours()) == 1

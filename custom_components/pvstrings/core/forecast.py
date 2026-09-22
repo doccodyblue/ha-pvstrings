@@ -488,6 +488,10 @@ class ForecastEngine:
         #: that; learning on the union keeps the comparison on one set of
         #: hours instead of measuring who compensates the other's mistake.
         self.last_window: tuple[int, int] | None = None
+        #: Whether a calibrated branch is running beside this one, and its
+        #: hours therefore worth keeping past the compaction.  Set by the
+        #: coordinator, because only it knows.
+        self.trial_archive = False
         self.own_censored: set[tuple[int, str]] = set()
         self.censored_hours: set[tuple[int, str]] = set()
 
@@ -2123,6 +2127,17 @@ class ForecastEngine:
         if not self.shadow:
             stats.curves_learned = self.fit_curves(now_ts)
         stats.ghi_hours_rejected = len(self.implausible_ghi_hours(start, end))
+        if not self.shadow and self.trial_archive:
+            # After both branches have learned the window, so the union of
+            # their curtailment verdicts is settled -- and only from the live
+            # branch, because the archive holds one row per hour with both
+            # branches in it.
+            from .experiment import archive
+
+            try:
+                archive(self, start, end)
+            except Exception:  # noqa: BLE001 - the archive is evidence, not forecast
+                _LOGGER.exception("pvstrings: archiving trial hours failed")
         self.store.set_cursor(self._ns(CURSOR_LEARN), end)
         if not self.shadow:
             self.store.set_cursor(CURSOR_HOURLY, end)

@@ -634,6 +634,16 @@
         }
       }
     },
+    "calibration_trial": {
+      "name": "How is the calibration trial going?",
+      "description": "Compare the published forecast with the one a branch reading the irradiance sensor through a calibration curve would have made, over the clearest hours of the trial. Reports both, at two horizons, and whether the criterion written down before the trial began has been met. Nothing here changes what the plant forecasts.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Plant",
+          "description": "Which plant's trial to report."
+        }
+      }
+    },
     "clear_price_history": {
       "name": "Clear recorded prices",
       "description": "Forget every tariff price recorded from a date on. Those hours fall back to the fixed price. Use it after pointing at the wrong sensor, or at one reporting a different currency -- a wrong price is recorded, folded and then compacted, and a wrong money figure is not one anybody spots by looking at it.",

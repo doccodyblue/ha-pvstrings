@@ -634,6 +634,16 @@
         }
       }
     },
+    "calibration_trial": {
+      "name": "Wie läuft der Kalibrierungsversuch?",
+      "description": "Vergleicht die veröffentlichte Prognose mit der, die ein Zweig gemacht hätte, der den Einstrahlungssensor durch eine Korrekturkurve liest -- über die klarsten Stunden des Versuchs. Berichtet beide, auf zwei Horizonten, und ob das vor dem Versuch festgeschriebene Kriterium erfüllt ist. Nichts davon ändert, was die Anlage prognostiziert.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Anlage",
+          "description": "Welcher Versuch berichtet wird."
+        }
+      }
+    },
     "clear_price_history": {
       "name": "Aufgezeichnete Preise verwerfen",
       "description": "Vergisst jeden ab einem Datum aufgezeichneten Tarifpreis; die betroffenen Stunden fallen auf den Festpreis zurück. Für den Fall, dass der falsche Sensor eingetragen war oder einer in fremder Währung — ein falscher Preis wird aufgezeichnet, gefaltet und dann kompaktiert, und einen falschen Geldbetrag sieht man ihm nicht an.",
