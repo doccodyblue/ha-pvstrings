@@ -1633,3 +1633,231 @@ class TestLocalMidnight:
         tz = ZoneInfo("Europe/Berlin")
         start = int(datetime(2026, 10, 25, tzinfo=tz).timestamp())
         assert local_midnight(start, 1, tz) - start == 25 * 3600
+
+
+class TestTheShadowBranch:
+    """A second engine on the same database, learning from corrected readings.
+
+    The whole design rests on one rule: anything describing *what happened*
+    has a single author, and only what a branch *concluded* is its own. Break
+    that and the two branches overwrite each other's bookkeeping, which looks
+    like a comparison right up until the moment its result means nothing.
+    """
+
+    @staticmethod
+    def with_sensor(plant):
+        from dataclasses import replace
+
+        return replace(
+            plant,
+            weather_sources=replace(
+                plant.weather_sources, ghi_entity="sensor.station_ghi"
+            ),
+        )
+
+    @staticmethod
+    def seed_irradiance(store, hour, wm2=600.0):
+        store.upsert_weather_actual(
+            [
+                (hour + step, None, None, None, None, None, wm2, None)
+                for step in range(0, HOUR, 300)
+            ]
+        )
+
+    @staticmethod
+    def shadow(plant, store):
+        from core.irradiance_check import Calibration
+
+        engine = ForecastEngine(
+            plant,
+            store,
+            variant="cal",
+            shadow=True,
+            # Deliberately a real curve, and one whose knots straddle the
+            # sun's height at the test's noon: an inert one, or one that
+            # faded out over the window, would let a branch that writes into
+            # the live namespace pass unnoticed.
+            calibration=Calibration(((10.0, 1.40), (65.0, 1.20))),
+        )
+        engine.load_models()
+        return engine
+
+    def test_the_two_branches_keep_separate_models(self, seeded_store, plant):
+        live = ForecastEngine(plant, seeded_store)
+        live.load_models()
+        shade = self.shadow(plant, seeded_store)
+
+        from core.learning import Effect
+
+        live.model.plant["clear|midday"] = Effect(value=0.20, n_eff=12.0)
+        shade.model.plant["clear|midday"] = Effect(value=-0.30, n_eff=12.0)
+        live.save_models(NOON)
+        shade.save_models(NOON)
+
+        reloaded_live = ForecastEngine(plant, seeded_store)
+        reloaded_live.load_models()
+        reloaded_shade = self.shadow(plant, seeded_store)
+        assert reloaded_live.model.plant["clear|midday"].value == pytest.approx(0.20)
+        assert reloaded_shade.model.plant["clear|midday"].value == pytest.approx(-0.30)
+
+    def test_the_shadow_keeps_its_own_cursor(self, seeded_store, plant):
+        """Otherwise one branch would step the other over its own hours."""
+        live = ForecastEngine(plant, seeded_store)
+        live.load_models()
+        live.learn(NOON + 3 * HOUR)
+        shade = self.shadow(plant, seeded_store)
+        assert seeded_store.get_cursor(CURSOR_LEARN, default=0) > 0
+        assert seeded_store.get_cursor("model_learned#cal", default=0) == 0
+
+    def test_the_shadow_starts_now_and_not_two_days_ago(self, seeded_store, plant):
+        """Forward only, and on the first pass too.
+
+        A cold start reaches back two days. For a branch that exists to test
+        a different reading of the past, that is the one thing it must not
+        do -- its first window would be hours it never saw corrected.
+        """
+        shade = self.shadow(plant, seeded_store)
+        shade.learn(NOON + 3 * HOUR)
+        cursor = seeded_store.get_cursor("model_learned#cal", default=0)
+        assert cursor >= floor_hour(NOON + 3 * HOUR) - HOUR
+
+    #: Everything that records what happened rather than what a branch
+    #: concluded.  Two branches writing any of these would overwrite each
+    #: other's bookkeeping, and the comparison would be measuring that.
+    SHARED_WRITES = (
+        "update_curtailment_flags",
+        "mark_conversion_censored",
+        "upsert_hourly",
+        "materialise_plant_hourly",
+        "add_shading_obs",
+        "add_exclusion",
+        "replace_effects",
+        "set_cursor",
+    )
+
+    @staticmethod
+    def recording(store, names):
+        """A store that notes which of ``names`` were called, and with what."""
+        seen: list[tuple[str, tuple]] = []
+
+        class Recorder:
+            def __getattr__(self, item):
+                target = getattr(store, item)
+                if item not in names:
+                    return target
+
+                def wrapper(*args, **kwargs):
+                    seen.append((item, args))
+                    return target(*args, **kwargs)
+
+                return wrapper
+
+        return Recorder(), seen
+
+    def test_the_shadow_writes_none_of_the_shared_bookkeeping(
+        self, seeded_store, plant
+    ):
+        """The heart of the isolation, and checked by watching the calls.
+
+        Not by counting rows: most of these writes are upserts, so a shadow
+        branch repeating the live branch's work leaves the table exactly the
+        same size while quietly deciding what it contains.
+        """
+        live = ForecastEngine(plant, seeded_store)
+        live.load_models()
+        live.learn(NOON + 3 * HOUR)
+
+        recorder, seen = self.recording(seeded_store, set(self.SHARED_WRITES))
+        shade = self.shadow(plant, recorder)
+        shade.learn(NOON + 3 * HOUR)
+
+        touched = {name for name, _args in seen}
+        # The one exception, and it is namespaced: a branch has to remember
+        # how far it has learned.
+        cursors = {args[0] for name, args in seen if name == "set_cursor"}
+        assert touched <= {"set_cursor"}, f"shadow wrote shared state: {touched}"
+        assert cursors == {"model_learned#cal"}, cursors
+
+    def test_the_shadow_never_claims_the_one_off_bias_backfill(
+        self, seeded_store, plant
+    ):
+        """It claims the cursor before doing the work, so even an empty run
+        would lock the live branch out of a backfill it has not had yet."""
+        from core.forecast import CURSOR_BIAS
+
+        shade = self.shadow(plant, seeded_store)
+        shade.learn(NOON + 3 * HOUR)
+        assert seeded_store.get_cursor(CURSOR_BIAS, default=0) == 0
+
+    def test_the_shadow_learns_one_hour_not_two_days(self, seeded_store, plant):
+        """A cold start reaches back 48 hours. For this branch that is the
+        one thing it must not do: its first window would be hours it never
+        saw corrected, learned as if it had."""
+        now = NOON + 3 * HOUR
+        shade = self.shadow(plant, seeded_store)
+        shade.learn(now)
+        live = ForecastEngine(plant, seeded_store)
+        live.load_models()
+        live.learn(now)
+
+        last_closed = floor_hour(now) - HOUR
+        assert shade.last_window == (last_closed, last_closed + HOUR)
+        # The live branch, cold, reaches back its whole window.
+        assert live.last_window[0] < shade.last_window[0]
+
+    def test_a_stuck_sensor_stays_stuck_for_the_shadow_too(
+        self, seeded_store, plant
+    ):
+        """The nowcast must refuse a frozen sensor in both branches.
+
+        A curve that climbs with the sun turns three identical readings into
+        three different ones, and the check that exists to catch a dead
+        instrument would pass it through.
+        """
+        from core import persistence
+
+        sensed = self.with_sensor(plant)
+        self.seed_irradiance(seeded_store, NOON, wm2=400.0)
+        shade = self.shadow(sensed, seeded_store)
+        _state, reason = shade._sky_now(NOON + HOUR - 1)
+        assert reason == persistence.REASON_FROZEN
+
+    def test_a_curve_changes_what_the_branch_believes_it_measured(
+        self, seeded_store, plant
+    ):
+        sensed = self.with_sensor(plant)
+        self.seed_irradiance(seeded_store, NOON)
+        live = ForecastEngine(sensed, seeded_store)
+        shade = self.shadow(sensed, seeded_store)
+        raw = live._measured_ghi(NOON, NOON + HOUR)
+        corrected = shade._measured_ghi(NOON, NOON + HOUR)
+        assert raw is not None and corrected is not None
+        assert (corrected > raw).all()
+        # The curve is a function of the sun's height, not one number: at
+        # noon in June the sun climbs through the hour, so the factor is not
+        # the same at its start and its end.
+        assert (corrected / raw).nunique() > 1
+
+    def test_the_liveness_check_still_reads_the_raw_sensor(
+        self, seeded_store, plant
+    ):
+        """A rising curve would turn a stuck sensor into a lively one.
+
+        Three identical readings on a climbing sun become three different
+        ones the moment a curve is applied before the check -- and a dead
+        instrument would go on driving the nowcast.
+        """
+        sensed = self.with_sensor(plant)
+        # A stuck sensor: the same reading all hour.
+        self.seed_irradiance(seeded_store, NOON, wm2=400.0)
+        shade = self.shadow(sensed, seeded_store)
+        raw = shade._raw_measured_ghi(NOON, NOON + HOUR)
+        corrected = shade._calibrated_ghi(NOON, NOON + HOUR)
+        assert raw is not None
+        assert raw.nunique() == 1, "the fixture must hand the check a frozen sensor"
+        assert corrected.nunique() > 1, "and the curve must be what unfreezes it"
+
+        from core import persistence
+
+        assert persistence.looks_frozen(raw.to_numpy())
+        assert not persistence.looks_frozen(corrected.to_numpy())

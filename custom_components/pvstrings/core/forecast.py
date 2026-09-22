@@ -60,6 +60,7 @@ from .plausibility import (
     judgement_floor,
     plant_ceiling_w,
 )
+from .irradiance_check import Calibration
 from .shading import METHOD_DIFFERENTIAL, ShadingModel
 from .quality import (
     QUALITY_NIGHT,
@@ -426,7 +427,27 @@ class ForecastEngine:
         plant: PlantConfig,
         store: Store,
         physics: PhysicsEngine | None = None,
+        *,
+        variant: str = "",
+        calibration: Calibration | None = None,
+        shadow: bool = False,
     ) -> None:
+        #: Empty for the branch whose forecast is published, a short name for
+        #: any branch running beside it.  Everything this engine learns is
+        #: stored under a scope carrying the name, so two branches share one
+        #: database without ever seeing each other's models.
+        self.variant = variant
+        #: A shadow branch reads the same data and learns its own models, but
+        #: writes nothing the other branch also writes.  The list of what that
+        #: means is in ``learn`` and at each write site; the rule is that
+        #: anything describing *what happened* belongs to the live branch, and
+        #: only what a branch *concluded* is its own.
+        self.shadow = shadow
+        #: What to multiply the sensor's readings by, or ``None`` to believe
+        #: them.  Frozen for the life of the engine: a curve that moved would
+        #: leave observations learned under two different meanings of the same
+        #: number in one model.
+        self.calibration = calibration
         self.plant = plant
         self.store = store
         self.physics = physics or PhysicsEngine(
@@ -445,7 +466,7 @@ class ForecastEngine:
         #: Memoised result of the irradiance plausibility check.  One learn
         #: cycle asks for the measured GHI three times over the same window;
         #: the check is not free and must not be counted three times either.
-        self._implausible_key: tuple[int, int] | None = None
+        self._implausible_key: tuple[int, int, str] | None = None
         self._implausible_hours: frozenset[int] = frozenset()
         self._shading_fitted_day: int | None = None
         self._shading_fitted_counts: dict[str, int] = {}
@@ -457,19 +478,36 @@ class ForecastEngine:
         #: it read nothing when it did not.  Diagnostics only.
         self.last_nowcast: persistence.SkyState | None = None
         self.last_nowcast_reason: str = persistence.REASON_NO_SOURCE
+        #: Hours this branch judged curtailed on its last learn pass, and the
+        #: hours *either* branch judged so.  They differ because the verdict
+        #: is computed from irradiance, and the two branches disagree about
+        #: that; learning on the union keeps the comparison on one set of
+        #: hours instead of measuring who compensates the other's mistake.
+        self.last_window: tuple[int, int] | None = None
+        self.own_censored: set[tuple[int, str]] = set()
+        self.censored_hours: set[tuple[int, str]] = set()
 
     # ------------------------------------------------------------------ #
     # model state
     # ------------------------------------------------------------------ #
 
+    def _ns(self, name: str) -> str:
+        """This branch's name for a scope, a source or a cursor.
+
+        The live branch keeps the bare names, so an existing database needs no
+        migration and a branch that is switched off leaves nothing behind that
+        the other has to skip over.
+        """
+        return f"{name}#{self.variant}" if self.variant else name
+
     def load_models(self) -> None:
         self.model = LogRatioModel.from_rows(
-            plant=self.store.load_effects(SCOPE_PLANT),
-            string=self.store.load_effects(SCOPE_STRING),
-            string_daypart=self.store.load_effects(SCOPE_STRING_DAYPART),
+            plant=self.store.load_effects(self._ns(SCOPE_PLANT)),
+            string=self.store.load_effects(self._ns(SCOPE_STRING)),
+            string_daypart=self.store.load_effects(self._ns(SCOPE_STRING_DAYPART)),
         )
         self.ghi_bias = GhiBiasModel.from_rows(
-            self.store.load_ghi_bias(self.plant.forecast_source)
+            self.store.load_ghi_bias(self._ns(self.plant.forecast_source))
         )
         self.curves = curve_learning.from_rows(
             self.store.load_effects(SCOPE_CONVERSION_CURVE),
@@ -626,16 +664,21 @@ class ForecastEngine:
 
     def save_models(self, now_ts: int) -> None:
         for scope in (SCOPE_PLANT, SCOPE_STRING, SCOPE_STRING_DAYPART):
-            self.store.save_effects(scope, self.model.to_rows(scope), now_ts)
+            self.store.save_effects(
+                self._ns(scope), self.model.to_rows(scope), now_ts
+            )
         self.store.save_ghi_bias(
-            self.plant.forecast_source, self.ghi_bias.to_rows(), now_ts
+            self._ns(self.plant.forecast_source), self.ghi_bias.to_rows(), now_ts
         )
         # Replace, not merge: a point that fell back below its evidence
         # threshold must disappear from the database too, or it returns as
         # "learned" after the next restart.  Skipped entirely while learning
         # is switched off -- that switch is for comparing against bare
         # physics, and it must not quietly destroy what was learned before.
-        if self.plant.learning_enabled:
+        # Shared with the other branch and not irradiance-derived: the pairs
+        # are electrical, measured either side of the inverter.  One owner,
+        # the live branch, so a promotion cannot change what they mean.
+        if self.plant.learning_enabled and not self.shadow:
             self.store.replace_effects(
                 SCOPE_CONVERSION_CURVE, curve_learning.to_rows(self.curves), now_ts
             )
@@ -803,8 +846,13 @@ class ForecastEngine:
         if start >= end:
             return None, persistence.REASON_THIN
 
+        # Raw for the liveness check below, believed for the clearness index:
+        # a curve that climbs with the sun would turn a stuck sensor's three
+        # identical readings into three different ones and let a dead
+        # instrument drive the nowcast.
+        raw = self._raw_measured_ghi(start, end)
         measured = self._measured_ghi(start, end)
-        if measured is None or measured.empty:
+        if measured is None or measured.empty or raw is None:
             return None, persistence.REASON_NO_MEASUREMENT
         # A sensor that fell over must not leave its last factor standing.
         if int(measured.index.max()) < end - persistence.WINDOW_SECONDS:
@@ -834,11 +882,12 @@ class ForecastEngine:
             [int(value.timestamp()) - INTERVAL_SECONDS // 2 for value in index]
         )
         aligned = measured.reindex(epochs).to_numpy(dtype=float)
+        aligned_raw = raw.reindex(epochs).to_numpy(dtype=float)
 
         # Fresh rows are not the same as a live sensor: the collector's
         # watchdog stamps every sample with the moment it looked, so an entity
         # that stopped updating still fills the window with a dead value.
-        if persistence.looks_frozen(aligned):
+        if persistence.looks_frozen(aligned_raw):
             return None, persistence.REASON_FROZEN
 
         return persistence.sky_state(
@@ -1301,7 +1350,9 @@ class ForecastEngine:
     # curtailment evaluation on the five-minute grid
     # ------------------------------------------------------------------ #
 
-    def evaluate_curtailment(self, start_ts: int, end_ts: int) -> int:
+    def evaluate_curtailment(
+        self, start_ts: int, end_ts: int, write: bool = True
+    ) -> set[tuple[int, str]]:
         """Decide, per five-minute interval, whether output was actually held back.
 
         Two independent ceilings can bite, and both have to be tested:
@@ -1321,10 +1372,10 @@ class ForecastEngine:
         """
         index = self._midpoint_index(start_ts, end_ts)
         if len(index) == 0:
-            return 0
+            return set()
         conditions = self._actual_conditions(index, start_ts, end_ts)
         if conditions is None:
-            return 0
+            return set()
 
         potentials, _beams = self._interval_power(index, conditions)
         rows: dict[str, dict[int, Any]] = {}
@@ -1339,6 +1390,7 @@ class ForecastEngine:
         group_flags = self._group_binding(rows, potentials)
 
         updates: list[tuple[int | None, int, str]] = []
+        censored: set[tuple[int, str]] = set()
         for string in self.plant.strings:
             series = potentials.get(string.string_id)
             if series is None:
@@ -1350,13 +1402,20 @@ class ForecastEngine:
                 )
                 shared = group_flags.get(string.curtailment_group_id, {}).get(ts)
                 binding = curt.combine_binding(own, shared)
+                if binding:
+                    censored.add((int(ts) // HOUR * HOUR, string.string_id))
                 if binding is None and row["limit_binding"] is None:
                     continue
                 updates.append(
                     (None if binding is None else int(binding), ts, string.string_id)
                 )
-        self.store.update_curtailment_flags(updates)
-        return len(updates)
+        # The verdict is irradiance-derived, so the two branches disagree
+        # about it -- and a branch that inherits the other's would learn a
+        # throttled interval as an honest loss.  Only one branch records it;
+        # both are told the union, so they learn on the same hours.
+        if write:
+            self.store.update_curtailment_flags(updates)
+        return censored
 
     @staticmethod
     def _binding_span(rows: dict[str, dict[int, Any]]) -> tuple[int, int]:
@@ -1724,8 +1783,33 @@ class ForecastEngine:
             return None
         return pd.Series(values).sort_index()
 
-    def _measured_ghi(self, start_ts: int, end_ts: int) -> pd.Series | None:
+    def _calibrated_ghi(self, start_ts: int, end_ts: int) -> pd.Series | None:
+        """The sensor's readings as this branch believes them.
+
+        The live branch believes them as they are.  A branch carrying a curve
+        scales each reading by what the curve says for the sun's height at
+        that moment -- which is where the error lives, so a single factor
+        would not do.
+
+        Deliberately not inside ``_raw_measured_ghi``: the liveness check
+        reads that one, and a curve rising with the morning would turn three
+        identical readings from a stuck sensor into three different ones.
+        """
         series = self._raw_measured_ghi(start_ts, end_ts)
+        if series is None or self.calibration is None or not self.calibration.active:
+            return series
+        epochs = series.index.to_numpy()
+        position = self.physics.solar_position(
+            to_index(epochs + INTERVAL_SECONDS // 2)
+        )
+        elevation = position["apparent_elevation"].to_numpy()
+        factors = np.array(
+            [self.calibration.factor(float(value)) for value in elevation]
+        )
+        return series * factors
+
+    def _measured_ghi(self, start_ts: int, end_ts: int) -> pd.Series | None:
+        series = self._calibrated_ghi(start_ts, end_ts)
         if series is None:
             return None
 
@@ -1754,7 +1838,8 @@ class ForecastEngine:
         source is a serviceable second-best.  Silence is the common case -- a
         healthy sensor never trips this.
         """
-        key = (int(start_ts), int(end_ts))
+        revision = self.calibration.revision if self.calibration else "unity"
+        key = (int(start_ts), int(end_ts), revision)
         if self._implausible_key == key:
             return self._implausible_hours
 
@@ -1770,7 +1855,11 @@ class ForecastEngine:
         series: pd.Series | None,
     ) -> frozenset[int]:
         if series is None:
-            series = self._raw_measured_ghi(start_ts, end_ts)
+            # The calibrated reading, not the raw one: the ceiling is the
+            # energy the array actually made, and it has to be compared with
+            # the irradiance this branch believes in.  Two call paths reach
+            # here and they must not disagree about which number that is.
+            series = self._calibrated_ghi(start_ts, end_ts)
         if series is None or series.empty:
             return frozenset()
 
@@ -1928,16 +2017,25 @@ class ForecastEngine:
         # question than "what has closed since last time", and an upgrade
         # that lands between two hour boundaries would otherwise leave the
         # model empty -- and the nowcast off -- until the hour turns.
-        stats.bias_backfilled = self.backfill_ghi_bias(now_ts)
+        # Live branch only.  Replaying 35 days of history through a shadow
+        # branch's curve is the re-derivation this design exists to avoid --
+        # and it would land on top of a model that was never empty, because
+        # ``BiasBucket`` discounts an observation by its age only when the
+        # timestamp is newer than the bucket's.
+        if not self.shadow:
+            stats.bias_backfilled = self.backfill_ghi_bias(now_ts)
         last_closed = floor_hour(now_ts) - HOUR
         # Default zero, not "one hour back": on a cold start there may already
         # be days of collected data, and the ``max_hours`` clamp below is what
         # keeps the catch-up bounded.
-        cursor = self.store.get_cursor(CURSOR_LEARN, default=0)
+        cursor = self.store.get_cursor(self._ns(CURSOR_LEARN), default=0)
         if cursor <= 0:
             # Cold start: look back a bounded window rather than crawling
-            # whatever happens to be in the database.
-            start = max(0, last_closed - max_hours * HOUR)
+            # whatever happens to be in the database.  A shadow branch starts
+            # at the moment it was switched on instead: reaching back two days
+            # would teach it hours the archive has not caught up with, and
+            # "forward only" would already be broken on its first pass.
+            start = last_closed if self.shadow else max(0, last_closed - max_hours * HOUR)
         else:
             # Warm start: continue exactly where the last run stopped.  Taking
             # max(cursor, now - max_hours) here would silently drop everything
@@ -1951,19 +2049,34 @@ class ForecastEngine:
         # the rest, so a long outage catches up over a few cycles instead of
         # blocking one of them for minutes.
         end = min(last_closed + HOUR, start + max_hours * HOUR)
+        #: The hours this pass covered.  Diagnostics, and the only way to see
+        #: from outside that a branch started where it said it would.
+        self.last_window = (start, end)
 
-        self.evaluate_curtailment(start, end)
-        # Right after the verdicts exist and while the raw rows are certain
-        # to be there: a conversion pair from a curtailed interval measures
-        # the limit, not the stage.
-        self.store.mark_conversion_censored(start, end)
-        stats.hours_materialised = self.materialise_hourly(start, end)
-        # After the fold, because it writes onto those rows -- and outside the
-        # learning gate below, because this is a measurement of the chain, not
-        # a correction to it.
-        stats.chain_hours = self.store_chain_potential(start, end)
-        # Must exist before compaction is allowed to drop the raw rows.
-        self.store.materialise_plant_hourly(start, end)
+        # Own verdict either way; only one branch records it.  The union with
+        # the other branch's, which the caller supplies, is what both then
+        # learn on -- see ``censored_hours``.
+        self.own_censored = self.evaluate_curtailment(
+            start, end, write=not self.shadow
+        )
+        if not self.shadow:
+            # Right after the verdicts exist and while the raw rows are
+            # certain to be there: a conversion pair from a curtailed interval
+            # measures the limit, not the stage.  Shared with the other
+            # branch, so the live one owns it.
+            self.store.mark_conversion_censored(start, end)
+        # Everything from here to the bias model describes *what happened*,
+        # not what a branch concluded from it: the hourly fold, the chain
+        # measurement, the plant aggregate.  One owner, so two branches cannot
+        # write different answers to the same row.
+        if not self.shadow:
+            stats.hours_materialised = self.materialise_hourly(start, end)
+            # After the fold, because it writes onto those rows -- and outside
+            # the learning gate below, because this is a measurement of the
+            # chain, not a correction to it.
+            stats.chain_hours = self.store_chain_potential(start, end)
+            # Must exist before compaction is allowed to drop the raw rows.
+            self.store.materialise_plant_hourly(start, end)
         self._learn_ghi_bias(start, end, stats)
 
         if self.plant.learning_enabled:
@@ -1972,11 +2085,15 @@ class ForecastEngine:
         if stats.shading_observations:
             self.fit_shading(now_ts)
         # After the censoring stamp above, so a curtailed interval cannot
-        # reach the fit.  Cheap: a few thousand rows grouped in memory.
-        stats.curves_learned = self.fit_curves(now_ts)
+        # reach the fit.  Cheap: a few thousand rows grouped in memory.  The
+        # pairs are electrical and shared, so only the live branch fits them;
+        # a shadow branch reads the result like any other consumer.
+        if not self.shadow:
+            stats.curves_learned = self.fit_curves(now_ts)
         stats.ghi_hours_rejected = len(self.implausible_ghi_hours(start, end))
-        self.store.set_cursor(CURSOR_LEARN, end)
-        self.store.set_cursor(CURSOR_HOURLY, end)
+        self.store.set_cursor(self._ns(CURSOR_LEARN), end)
+        if not self.shadow:
+            self.store.set_cursor(CURSOR_HOURLY, end)
         self.save_models(now_ts)
         return stats
 
@@ -2004,7 +2121,11 @@ class ForecastEngine:
             for row in self.store.hourly_range(start_ts, end_ts)
         }
 
-        self._collect_shading(index, raw_interval, raw_beams, stats)
+        # The map is shared, so its observations have one author.  A shadow
+        # branch still reads and applies the map -- scaled by its own beam
+        # share, which is where part of the irradiance error reaches it.
+        if not self.shadow:
+            self._collect_shading(index, raw_interval, raw_beams, stats)
 
         for (hour, string_id), row in sorted(actual.items()):
             physics_kwh = hourly_physics.get(string_id, {}).get(hour)
@@ -2023,15 +2144,22 @@ class ForecastEngine:
             if row.quality == QUALITY_NIGHT or row.energy_kwh is None:
                 stats.skip("night" if row.quality == QUALITY_NIGHT else "no_energy")
                 continue
-            if row.value_kind == VALUE_LOWER_BOUND:
+            value_kind = row.value_kind
+            if (hour, string_id) in self.censored_hours:
+                value_kind = VALUE_LOWER_BOUND
+            if value_kind == VALUE_LOWER_BOUND:
                 stats.censored_hours += 1
 
-            quality = assess(row.coverage, 90.0, row.value_kind)
+            quality = assess(row.coverage, 90.0, value_kind)
             if not quality.usable_for_learning:
                 stats.skip("low_coverage")
-                self.store.add_exclusion(
-                    hour, "low_coverage", string_id, f"coverage={row.coverage:.2f}"
-                )
+                if not self.shadow:
+                    self.store.add_exclusion(
+                        hour,
+                        "low_coverage",
+                        string_id,
+                        f"coverage={row.coverage:.2f}",
+                    )
                 continue
 
             weather, part = classes.get(hour, ("partly_cloudy", "midday"))
@@ -2042,12 +2170,12 @@ class ForecastEngine:
                 measured_kwh=row.energy_kwh,
                 physics_kwh=physics_kwh,
                 weight=quality.weight,
-                value_kind=row.value_kind,
+                value_kind=value_kind,
             )
             declined = self.model.decline_reason(observation)
             if declined is not None:
                 stats.skip(declined)
-                if declined != "censored_and_consistent":
+                if declined != "censored_and_consistent" and not self.shadow:
                     # Persist the numbers, not just the tally.  A counter that
                     # says "ratio_out_of_range: 4" cannot be told apart from a
                     # misconfigured kWp, a restart cutting an hour in half, or
