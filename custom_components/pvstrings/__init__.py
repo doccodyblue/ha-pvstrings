@@ -656,8 +656,27 @@ def _async_register_services(hass: HomeAssistant) -> None:
         # six-week autumn trial crosses the clock change, and a September noon
         # would otherwise be filed as eleven o'clock.
         zone = coordinator.engine._tz
+        # Why it is not running, because "false" now covers three different
+        # situations and a card cannot tell them apart: no instrument, an
+        # instrument with too little evidence yet, and an owner who has not
+        # switched the trial on.
+        plant = coordinator.plant
+        if coordinator.shadow is not None:
+            reason = "running"
+        elif not plant.calibration_trial_enabled:
+            reason = "not_enabled"
+        elif not (
+            plant.weather_sources.ghi_entity
+            or plant.weather_sources.illuminance_entity
+        ):
+            reason = "no_sensor"
+        else:
+            reason = "not_enough_evidence"
+
         out: dict[str, Any] = {
             "running": coordinator.shadow is not None,
+            "enabled": plant.calibration_trial_enabled,
+            "reason": reason,
             # The question a reader actually has, answered without inference:
             # a trial that is running is still only a trial.
             "published_branch": "live",
