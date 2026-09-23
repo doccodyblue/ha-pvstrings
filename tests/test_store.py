@@ -2571,3 +2571,55 @@ class TestEndingATrialForgetsItsForecasts:
         assert row["potential_kwh"] == pytest.approx(1.2)
         assert row["baseline_kwh"] == pytest.approx(1.1)
         assert row["calibrated_kwh"] is None
+
+
+class TestCloseUnderContention:
+    """The check and the reconnect have to be under the same lock.
+
+    Outside it, a thread can pass the check, lose the processor to a close,
+    and reconnect the store it was just told was finished.
+    """
+
+    def test_a_thread_racing_close_cannot_reopen(self, tmp_path):
+        import threading
+
+        from core.store import Store
+
+        store = Store(tmp_path / "s.db")
+        store.connect()
+        store.set_cursor("x", 1)
+
+        errors: list[BaseException] = []
+        started = threading.Event()
+
+        def reader():
+            started.set()
+            for _ in range(200):
+                try:
+                    store.get_cursor("x")
+                except RuntimeError:
+                    return  # the expected end
+                except BaseException as err:  # noqa: BLE001
+                    errors.append(err)
+                    return
+
+        thread = threading.Thread(target=reader)
+        thread.start()
+        started.wait(2)
+        store.close()
+        thread.join(5)
+
+        assert not errors, errors
+        assert store._conn is None, "a racing reader reopened a closed store"
+
+    def test_connect_after_close_refuses(self, tmp_path):
+        from core.store import Store
+
+        store = Store(tmp_path / "s.db")
+        store.connect()
+        store.close()
+        with pytest.raises(RuntimeError):
+            store.connect()
+        with pytest.raises(RuntimeError):
+            store.vacuum()
+        assert store._conn is None

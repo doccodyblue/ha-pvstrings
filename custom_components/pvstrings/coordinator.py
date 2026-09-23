@@ -19,7 +19,7 @@ from typing import Any, Mapping, Sequence
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
 from .const import (
@@ -374,6 +374,11 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         #: its HTTP response reopens a store that was already closed --
         #: leaving the old coordinator working after a reload.
         self._reference_task: asyncio.Task[None] | None = None
+        #: Set the moment the entry starts going away.  A refresh already
+        #: inside an executor job cannot be interrupted, but nothing new has
+        #: to be started on top of it -- and a reload otherwise logs the store
+        #: refusing a write from a coordinator that is being discarded.
+        self._shutting_down = False
         self.health = Health()
 
     # ------------------------------------------------------------------ #
@@ -401,6 +406,7 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         await self.collector.async_start()
 
     async def async_shutdown(self) -> None:
+        self._shutting_down = True
         if self._reference_task is not None and not self._reference_task.done():
             self._reference_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -500,6 +506,8 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
     # ------------------------------------------------------------------ #
 
     async def _async_update_data(self) -> PvStringsData:
+        if self._shutting_down:
+            raise UpdateFailed("the entry is being unloaded")
         weather_ok = True
         weather_error: str | None = None
         try:
@@ -808,8 +816,17 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
             if not self._baseline_failed:
                 _LOGGER.exception("pvstrings: baseline forecast failed")
             self._baseline_failed = True
+        trial = None if self.shadow is None else self.shadow.calibration.revision
         calibrated = self._shadow_forecast(now_ts, day_start)
         rows = self.engine.forecast(now_ts, hours=FORECAST_HOURS, start_ts=day_start)
+        # The trial can end while this cycle is running -- a reset or a sensor
+        # swap, both of which clear what the old branch predicted.  Writing
+        # figures computed before that would hand them straight back, and the
+        # next hour's issue would not overwrite them.
+        if trial is None or self.shadow is None or (
+            self.shadow.calibration.revision != trial
+        ):
+            calibrated = None
         # One call with every variant: the upsert replaces the whole row, so a
         # write that left one out would blank it and drop the hour from the
         # comparison.
@@ -1283,7 +1300,7 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         see a single day's progress.
         """
         day = int(now.timestamp()) // 86400
-        if self._reference_fill_day == day:
+        if self._shutting_down or self._reference_fill_day == day:
             return
         self._reference_fill_day = day
         if not self.plant.weather_sources.ghi_entity:

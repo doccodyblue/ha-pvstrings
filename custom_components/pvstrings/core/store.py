@@ -374,6 +374,13 @@ class Store:
     # -- lifecycle --------------------------------------------------------- #
 
     def connect(self) -> None:
+        with self._lock:
+            self._connect_locked()
+
+    def _connect_locked(self) -> None:
+        """Caller holds ``_lock``."""
+        if self._closed:
+            raise RuntimeError("store is closed")
         if self._conn is not None:
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -411,12 +418,11 @@ class Store:
 
     @contextmanager
     def _tx(self) -> Iterator[sqlite3.Connection]:
-        if self._closed:
-            raise RuntimeError("store is closed")
-        if self._conn is None:
-            self.connect()
-        assert self._conn is not None
         with self._lock:
+            # Inside the lock, both of them: checked outside it, a thread
+            # could pass the check, lose the processor to a close, and
+            # reconnect the store it was just told was finished.
+            self._require_open()
             self._conn.execute("BEGIN")
             try:
                 yield self._conn
@@ -426,13 +432,17 @@ class Store:
             self._conn.execute("COMMIT")
 
     def _query(self, sql: str, params: Sequence[Any] = ()) -> list[sqlite3.Row]:
+        with self._lock:
+            self._require_open()
+            assert self._conn is not None
+            return self._conn.execute(sql, params).fetchall()
+
+    def _require_open(self) -> None:
+        """Caller holds ``_lock``."""
         if self._closed:
             raise RuntimeError("store is closed")
         if self._conn is None:
-            self.connect()
-        assert self._conn is not None
-        with self._lock:
-            return self._conn.execute(sql, params).fetchall()
+            self._connect_locked()
 
     def _migrate(self) -> None:
         assert self._conn is not None
@@ -2654,10 +2664,9 @@ class Store:
 
     def vacuum(self) -> None:
         """Return freed pages to the filesystem.  Blocking; call rarely."""
-        if self._conn is None:
-            self.connect()
-        assert self._conn is not None
         with self._lock:
+            self._require_open()
+            assert self._conn is not None
             self._conn.execute("VACUUM")
 
     def statistics(self) -> dict[str, Any]:
