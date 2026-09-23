@@ -65,6 +65,7 @@ from .const import (
     CONF_INVESTMENT,
     CONF_KWP,
     CONF_LATITUDE,
+    CONF_CALIBRATION_TRIAL,
     CONF_LEARNING_ENABLED,
     CONF_LIMIT_ABS_ENTITY,
     CONF_LIMIT_ENTITY,
@@ -319,6 +320,7 @@ def build_plant_config(hass: HomeAssistant, entry: ConfigEntry) -> PlantConfig:
             illuminance_entity=config.get(CONF_ILLUMINANCE_ENTITY) or None,
         ),
         learning_enabled=bool(config.get(CONF_LEARNING_ENABLED, True)),
+        calibration_trial_enabled=bool(config.get(CONF_CALIBRATION_TRIAL, False)),
         retention_days=int(config.get(CONF_RETENTION_DAYS, 90)),
     )
 

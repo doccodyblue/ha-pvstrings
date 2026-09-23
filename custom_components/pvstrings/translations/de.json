@@ -65,6 +65,12 @@
           "entities": "Anlagen- und Wetter-Entitäten",
           "advanced": "Modell und Erfassung",
           "forecast": "Standort und Einstrahlungsquelle"
+        },
+        "data": {
+          "calibration_trial_enabled": "Kalibrierungsversuch laufen lassen"
+        },
+        "data_description": {
+          "calibration_trial_enabled": "Lernt neben der Prognose ein zweites Modell, das den Einstrahlungssensor durch die gefundene Korrekturkurve liest, und bewertet es gegen das veröffentlichte. Kostet eine zweite Prognose und einen zweiten Lernzyklus pro Stunde und ändert nichts, solange kein Kriterium sagt, dass das zweite Modell besser ist. Braucht einen Einstrahlungssensor und mehrere Wochen Evidenz."
         }
       },
       "economics": {

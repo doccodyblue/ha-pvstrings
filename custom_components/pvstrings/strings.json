@@ -65,6 +65,12 @@
           "entities": "Plant and weather entities",
           "advanced": "Model and collection",
           "forecast": "Location and irradiance source"
+        },
+        "data": {
+          "calibration_trial_enabled": "Run a calibration trial"
+        },
+        "data_description": {
+          "calibration_trial_enabled": "Learn a second model beside the forecast, reading the irradiance sensor through the correction curve the check found, and score it against the published one. Costs a second forecast and a second learn pass per hour, and changes nothing until a criterion says the second model is better. Needs an irradiance sensor and several weeks of evidence."
         }
       },
       "economics": {

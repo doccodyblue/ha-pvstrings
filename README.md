@@ -453,8 +453,12 @@ absorbed part of this error already, so a factor in front of them would
 correct it twice. Instead, where the evidence supports a curve, a second
 model learns from scratch through it and is scored against the published one;
 after fifteen clear days a criterion says whether it was better.
-`pvstrings.calibration_trial` reports where it stands. An accurate sensor
-produces a flat curve and no trial at all.
+`pvstrings.calibration_trial` reports where it stands.
+
+The check runs everywhere and costs a few rows. The trial is a separate
+option, off by default: it spends a second forecast and a second learn pass
+an hour, and that is not something to take from someone who did not ask. An
+accurate sensor produces a flat curve and no trial even when switched on.
 
 ---
 

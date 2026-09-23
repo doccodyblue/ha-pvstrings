@@ -146,3 +146,22 @@ class TestEconomicsWithoutGridMeter:
         weights = minimal_engine.monthly_weights()
         assert len(weights) == 12
         assert sum(weights) == pytest.approx(1.0)
+
+
+class TestTheTrialIsOptIn:
+    """Measuring is free; experimenting on somebody is not.
+
+    The check that produces the curve costs a few rows and runs everywhere.
+    The trial spends a second forecast and a second learn pass an hour, and
+    that is not something to take from an owner who did not ask for it.
+    """
+
+    def test_it_is_off_unless_asked_for(self):
+        from core.config import PlantConfig
+
+        plant = PlantConfig(
+            name="p", latitude=53.5, longitude=10.0, elevation_m=5.0,
+            time_zone="Europe/Berlin",
+        )
+        assert plant.calibration_trial_enabled is False
+        assert plant.learning_enabled is True, "the two must not be confused"

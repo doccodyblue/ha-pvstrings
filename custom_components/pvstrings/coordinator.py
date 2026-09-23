@@ -664,6 +664,12 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         handling: a healthy sensor produces the unity curve, and a unity
         curve is not active.
         """
+        if not self.plant.calibration_trial_enabled:
+            # The check runs everywhere; the trial only where someone asked
+            # for it.  Spending a second forecast and a second learn pass an
+            # hour on an experiment is not something to take from an owner
+            # who did not ask.
+            return None
         if not self.plant.weather_sources.ghi_entity:
             return None
 
@@ -709,6 +715,8 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         as a surprise.
         """
         if self.shadow is not None or not self.plant.weather_sources.ghi_entity:
+            return
+        if not self.plant.calibration_trial_enabled:
             return
         # Once a day, not every hour.  Asking costs a full pass over the
         # banked pairs and the whole verdict on top -- tens of thousands of

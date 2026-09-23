@@ -89,6 +89,7 @@ from .const import (
     CONF_INVESTMENT,
     CONF_KWP,
     CONF_LATITUDE,
+    CONF_CALIBRATION_TRIAL,
     CONF_LEARNING_ENABLED,
     CONF_LIMIT_ABS_ENTITY,
     CONF_LIMIT_ENTITY,
@@ -364,6 +365,10 @@ def advanced_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
             vol.Required(
                 CONF_LEARNING_ENABLED,
                 default=values.get(CONF_LEARNING_ENABLED, True),
+            ): BooleanSelector(),
+            vol.Required(
+                CONF_CALIBRATION_TRIAL,
+                default=values.get(CONF_CALIBRATION_TRIAL, False),
             ): BooleanSelector(),
             vol.Required(
                 CONF_RETENTION_DAYS, default=values.get(CONF_RETENTION_DAYS, 90)

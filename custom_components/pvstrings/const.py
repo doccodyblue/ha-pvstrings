@@ -24,6 +24,7 @@ CONF_FORECAST_SOURCE: Final = "forecast_source"
 CONF_FORECAST_MODEL: Final = "forecast_model"
 CONF_WEATHER_ENTITY: Final = "weather_entity"
 CONF_LEARNING_ENABLED: Final = "learning_enabled"
+CONF_CALIBRATION_TRIAL: Final = "calibration_trial_enabled"
 CONF_RETENTION_DAYS: Final = "retention_days"
 
 # -- economics -------------------------------------------------------------- #

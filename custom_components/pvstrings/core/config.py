@@ -390,6 +390,13 @@ class PlantConfig:
     plant_state: PlantState = field(default_factory=PlantState)
     weather_sources: WeatherSources = field(default_factory=WeatherSources)
     learning_enabled: bool = True
+    #: Whether a second model may learn beside the published one, reading the
+    #: irradiance sensor through a correction curve.  Off by default: the
+    #: check that produces the curve costs a few rows and is worth running
+    #: everywhere, but a trial spends a second forecast and a second learn
+    #: pass an hour, and that is not something to take from an owner who did
+    #: not ask for it.
+    calibration_trial_enabled: bool = False
     #: How long raw five-minute rows are kept.  Aggregates, geometry and
     #: model state are never discarded -- they are small and irreplaceable.
     retention_days: int = 90

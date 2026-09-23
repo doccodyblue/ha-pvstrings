@@ -29,9 +29,11 @@
   percent low has a smaller worst hour than one whose mornings run 46 percent
   high, and would otherwise win on shape alone.
 
-  A plant with a healthy sensor never starts one, and needs no setting to
-  avoid it: a healthy sensor produces the unity curve, and a unity curve is
-  not active.
+  Off by default, as its own option. The check that produces the curve costs
+  a few rows and runs everywhere; a trial spends a second forecast and a
+  second learn pass an hour, and that is not something to take from an owner
+  who did not ask for it. A plant with a healthy sensor produces the unity
+  curve and gets no trial even when switched on.
 
 - **Three services.** `pvstrings.backfill_irradiance_check` pairs past
   readings with the archive, deliberately by hand — only the owner knows
