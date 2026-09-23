@@ -2141,3 +2141,43 @@ class TestTheArchiveSkipsTheNight:
         )
         archive(engine, midnight, midnight + HOUR)
         assert seeded_store.experiment_hours() == []
+
+
+class TestEachBranchAppliesItsOwnVerdict:
+    """Not the other's, and not none at all.
+
+    The stored ``value_kind`` is the live branch's conclusion -- it is the one
+    that writes the stamp. A branch reading corrected physics finds the limit
+    binding where the live branch did not, and computing that verdict without
+    applying it means learning a throttled hour as a loss of the array's own.
+    """
+
+    def test_a_branch_learns_its_own_censorship(self, seeded_store, plant):
+        """Driven through ``_learn_effects`` rather than ``learn``.
+
+        ``learn`` computes the verdict itself, which is the right shape for
+        production and the wrong one for a test: there is no way to hand it
+        one. What is being checked is the step after -- that a verdict the
+        branch reached is actually applied to the observation.
+        """
+        from core.forecast import LearnStats
+
+        engine = ForecastEngine(plant, seeded_store)
+        engine.load_models()
+        TestLearningCycle()._prepare_day(engine, seeded_store, ratio=0.80)
+        window = (DAY_START, DAY_START + 24 * HOUR)
+        engine.materialise_hourly(*window)
+
+        free = LearnStats()
+        engine._learn_effects(*window, free)
+        assert free.observations_used > 0
+        assert free.censored_hours == 0
+
+        held = LearnStats()
+        engine.own_censored = {
+            (hour, string.string_id)
+            for hour in range(window[0], window[1] + HOUR, HOUR)
+            for string in plant.strings
+        }
+        engine._learn_effects(*window, held)
+        assert held.censored_hours > 0

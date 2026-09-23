@@ -2523,3 +2523,21 @@ class TestAFreshInstallation:
             assert not decides(result)["decided"]
         finally:
             store.close()
+
+
+class TestResettingClearsTheTrialComparison:
+    """Not a measurement: every row is two models' opinion of an hour, and
+    after a plant-wide reset neither model exists. What produced the curve --
+    the irradiance pairs -- is measurement and stays."""
+
+    def test_the_archive_goes_but_the_pairs_remain(self, store):
+        store.archive_experiment_hours(
+            [(3600, "s1", 1.0, 1.1, 1.0, 1.1, 1.0, 0.9, 0, 0, "aaa")]
+        )
+        store.bank_irradiance_hours([(3600, 0, 300.0, "live", 30.0, 180.0, None)])
+        store.fill_irradiance_reference([(400.0, "satellite", 99, 3600, 0)])
+
+        store.clear_experiment_hours()
+
+        assert store.experiment_hours() == []
+        assert len(store.irradiance_pairs(0)) == 1

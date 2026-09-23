@@ -2209,7 +2209,16 @@ class ForecastEngine:
             # from is discarded because a branch nobody asked about disagreed.
             # The comparison is where the two verdicts have to meet, and the
             # archive already carries their union for exactly that.
+            #
+            # ``own_censored`` and not just the stored kind, because the
+            # stored kind is the *live* branch's conclusion: it is the one
+            # that writes the stamp.  A shadow branch reading corrected
+            # physics finds the limit binding where the live branch did not,
+            # and without this it would learn a throttled hour as a loss of
+            # the array's own -- its own verdict, computed and then ignored.
             value_kind = row.value_kind
+            if (hour, string_id) in self.own_censored:
+                value_kind = VALUE_LOWER_BOUND
             if value_kind == VALUE_LOWER_BOUND:
                 stats.censored_hours += 1
 

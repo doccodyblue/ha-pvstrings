@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from functools import partial
@@ -368,6 +369,11 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         #: owner would watch the reset appear not to have worked.
         self.state_lock = asyncio.Lock()
         self._shadow_attempt_day: int | None = None
+        #: The scheduled archive fetch, so shutdown can stop it.  Left to
+        #: itself it outlives the entry, and the database access that follows
+        #: its HTTP response reopens a store that was already closed --
+        #: leaving the old coordinator working after a reload.
+        self._reference_task: asyncio.Task[None] | None = None
         self.health = Health()
 
     # ------------------------------------------------------------------ #
@@ -395,6 +401,10 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         await self.collector.async_start()
 
     async def async_shutdown(self) -> None:
+        if self._reference_task is not None and not self._reference_task.done():
+            self._reference_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._reference_task
         await self.collector.async_stop()
         await super().async_shutdown()
 
@@ -546,7 +556,9 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
             # timeout each sit in front of the forecast otherwise, and a
             # hanging endpoint would hold up publishing by four minutes on a
             # plant that is not even running a trial.
-            self.hass.async_create_task(self._async_top_up_references(now))
+            self._reference_task = self.hass.async_create_task(
+                self._async_top_up_references(now)
+            )
 
         await self._async_maybe_purge(now)
 
@@ -716,6 +728,13 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         partly measure which branch compensates that better.
         """
         if self.shadow is None:
+            # No trial, so nothing to archive -- and the flags have to be
+            # cleared, not merely not set: a sensor swap ends a trial
+            # mid-life, and a live branch still carrying the old curve's name
+            # would go on archiving hours under it.
+            self.engine.trial_archive = False
+            self.engine.trial_curve = None
+            self.engine.censored_hours = set()
             return self.engine.learn(now_ts)
 
         window = self.engine.learn_window(now_ts)
@@ -1710,6 +1729,11 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         # owner would watch a reset appear not to have worked.
         async with self.state_lock:
             await self._async_reset_learning(string_id)
+        # Outside it.  The refresh runs an update cycle, the update cycle
+        # takes this same lock for its learn pass, and holding it across the
+        # call is a deadlock that no timeout breaks -- the integration simply
+        # stops updating.
+        await self.async_request_refresh()
 
     async def _async_reset_learning(self, string_id: str | None) -> None:
         if string_id:
@@ -1737,6 +1761,11 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
             # The curves are refitted from these every hour, so leaving them
             # would rebuild what the reset just discarded.
             await self.hass.async_add_executor_job(self.store.clear_conversion_obs)
+            # And the trial's archive, because it compares two models that no
+            # longer exist.  The pairs behind the curve survive -- those are
+            # measurements -- so the branch derives the same curve again and
+            # starts gathering afresh, which is what a reset means.
+            await self.hass.async_add_executor_job(self.store.clear_experiment_hours)
         await self.hass.async_add_executor_job(self.engine.load_models)
         # The calibrated branch too, and not only because its models were
         # deleted with the rest: an engine held in memory would write the
@@ -1747,4 +1776,3 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         self.shadow = await self.hass.async_add_executor_job(
             self.build_shadow, int(dt_util.utcnow().timestamp())
         )
-        await self.async_request_refresh()

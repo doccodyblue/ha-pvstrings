@@ -324,9 +324,11 @@ def archive(engine: Any, start_ts: int, end_ts: int) -> int:
     for key, row in lead0.items():
         hour, string_id = key
         sky = clearness(measured.get(hour), clear.get(hour))
-        if sky is None and not row["energy_kwh"]:
-            # Night. It can never be selected -- the sky index is what selects
-            # -- so storing it only grows a table nothing purges.
+        if sky is None and (row["energy_kwh"] or 0.0) < MIN_HOUR_KWH:
+            # Night.  It can never be selected -- the sky index is what
+            # selects -- so storing it only grows a table nothing purges.
+            # Measured against the same floor the profile uses, not against
+            # exact zero: a milliwatt-hour of sensor noise is still night.
             continue
         da = day_ahead.get(key)
         rows.append(

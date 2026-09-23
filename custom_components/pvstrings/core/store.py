@@ -2351,6 +2351,16 @@ class Store:
         with self._tx() as conn:
             conn.execute("DELETE FROM ghi_bias_v2 WHERE source = ?", (source,))
 
+    def clear_experiment_hours(self) -> None:
+        """Drop the trial's comparison.
+
+        Not a measurement: every row is two models' opinion of an hour, and
+        after a reset neither model exists any more.  What produced the curve
+        -- the irradiance pairs -- is measurement and stays.
+        """
+        with self._tx() as conn:
+            conn.execute("DELETE FROM experiment_hours")
+
     def set_cursors(self, values: Mapping[str, int]) -> None:
         """Several cursors in one transaction.
 

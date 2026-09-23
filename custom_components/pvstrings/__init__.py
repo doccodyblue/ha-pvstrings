@@ -575,10 +575,16 @@ def _async_register_services(hass: HomeAssistant) -> None:
 
         coordinator = _coordinator_for(hass, call.data[ATTR_CONFIG_ENTRY_ID])
         store = coordinator.store
-        epoch = int(store.get_cursor(CURSOR_IRRADIANCE_EPOCH, default=0)) + 1
         now = int(dt_util.utcnow().timestamp())
+        bumped: dict[str, int] = {}
 
         def _bump() -> None:
+            # Read and increment inside the guarded section: two owners
+            # pressing the button together would otherwise both read the same
+            # counter, both compute the same successor, and one instrument
+            # change would go unrecorded.
+            epoch = int(store.get_cursor(CURSOR_IRRADIANCE_EPOCH, default=0)) + 1
+            bumped["epoch"] = epoch
             # Both cursors in one transaction: a crash between them would
             # leave the new counter beside the old boundary, and the new
             # instrument would inherit its predecessor's hours.
@@ -607,7 +613,7 @@ def _async_register_services(hass: HomeAssistant) -> None:
             )
         coordinator.invalidate_irradiance_verdict()
         return {
-            "epoch": epoch,
+            "epoch": bumped["epoch"],
             "since": dt_util.utc_from_timestamp(now).isoformat(),
             "trial_restarted": coordinator.shadow is not None,
             "note": (
