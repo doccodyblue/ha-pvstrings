@@ -1,5 +1,51 @@
 # Changelog
 
+## v1.26.0 — 2026-09-23
+
+### Added
+
+- **The irradiance sensor now gets checked against something independent.**
+  Cheap weather stations do not measure irradiance; they measure illuminance
+  with a diode weighted to human vision and divide by a fixed constant. That
+  constant is right for one reference case, and the share of the energy the
+  diode cannot see grows as the sun drops and its light reddens. Every closed
+  hour is compared against two reanalysis products, grouped by how high the
+  sun stood, and the result appears as `sensor_check` on the irradiance
+  forecast sensor. On the reference plant the station reads 0.78 of the truth
+  at noon and 0.60 at dawn.
+
+  The two products are both asked, not just the first that answers: one
+  reanalysis product cannot state its own error, and a band the two disagree
+  in keeps less of its correction. They disagree by five to nine percent per
+  band, which is a lower bound rather than an estimate — they share inputs,
+  so an error they hold in common is invisible here.
+
+- **A calibrated branch can now run beside the forecast and be scored against
+  it.** Where the evidence supports a correction curve, a second complete
+  model learns from scratch reading the same sensor through that curve. It
+  publishes nothing. After fifteen clear days a criterion decides: the worst
+  hour of the day has to lose half its error *and* the overall level must not
+  drift while it does. Both halves are needed — a branch that is uniformly 38
+  percent low has a smaller worst hour than one whose mornings run 46 percent
+  high, and would otherwise win on shape alone.
+
+  A plant with a healthy sensor never starts one, and needs no setting to
+  avoid it: a healthy sensor produces the unity curve, and a unity curve is
+  not active.
+
+- **Three services.** `pvstrings.backfill_irradiance_check` pairs past
+  readings with the archive, deliberately by hand — only the owner knows
+  whether the sensor spent those months in the same place.
+  `pvstrings.new_irradiance_sensor` says the instrument changed, which ends
+  any running trial and starts the evidence over.
+  `pvstrings.calibration_trial` reports how a trial is going.
+
+### Note
+
+Nothing here changes the published forecast. The check only looks, and the
+calibrated branch only learns; switching to it is a later decision, taken per
+plant on that plant's own evidence.
+
 ## v1.25.5 — 2026-09-22
 
 ### Fixed
