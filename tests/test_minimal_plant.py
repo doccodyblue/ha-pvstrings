@@ -165,3 +165,35 @@ class TestTheTrialIsOptIn:
         )
         assert plant.calibration_trial_enabled is False
         assert plant.learning_enabled is True, "the two must not be confused"
+
+
+class TestWhyATrialIsNotRunning:
+    """The order the reasons are checked in is the answer's meaning."""
+
+    def test_no_instrument_beats_not_switched_on(self):
+        """Both are true at once, and only one of them is an answer.
+
+        Asked about the option first, a plant with no irradiance sensor
+        reports "not enabled" -- and its owner is offered a trial that cannot
+        exist on their hardware.
+        """
+        from core.experiment import trial_reason
+
+        assert trial_reason(running=False, has_sensor=False, enabled=False) == (
+            "no_sensor"
+        )
+        assert trial_reason(running=False, has_sensor=True, enabled=False) == (
+            "not_enabled"
+        )
+        assert trial_reason(running=False, has_sensor=True, enabled=True) == (
+            "not_enough_evidence"
+        )
+        assert trial_reason(running=True, has_sensor=True, enabled=True) == "running"
+
+    def test_running_beats_everything(self):
+        """A trial that is running is running, whatever else is true."""
+        from core.experiment import trial_reason
+
+        assert trial_reason(running=True, has_sensor=False, enabled=False) == (
+            "running"
+        )

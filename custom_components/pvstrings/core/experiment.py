@@ -55,6 +55,24 @@ MIN_CLEAR_DAYS = 5
 MIN_HOUR_KWH = 0.05
 
 
+def trial_reason(running: bool, has_sensor: bool, enabled: bool) -> str:
+    """Why a trial is or is not running, as one word.
+
+    The order is the meaning.  "Not running" covers three situations a reader
+    cannot tell apart, and only the most specific one is an answer: a plant
+    with no instrument has nothing to calibrate, and calling it merely
+    switched off offers its owner a trial that cannot exist on their
+    hardware.
+    """
+    if running:
+        return "running"
+    if not has_sensor:
+        return "no_sensor"
+    if not enabled:
+        return "not_enabled"
+    return "not_enough_evidence"
+
+
 def clearness(measured_wm2: float | None, clearsky_wm2: float | None) -> float | None:
     """The measured clearness index, or ``None`` when the sky was too dark."""
     if measured_wm2 is None or clearsky_wm2 is None or clearsky_wm2 <= 20.0:

@@ -631,7 +631,7 @@ def _async_register_services(hass: HomeAssistant) -> None:
         }
 
     async def _calibration_trial(call: ServiceCall) -> dict[str, Any]:
-        from .core.experiment import compare, decides
+        from .core.experiment import compare, decides, trial_reason
 
         from .core.irradiance_check import CURSOR_IRRADIANCE_EPOCH
 
@@ -661,21 +661,14 @@ def _async_register_services(hass: HomeAssistant) -> None:
         # instrument with too little evidence yet, and an owner who has not
         # switched the trial on.
         plant = coordinator.plant
-        has_sensor = bool(
-            plant.weather_sources.ghi_entity
-            or plant.weather_sources.illuminance_entity
+        reason = trial_reason(
+            running=coordinator.shadow is not None,
+            has_sensor=bool(
+                plant.weather_sources.ghi_entity
+                or plant.weather_sources.illuminance_entity
+            ),
+            enabled=plant.calibration_trial_enabled,
         )
-        if coordinator.shadow is not None:
-            reason = "running"
-        elif not has_sensor:
-            # Before the option, not after: a plant with no instrument has
-            # nothing to calibrate, and reporting it as merely switched off
-            # would offer its owner a trial that cannot exist.
-            reason = "no_sensor"
-        elif not plant.calibration_trial_enabled:
-            reason = "not_enabled"
-        else:
-            reason = "not_enough_evidence"
 
         out: dict[str, Any] = {
             "running": coordinator.shadow is not None,
