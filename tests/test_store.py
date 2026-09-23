@@ -2416,3 +2416,110 @@ class TestEndingATrialLeavesTheForecastAlone:
         store.clear_ghi_bias("open-meteo#cal")
         assert store.load_ghi_bias("open-meteo")
         assert not store.load_ghi_bias("open-meteo#cal")
+
+
+class TestAFreshInstallation:
+    """The path nobody exercises by upgrading: an empty database, today.
+
+    Every migration test starts from an older shape. This one starts from
+    nothing, which is what a new user gets -- and what a forum post sends.
+    """
+
+    def test_the_schema_stands_up_on_its_own(self, tmp_path):
+        from core.store import Store
+
+        store = Store(tmp_path / "fresh.db")
+        store.connect()
+        try:
+            with store._lock:  # noqa: SLF001 - a test may look inside
+                tables = {
+                    row[0]
+                    for row in store._conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'table'"
+                    )
+                }
+                indexes = {
+                    row[0]
+                    for row in store._conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'index'"
+                    )
+                }
+            for table in (
+                "irradiance_reference",
+                "experiment_hours",
+                "forecast_log",
+                "model_effects",
+                "learning_cursor",
+            ):
+                assert table in tables
+            # Both partial indexes, including the one that had to move out of
+            # the schema script because it names a column the ALTERs add.
+            assert "ix_irradiance_reference_pending" in indexes
+            assert "ix_irradiance_reference_cross_pending" in indexes
+        finally:
+            store.close()
+
+    def test_the_new_columns_are_there_without_any_alter(self, tmp_path):
+        """A fresh database must not depend on the self-healing block."""
+        from core.store import Store
+
+        store = Store(tmp_path / "fresh.db")
+        store.connect()
+        try:
+            with store._lock:  # noqa: SLF001
+                columns = {
+                    row[1]
+                    for row in store._conn.execute(
+                        "PRAGMA table_info(irradiance_reference)"
+                    )
+                }
+                trial = {
+                    row[1]
+                    for row in store._conn.execute(
+                        "PRAGMA table_info(experiment_hours)"
+                    )
+                }
+                log = {
+                    row[1]
+                    for row in store._conn.execute("PRAGMA table_info(forecast_log)")
+                }
+            assert {"cross_wm2", "cross_src"} <= columns
+            assert {"epoch", "curve"} <= trial
+            assert "calibrated_kwh" in log
+        finally:
+            store.close()
+
+    def test_nothing_about_a_trial_raises_on_an_empty_plant(self, tmp_path):
+        """A new installation has no pairs, no curve and no second branch.
+
+        Every one of these has to decline rather than fail: they run on the
+        hourly cycle, and an exception there is a broken integration, not a
+        missing diagnosis.
+        """
+        from core.experiment import compare, decides
+        from core.irradiance_check import (
+            SCOPE_CALIBRATION,
+            assess,
+            calibration,
+            curve_from_rows,
+        )
+        from core.store import Store
+
+        store = Store(tmp_path / "fresh.db")
+        store.connect()
+        try:
+            assert store.irradiance_pairs(0) == []
+            assert store.experiment_hours(epoch=0) == []
+            assert store.irradiance_hours_awaiting_cross(0, 1 << 40) == []
+
+            verdict = assess(store.irradiance_pairs(0))
+            assert verdict.reading() == "not enough evidence yet"
+            curve = calibration(verdict)
+            assert not curve.active
+            assert curve.factor(30.0) == 1.0
+            assert not curve_from_rows(store.load_effects(SCOPE_CALIBRATION)).active
+
+            result = compare([])
+            assert not decides(result)["decided"]
+        finally:
+            store.close()

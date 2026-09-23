@@ -367,6 +367,7 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         #: reset would save its old model straight back afterwards, and the
         #: owner would watch the reset appear not to have worked.
         self.state_lock = asyncio.Lock()
+        self._shadow_attempt_day: int | None = None
         self.health = Health()
 
     # ------------------------------------------------------------------ #
@@ -689,6 +690,15 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         """
         if self.shadow is not None or not self.plant.weather_sources.ghi_entity:
             return
+        # Once a day, not every hour.  Asking costs a full pass over the
+        # banked pairs and the whole verdict on top -- tens of thousands of
+        # rows on a mature plant -- and the answer can only change when the
+        # archive catches up, which it does daily.  A trial can wait a day to
+        # begin; it runs for six weeks.
+        day = now_ts // 86400
+        if self._shadow_attempt_day == day:
+            return
+        self._shadow_attempt_day = day
         try:
             self.shadow = self.build_shadow(now_ts)
         except Exception:  # noqa: BLE001 - a trial is not a forecast
@@ -1328,6 +1338,17 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         """
         hour = floor_hour(dt_util.utcnow().timestamp())
         if self._irradiance_verdict_hour == hour:
+            return self._irradiance_verdict_memo
+
+        sources = self.plant.weather_sources
+        if not (sources.ghi_entity or sources.illuminance_entity):
+            # Nothing to check, so nothing to say.  Reporting "not enough
+            # evidence yet" to a plant that has no instrument reads as a
+            # measurement that has not started, when in truth there is
+            # nothing to measure -- and it would cost a pass over the pairs
+            # every hour to say so.
+            self._irradiance_verdict_hour = hour
+            self._irradiance_verdict_memo = {"reading": "no irradiance sensor"}
             return self._irradiance_verdict_memo
 
         epoch = self.store.get_cursor(CURSOR_IRRADIANCE_EPOCH, default=0)
