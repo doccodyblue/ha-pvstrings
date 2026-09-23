@@ -661,15 +661,19 @@ def _async_register_services(hass: HomeAssistant) -> None:
         # instrument with too little evidence yet, and an owner who has not
         # switched the trial on.
         plant = coordinator.plant
-        if coordinator.shadow is not None:
-            reason = "running"
-        elif not plant.calibration_trial_enabled:
-            reason = "not_enabled"
-        elif not (
+        has_sensor = bool(
             plant.weather_sources.ghi_entity
             or plant.weather_sources.illuminance_entity
-        ):
+        )
+        if coordinator.shadow is not None:
+            reason = "running"
+        elif not has_sensor:
+            # Before the option, not after: a plant with no instrument has
+            # nothing to calibrate, and reporting it as merely switched off
+            # would offer its owner a trial that cannot exist.
             reason = "no_sensor"
+        elif not plant.calibration_trial_enabled:
+            reason = "not_enabled"
         else:
             reason = "not_enough_evidence"
 
