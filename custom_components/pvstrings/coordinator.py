@@ -1766,6 +1766,9 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
             # measurements -- so the branch derives the same curve again and
             # starts gathering afresh, which is what a reset means.
             await self.hass.async_add_executor_job(self.store.clear_experiment_hours)
+            await self.hass.async_add_executor_job(
+                self.store.clear_calibrated_forecasts
+            )
         await self.hass.async_add_executor_job(self.engine.load_models)
         # The calibrated branch too, and not only because its models were
         # deleted with the rest: an engine held in memory would write the

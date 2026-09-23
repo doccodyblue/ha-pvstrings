@@ -605,6 +605,10 @@ def _async_register_services(hass: HomeAssistant) -> None:
                 store.clear_effects(scope)
             store.clear_ghi_bias(f"{coordinator.plant.forecast_source}#cal")
             store.set_cursors({"model_learned#cal": 0})
+            # The log holds what the old branch predicted, beside the
+            # published figure. Left there, the next archiving pass would
+            # stamp it with whatever curve comes next.
+            store.clear_calibrated_forecasts()
 
         async with coordinator.state_lock:
             await hass.async_add_executor_job(_bump)

@@ -2541,3 +2541,33 @@ class TestResettingClearsTheTrialComparison:
 
         assert store.experiment_hours() == []
         assert len(store.irradiance_pairs(0)) == 1
+
+
+class TestAClosedStoreStaysClosed:
+    """A background fetch whose response came back after the entry was
+    unloaded would otherwise reconnect, and the old coordinator would go on
+    writing to a database nobody is watching."""
+
+    def test_reading_after_close_raises_rather_than_reopening(self, tmp_path):
+        from core.store import Store
+
+        store = Store(tmp_path / "s.db")
+        store.connect()
+        store.set_cursor("x", 1)
+        store.close()
+
+        with pytest.raises(RuntimeError):
+            store.get_cursor("x")
+        with pytest.raises(RuntimeError):
+            store.set_cursor("x", 2)
+        assert store._conn is None
+
+
+class TestEndingATrialForgetsItsForecasts:
+    def test_the_log_keeps_the_published_figure_and_drops_the_other(self, store):
+        store.log_forecast([(0, 3600, "s1", 1.2, "corrected", 1.1, 1.3, 0.9)])
+        store.clear_calibrated_forecasts()
+        row = store.forecast_log_as_of(0, 7200)[0]
+        assert row["potential_kwh"] == pytest.approx(1.2)
+        assert row["baseline_kwh"] == pytest.approx(1.1)
+        assert row["calibrated_kwh"] is None

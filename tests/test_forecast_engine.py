@@ -2144,40 +2144,71 @@ class TestTheArchiveSkipsTheNight:
 
 
 class TestEachBranchAppliesItsOwnVerdict:
-    """Not the other's, and not none at all.
+    """Its own, and only its own -- in both directions.
 
-    The stored ``value_kind`` is the live branch's conclusion -- it is the one
-    that writes the stamp. A branch reading corrected physics finds the limit
-    binding where the live branch did not, and computing that verdict without
-    applying it means learning a throttled hour as a loss of the array's own.
+    The stored ``value_kind`` is the live branch's conclusion, because it is
+    the one that writes the stamp. A branch reading corrected physics has to
+    censor the hours it found the limit binding in, and learn from the hours
+    the live branch censored but it did not. Adding only would be the same
+    asymmetry the other way round.
     """
 
-    def test_a_branch_learns_its_own_censorship(self, seeded_store, plant):
-        """Driven through ``_learn_effects`` rather than ``learn``.
+    @staticmethod
+    def shadow_engine(plant, store):
+        from core.irradiance_check import Calibration
 
-        ``learn`` computes the verdict itself, which is the right shape for
-        production and the wrong one for a test: there is no way to hand it
-        one. What is being checked is the step after -- that a verdict the
-        branch reached is actually applied to the observation.
-        """
+        engine = ForecastEngine(
+            plant, store, variant="cal", shadow=True,
+            calibration=Calibration(((10.0, 1.40), (65.0, 1.20))),
+        )
+        engine.load_models()
+        return engine
+
+    def test_it_censors_what_it_judged(self, seeded_store, plant):
         from core.forecast import LearnStats
 
-        engine = ForecastEngine(plant, seeded_store)
-        engine.load_models()
-        TestLearningCycle()._prepare_day(engine, seeded_store, ratio=0.80)
+        live = ForecastEngine(plant, seeded_store)
+        live.load_models()
+        TestLearningCycle()._prepare_day(live, seeded_store, ratio=0.80)
         window = (DAY_START, DAY_START + 24 * HOUR)
-        engine.materialise_hourly(*window)
+        live.materialise_hourly(*window)
 
+        shade = self.shadow_engine(plant, seeded_store)
         free = LearnStats()
-        engine._learn_effects(*window, free)
+        shade._learn_effects(*window, free)
         assert free.observations_used > 0
         assert free.censored_hours == 0
 
         held = LearnStats()
-        engine.own_censored = {
+        shade.own_censored = {
             (hour, string.string_id)
             for hour in range(window[0], window[1] + HOUR, HOUR)
             for string in plant.strings
         }
-        engine._learn_effects(*window, held)
+        shade._learn_effects(*window, held)
         assert held.censored_hours > 0
+
+    def test_it_learns_from_what_the_other_branch_censored(
+        self, seeded_store, plant
+    ):
+        """Where the published branch saw a limit bite and this one did not."""
+        from core.forecast import LearnStats
+        from core.quality import VALUE_LOWER_BOUND
+
+        live = ForecastEngine(plant, seeded_store)
+        live.load_models()
+        TestLearningCycle()._prepare_day(live, seeded_store, ratio=0.80)
+        window = (DAY_START, DAY_START + 24 * HOUR)
+        live.materialise_hourly(*window)
+        # The live branch's stamp on every hour.
+        with seeded_store._lock:  # noqa: SLF001 - a test may look inside
+            seeded_store._conn.execute(
+                "UPDATE string_hourly SET value_kind = ?", (VALUE_LOWER_BOUND,)
+            )
+
+        shade = self.shadow_engine(plant, seeded_store)
+        shade.own_censored = set()
+        stats = LearnStats()
+        shade._learn_effects(*window, stats)
+        assert stats.observations_used > 0
+        assert stats.censored_hours == 0

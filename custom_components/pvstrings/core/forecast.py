@@ -2217,8 +2217,18 @@ class ForecastEngine:
             # and without this it would learn a throttled hour as a loss of
             # the array's own -- its own verdict, computed and then ignored.
             value_kind = row.value_kind
-            if (hour, string_id) in self.own_censored:
-                value_kind = VALUE_LOWER_BOUND
+            if self.shadow:
+                # Its own verdict and nothing else.  The stored kind is the
+                # live branch's conclusion -- it writes the stamp -- so a
+                # branch that merely added to it could censor an hour the
+                # live branch censored but it did not.  That is the same
+                # asymmetry in the other direction: one branch learning from
+                # fewer hours than it judged usable.
+                censored = (hour, string_id) in self.own_censored
+                if censored:
+                    value_kind = VALUE_LOWER_BOUND
+                elif value_kind == VALUE_LOWER_BOUND:
+                    value_kind = VALUE_MEASURED
             if value_kind == VALUE_LOWER_BOUND:
                 stats.censored_hours += 1
 

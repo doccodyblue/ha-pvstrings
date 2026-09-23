@@ -368,6 +368,7 @@ class Store:
         self.path = Path(path)
         self._lock = threading.RLock()
         self._conn: sqlite3.Connection | None = None
+        self._closed = False
         self._geometry_cache: dict[str, list[GeometrySegment]] = {}
 
     # -- lifecycle --------------------------------------------------------- #
@@ -388,7 +389,15 @@ class Store:
         self._migrate()
 
     def close(self) -> None:
+        """Close for good.
+
+        Not just "close": a late arrival -- a background fetch whose HTTP
+        response came back after the entry was unloaded -- would otherwise
+        find ``_conn is None``, reconnect, and leave the old coordinator
+        writing to a database nobody is watching any more.
+        """
         with self._lock:
+            self._closed = True
             if self._conn is not None:
                 self._conn.close()
                 self._conn = None
@@ -402,6 +411,8 @@ class Store:
 
     @contextmanager
     def _tx(self) -> Iterator[sqlite3.Connection]:
+        if self._closed:
+            raise RuntimeError("store is closed")
         if self._conn is None:
             self.connect()
         assert self._conn is not None
@@ -415,6 +426,8 @@ class Store:
             self._conn.execute("COMMIT")
 
     def _query(self, sql: str, params: Sequence[Any] = ()) -> list[sqlite3.Row]:
+        if self._closed:
+            raise RuntimeError("store is closed")
         if self._conn is None:
             self.connect()
         assert self._conn is not None
@@ -2350,6 +2363,16 @@ class Store:
         """
         with self._tx() as conn:
             conn.execute("DELETE FROM ghi_bias_v2 WHERE source = ?", (source,))
+
+    def clear_calibrated_forecasts(self) -> None:
+        """Forget what the calibrated branch predicted.
+
+        Kept in the same row as the published forecast, so a reset that
+        cleared only the archive left them behind -- and the next archiving
+        pass would stamp them with the new trial's curve.
+        """
+        with self._tx() as conn:
+            conn.execute("UPDATE forecast_log SET calibrated_kwh = NULL")
 
     def clear_experiment_hours(self) -> None:
         """Drop the trial's comparison.
