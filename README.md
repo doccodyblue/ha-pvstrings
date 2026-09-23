@@ -433,18 +433,10 @@ papered over.
 
 ## Is the irradiance sensor telling the truth?
 
-Only relevant if you have one. Skip this if you do not.
-
-Cheap weather stations do not measure irradiance. They measure illuminance
-with a diode weighted to human vision and divide by a fixed constant — 126.7
-on the Ecowitt family and its clones, which is most of what people hang on a
-shed. That constant is right for one reference case and wrong everywhere else,
-because the share of the energy a photopic diode cannot see grows as the sun
-drops and its light reddens.
-
-So the integration asks. Every closed hour is compared against two independent
-reanalysis products, grouped by how high the sun stood. On the reference
-plant, over 889 hours of 72 days:
+Only if you have one. Cheap weather stations measure illuminance with a diode
+weighted to human vision and divide by a fixed constant, so they read
+progressively lower as the sun drops. Every closed hour is compared against
+two reanalysis archives, grouped by sun height. On the reference plant:
 
 ```
 sun  3-15°   0.597      sun 35-45°   0.749
@@ -452,31 +444,17 @@ sun 15-25°   0.654      sun 45-90°   0.775
 sun 25-35°   0.726
 ```
 
-A quarter low at noon, closer to half low at dawn. The result sits in the
-`sensor_check` attribute of the irradiance forecast sensor, and the archive
-has to be fetched once by hand with `pvstrings.backfill_irradiance_check` —
-deliberately, because only you know whether the sensor spent those months in
-the same place, clean and level.
+The result is the `sensor_check` attribute on the irradiance forecast sensor.
+Fetch the archive once with `pvstrings.backfill_irradiance_check` — by hand,
+because only you know whether the sensor stood still for those months.
 
-**What it does not do is correct anything.** The nowcast, the source-bias
-model and the shading map have each absorbed part of this error already; a
-factor in front of them would correct it twice. Where the evidence supports a
-curve, a second complete model instead learns from scratch reading the sensor
-through it, runs beside the published one and is scored against it. After
-fifteen clear days a criterion decides whether it was better — and until then
-the forecast is unchanged. `pvstrings.calibration_trial` reports where it
-stands.
-
-A plant whose sensor is accurate never starts one of these and needs no
-setting to avoid it: an accurate sensor produces the unity curve, and a unity
-curve is not active.
-
-Two things this deliberately cannot do. It cannot tell a low sensor from a
-high archive when both products agree — they are models with shared inputs,
-not instruments, so their disagreement is a lower bound on their error and
-not a safeguard. And it says nothing about sun heights it has not seen: the
-curve fades to no correction beyond its evidence rather than holding its
-outermost value.
+**Nothing is corrected.** The nowcast, the bias model and the shading map
+absorbed part of this error already, so a factor in front of them would
+correct it twice. Instead, where the evidence supports a curve, a second
+model learns from scratch through it and is scored against the published one;
+after fifteen clear days a criterion says whether it was better.
+`pvstrings.calibration_trial` reports where it stands. An accurate sensor
+produces a flat curve and no trial at all.
 
 ---
 
