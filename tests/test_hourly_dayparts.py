@@ -212,19 +212,66 @@ class TestMigration:
                 for part in DAYPARTS:
                     assert old_view.factor(sid, weather, part) == coarse.factor(sid, weather, part)
 
-    def test_a_round_trip_keeps_the_hours_and_fills_only_gaps(self, seeded_store, plant):
+    def test_a_round_trip_carries_on_from_the_newest_state(self, seeded_store, plant):
+        """Downgrade, learn on dayparts, upgrade again: the forecast must follow
+        what the old version learned, not jump back to the day of the downgrade."""
+        import time
+
         _store_coarse(seeded_store, coarse_model())
-        ForecastEngine(plant, seeded_store).load_models()
-        slot_row = seeded_store.load_effects("plant")["clear|h+0"]
-        # the old version learns on dayparts, including a class it never saw
-        seeded_store.save_effects(
-            "plant", {"clear|midday": (0.4, 30.0), "snow|midday": (0.1, 3.0)}, DAY_START
-        )
+        first = ForecastEngine(plant, seeded_store)
+        first.load_models()
+        first.save_models(int(time.time()))
+        untouched = seeded_store.load_effects("plant")["overcast|h+0"]
+        # the old version, installed over this one, learns clear|midday and
+        # meets a weather class never seen before; it writes with its own clock
+        # A daypart version saves every row it loaded -- hourly ones included,
+        # untouched -- under one clock reading.
+        later = int(time.time()) + 60
+        old_rows = seeded_store.load_effects("plant")
+        old_rows.update({"clear|midday": (0.4, 30.0), "snow|midday": (0.1, 3.0)})
+        seeded_store.save_effects("plant", old_rows, later)
         again = ForecastEngine(plant, seeded_store)
         again.load_models()
         stored = seeded_store.load_effects("plant")
-        assert stored["clear|h+0"] == slot_row
+        assert stored["clear|h+0"] == pytest.approx((0.4, 30.0))
+        assert stored["clear|h-1"] == pytest.approx((0.4, 30.0))
         assert stored["snow|h+0"] == pytest.approx((0.1, 3.0))
+        # a daypart it did not change still counts as rewritten: its slots are
+        # reseeded from it, which gives back the same values
+        assert stored["overcast|h+0"][0] == pytest.approx(untouched[0])
+        assert again.model.factor("s1", "clear", "h+0") == pytest.approx(
+            LogRatioModel.from_rows(
+                plant={"clear|midday": (0.4, 30.0)},
+                string=seeded_store.load_effects("string"),
+                string_daypart=seeded_store.load_effects("string_daypart"),
+            ).factor("s1", "clear", "midday")
+        )
+
+    def test_the_hourly_model_never_rewrites_the_frozen_rows(self, seeded_store, plant):
+        import time
+
+        _store_coarse(seeded_store, coarse_model())
+        engine = ForecastEngine(plant, seeded_store)
+        engine.load_models()
+        before = seeded_store.load_effect_times("plant")
+        engine.save_models(int(time.time()) + 120)
+        after = seeded_store.load_effect_times("plant")
+        for key in before:
+            if key.rpartition("|")[2] in DAYPARTS:
+                assert after[key] == before[key], key
+            else:
+                assert after[key] > before[key], key
+
+    def test_normal_restarts_do_not_reseed(self, seeded_store, plant):
+        import time
+
+        _store_coarse(seeded_store, coarse_model())
+        engine = ForecastEngine(plant, seeded_store)
+        engine.load_models()
+        engine.model.plant["clear|h+0"] = Effect(0.55, 9.0)  # learned on hours
+        engine.save_models(int(time.time()) + 180)
+        ForecastEngine(plant, seeded_store).load_models()
+        assert seeded_store.load_effects("plant")["clear|h+0"] == pytest.approx((0.55, 9.0))
 
     def test_a_second_start_changes_nothing(self, seeded_store, plant):
         _store_coarse(seeded_store, coarse_model())

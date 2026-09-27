@@ -55,6 +55,8 @@ from .learning import (
     DAYPART_SCHEME_HOURLY,
     horizon_bucket,
     part_for,
+    coarse_of,
+    DAYPARTS,
     HOUR_SLOTS,
     weather_class,
 )
@@ -701,12 +703,35 @@ class ForecastEngine:
         the branch stays on dayparts for this run and says so, rather than
         failing the setup or forecasting on half a migration.
         """
+        # A daypart row at least as recent as the slots it covers was written
+        # by a daypart version after this one last saved -- a downgrade and
+        # back.  Its slots are then stale: they go, and are seeded afresh from
+        # the daypart, so the forecast carries on from the newest state
+        # instead of jumping back to the day of the downgrade.
+        for scope in (SCOPE_PLANT, SCOPE_STRING_DAYPART):
+            rows = getattr(self.model, scope)
+            stamps = self.store.load_effect_times(self._ns(scope))
+            for key in [k for k in rows if k.rpartition("|")[2] in DAYPARTS]:
+                head, _, part = key.rpartition("|")
+                slots = [
+                    f"{head}|{slot}" for slot in HOUR_SLOTS if coarse_of(slot) == part
+                ]
+                present = [s for s in slots if s in rows]
+                if present and stamps.get(key, 0) >= max(
+                    stamps.get(s, 0) for s in present
+                ):
+                    for s in present:
+                        del rows[s]
         seeded = self.model.with_hour_slots(self._reachable_slots())
+        stored = {
+            scope: self.store.load_effects(self._ns(scope))
+            for scope in (SCOPE_PLANT, SCOPE_STRING_DAYPART)
+        }
         new_rows = {
             self._ns(scope): {
                 key: row
                 for key, row in seeded.to_rows(scope).items()
-                if key not in self.model.to_rows(scope)
+                if stored[scope].get(key) != row
             }
             for scope in (SCOPE_PLANT, SCOPE_STRING_DAYPART)
         }
@@ -764,9 +789,17 @@ class ForecastEngine:
 
     def save_models(self, now_ts: int) -> None:
         for scope in (SCOPE_PLANT, SCOPE_STRING, SCOPE_STRING_DAYPART):
-            self.store.save_effects(
-                self._ns(scope), self.model.to_rows(scope), now_ts
-            )
+            rows = self.model.to_rows(scope)
+            if self.daypart_scheme == DAYPART_SCHEME_HOURLY:
+                # The frozen daypart rows are never written back: their stamp
+                # has to keep saying when a daypart version last learned, which
+                # is how a later start notices a round trip (``_move_to_hours``).
+                rows = {
+                    key: row
+                    for key, row in rows.items()
+                    if key.rpartition("|")[2] not in DAYPARTS
+                }
+            self.store.save_effects(self._ns(scope), rows, now_ts)
         self.store.save_ghi_bias(
             self._ns(self.plant.forecast_source), self.ghi_bias.to_rows(), now_ts
         )

@@ -1901,17 +1901,19 @@ class Store:
         scheme: int,
         now_ts: int,
     ) -> None:
-        """Insert rows that do not exist yet and stamp the scheme, atomically.
+        """Write seeded hourly rows and stamp the scheme, atomically.
 
-        Never overwrites: a key already present keeps its row.  Used to seed
-        hourly buckets beside the daypart ones; a crash leaves either no new
-        rows and no stamp, or all of them.
+        The caller passes only the slots it means to (re)seed; every other row
+        is left alone.  A crash leaves either none of the rows and no stamp,
+        or all of them.
         """
         with self._tx() as conn:
             for scope, rows in scopes.items():
                 conn.executemany(
                     "INSERT INTO model_effects (scope, key, value, n_eff, updated_at)"
-                    " VALUES (?, ?, ?, ?, ?) ON CONFLICT (scope, key) DO NOTHING",
+                    " VALUES (?, ?, ?, ?, ?) ON CONFLICT (scope, key) DO UPDATE SET"
+                    " value = excluded.value, n_eff = excluded.n_eff,"
+                    " updated_at = excluded.updated_at",
                     [
                         (scope, key, value, n_eff, now_ts)
                         for key, (value, n_eff) in rows.items()
@@ -2149,6 +2151,15 @@ class Store:
         return int(self._query(sql, params)[0]["n"])
 
     # -- model state ------------------------------------------------------- #
+
+    def load_effect_times(self, scope: str) -> dict[str, int]:
+        """When each row of a scope was last written."""
+        return {
+            row["key"]: int(row["updated_at"] or 0)
+            for row in self._query(
+                "SELECT key, updated_at FROM model_effects WHERE scope = ?", (scope,)
+            )
+        }
 
     def load_effects(self, scope: str) -> dict[str, tuple[float, float]]:
         return {
