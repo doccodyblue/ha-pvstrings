@@ -304,6 +304,14 @@ class TestMigration:
         ForecastEngine(plant, seeded_store).load_models()
         assert seeded_store.load_effects("plant")["clear|h+0"] == pytest.approx((0.77, 15.0))
 
+    def test_an_orphaned_record_is_cleared(self, seeded_store, plant):
+        _store_coarse(seeded_store, coarse_model())
+        ForecastEngine(plant, seeded_store).load_models()
+        assert seeded_store.load_effects("plant~seeded_from")
+        seeded_store.clear_effects("plant")
+        ForecastEngine(plant, seeded_store).load_models()
+        assert seeded_store.load_effects("plant~seeded_from") == {}
+
     def test_a_restart_in_the_same_second_keeps_the_slots(self, seeded_store, plant):
         _store_coarse(seeded_store, coarse_model())
         ForecastEngine(plant, seeded_store).load_models()

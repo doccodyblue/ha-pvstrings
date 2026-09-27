@@ -748,7 +748,12 @@ class ForecastEngine:
                 writes[self._ns(scope) + SEED_REF_SUFFIX] = current
         cursor = self._ns(CURSOR_DAYPART_SCHEME)
         stamped = self.store.get_cursor(cursor, default=DAYPART_SCHEME_COARSE)
-        if stamped < DAYPART_SCHEME_HOURLY or any(writes.values()):
+        # A record that has to become empty still has to be written: an
+        # empty entry for a record scope means "replace with nothing".
+        pending = any(
+            rows or name.endswith(SEED_REF_SUFFIX) for name, rows in writes.items()
+        )
+        if stamped < DAYPART_SCHEME_HOURLY or pending:
             try:
                 self.store.seed_effects(
                     writes,
