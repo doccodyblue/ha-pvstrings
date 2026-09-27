@@ -44,7 +44,7 @@ from .core.aggregate import (
 )
 from .core.config import INTERVAL_SECONDS, CurtailmentGroup, PlantConfig
 from .core.conversion import CURVE_NEUTRAL, ConversionResult, convert_group
-from .core.learning import SCOPE_CONVERSION_CURVE
+from .core.learning import SCOPE_CONVERSION_CURVE, daypart_slot_table
 from .core.forecast import (
     HOUR,
     ForecastEngine,
@@ -1048,6 +1048,12 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
                 "strings": self.engine.shading.summary(),
             },
             "observations": self.engine.model.observations_seen,
+            # Which buckets the log-ratio keys above are, so a dashboard can
+            # lay them out instead of guessing from the names: the scheme and,
+            # on hours, each slot's span relative to solar noon and the
+            # daypart it was seeded from.
+            "daypart_scheme": self.engine.daypart_scheme,
+            "daypart_slots": daypart_slot_table(self.engine.daypart_scheme),
             # Learned vs. datasheet side by side: an efficiency deviation is
             # otherwise not diagnosable after the fact.
             "conversion_curves": {

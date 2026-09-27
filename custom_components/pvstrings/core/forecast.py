@@ -49,8 +49,12 @@ from .learning import (
     bias_weight,
     LogRatioModel,
     Observation,
-    daypart,
+    CURSOR_DAYPART_SCHEME,
+    COARSE_BACKUP_SUFFIX,
+    DAYPART_SCHEME_COARSE,
+    DAYPART_SCHEME_HOURLY,
     horizon_bucket,
+    part_for,
     weather_class,
 )
 from .physics import PhysicsEngine, to_index
@@ -463,6 +467,10 @@ class ForecastEngine:
             time_zone=plant.time_zone,
         )
         self.model = LogRatioModel()
+        #: Which buckets ``self.model`` is keyed on.  Settled by
+        #: ``load_models``; hourly unless a branch still holds daypart state
+        #: it has not moved yet.
+        self.daypart_scheme = DAYPART_SCHEME_HOURLY
         self.ghi_bias = GhiBiasModel()
         self.shading = ShadingModel()
         self._tz = ZoneInfo(plant.time_zone)
@@ -517,6 +525,7 @@ class ForecastEngine:
             string=self.store.load_effects(self._ns(SCOPE_STRING)),
             string_daypart=self.store.load_effects(self._ns(SCOPE_STRING_DAYPART)),
         )
+        self._move_to_hours()
         self.ghi_bias = GhiBiasModel.from_rows(
             self.store.load_ghi_bias(self._ns(self.plant.forecast_source))
         )
@@ -672,6 +681,55 @@ class ForecastEngine:
         )
         self._shading_fitted_day = day
         self._shading_fitted_counts = dict(counts)
+
+    def _move_to_hours(self) -> None:
+        """Move this branch's daypart buckets onto one-hour slots, once.
+
+        Nothing learned is dropped and no forecast changes: each slot starts
+        with the value and evidence of the daypart it lies in (see
+        ``LogRatioModel.seeded_hourly``) and learns on its own from there.
+        The daypart rows are kept beside the new ones, under the scope name
+        plus ``COARSE_BACKUP_SUFFIX``, as the state a rollback restores.
+
+        One transaction for the backup, the replacement and the scheme stamp:
+        a crash in between must leave either the old state or the new one,
+        never daypart rows under an hourly stamp or the reverse.  Idempotent
+        -- a branch already stamped hourly, or with nothing learned yet, only
+        gets the stamp.
+        """
+        cursor = self._ns(CURSOR_DAYPART_SCHEME)
+        stamped = self.store.get_cursor(cursor, default=DAYPART_SCHEME_COARSE)
+        if stamped >= DAYPART_SCHEME_HOURLY and not self.model.has_coarse_buckets:
+            self.daypart_scheme = DAYPART_SCHEME_HOURLY
+            return
+        if not self.model.has_coarse_buckets:
+            self.store.set_cursor(cursor, DAYPART_SCHEME_HOURLY)
+            self.daypart_scheme = DAYPART_SCHEME_HOURLY
+            return
+        seeded = self.model.seeded_hourly()
+        now_ts = int(datetime.now(tz=timezone.utc).timestamp())
+        self.store.move_effects_to_hours(
+            {
+                self._ns(scope): (
+                    self.model.to_rows(scope),
+                    seeded.to_rows(scope),
+                )
+                for scope in (SCOPE_PLANT, SCOPE_STRING_DAYPART)
+            },
+            backup_suffix=COARSE_BACKUP_SUFFIX,
+            cursor=cursor,
+            scheme=DAYPART_SCHEME_HOURLY,
+            now_ts=now_ts,
+        )
+        _LOGGER.info(
+            "pvstrings: %s: learned factors moved from dayparts to hours"
+            " (%d plant, %d string buckets); daypart state kept for rollback",
+            self.plant.name + (f" [{self.variant}]" if self.variant else ""),
+            len(seeded.plant),
+            len(seeded.string_daypart),
+        )
+        self.model = seeded
+        self.daypart_scheme = DAYPART_SCHEME_HOURLY
 
     def save_models(self, now_ts: int) -> None:
         for scope in (SCOPE_PLANT, SCOPE_STRING, SCOPE_STRING_DAYPART):
@@ -1322,9 +1380,22 @@ class ForecastEngine:
             rain = None if pd.isna(row["rain"]) else float(row["rain"])
             out[hour_ts] = (
                 weather_class(clearsky_index=kc, clouds_pct=clouds, rain_mm=rain),
-                daypart(float(offset)),
+                part_for(float(offset), self.daypart_scheme),
             )
         return out
+
+    def _fallback_class(self, hour: int) -> tuple[str, str]:
+        """Weather class and bucket for an hour the conditions did not cover.
+
+        The daypart scheme keeps its historic answer, "midday", so a plant
+        that has not moved to hours behaves exactly as before.  On hours the
+        slot of the hour's own midpoint is the honest answer; a fixed slot
+        would file a dawn hour under noon.
+        """
+        if self.daypart_scheme != DAYPART_SCHEME_HOURLY:
+            return "partly_cloudy", "midday"
+        offset = self.physics.hours_from_solar_noon_many([hour + HOUR / 2])[0]
+        return "partly_cloudy", part_for(float(offset), self.daypart_scheme)
 
     def log_forecast(
         self,
@@ -2244,7 +2315,7 @@ class ForecastEngine:
                     )
                 continue
 
-            weather, part = classes.get(hour, ("partly_cloudy", "midday"))
+            weather, part = classes.get(hour) or self._fallback_class(hour)
             observation = Observation(
                 string_id=string_id,
                 weather=weather,
@@ -2588,7 +2659,7 @@ class ForecastEngine:
                     continue
                 correction = 1.0
                 if self.plant.learning_enabled and physics_kwh > 0:
-                    weather, part = classes.get(hour, ("partly_cloudy", "midday"))
+                    weather, part = classes.get(hour) or self._fallback_class(hour)
                     correction = self.model.factor(string_id, weather, part)
                 rows.append((round(physics_kwh * correction, 4), hour, string_id))
         return self.store.update_chain_potential(rows)

@@ -1512,6 +1512,25 @@ class TestHourClassification:
         by_hour = {
             (hour - DAY_START) // HOUR: part for hour, (_, part) in classes.items()
         }
+        # Hourly buckets, each inside the daypart it replaced.
+        from core.learning import coarse_of
+
+        assert all(part.startswith("h") for part in by_hour.values())
+        assert coarse_of(by_hour[8]) == "morning"
+        assert coarse_of(by_hour[13]) == "midday"
+        assert coarse_of(by_hour[17]) == "afternoon"
+        assert len({by_hour[h] for h in (8, 9, 10)}) == 3
+
+    def test_a_daypart_branch_still_classifies_by_daypart(
+        self, engine: ForecastEngine
+    ):
+        from core.learning import DAYPART_SCHEME_COARSE
+
+        engine.daypart_scheme = DAYPART_SCHEME_COARSE
+        classes = engine._classify_hours(self._conditions(engine, 24))
+        by_hour = {
+            (hour - DAY_START) // HOUR: part for hour, (_, part) in classes.items()
+        }
         assert by_hour[8] == "morning"
         assert by_hour[13] == "midday"
         assert by_hour[17] == "afternoon"
@@ -1690,16 +1709,16 @@ class TestTheShadowBranch:
 
         from core.learning import Effect
 
-        live.model.plant["clear|midday"] = Effect(value=0.20, n_eff=12.0)
-        shade.model.plant["clear|midday"] = Effect(value=-0.30, n_eff=12.0)
+        live.model.plant["clear|h+0"] = Effect(value=0.20, n_eff=12.0)
+        shade.model.plant["clear|h+0"] = Effect(value=-0.30, n_eff=12.0)
         live.save_models(NOON)
         shade.save_models(NOON)
 
         reloaded_live = ForecastEngine(plant, seeded_store)
         reloaded_live.load_models()
         reloaded_shade = self.shadow(plant, seeded_store)
-        assert reloaded_live.model.plant["clear|midday"].value == pytest.approx(0.20)
-        assert reloaded_shade.model.plant["clear|midday"].value == pytest.approx(-0.30)
+        assert reloaded_live.model.plant["clear|h+0"].value == pytest.approx(0.20)
+        assert reloaded_shade.model.plant["clear|h+0"].value == pytest.approx(-0.30)
 
     def test_the_shadow_keeps_its_own_cursor(self, seeded_store, plant):
         """Otherwise one branch would step the other over its own hours."""
@@ -1777,7 +1796,9 @@ class TestTheShadowBranch:
         # how far it has learned.
         cursors = {args[0] for name, args in seen if name == "set_cursor"}
         assert touched <= {"set_cursor"}, f"shadow wrote shared state: {touched}"
-        assert cursors == {"model_learned#cal"}, cursors
+        # Plus its own daypart-scheme stamp, namespaced like the cursor.
+        assert cursors <= {"model_learned#cal", "daypart_scheme#cal"}, cursors
+        assert "model_learned#cal" in cursors
 
     def test_the_shadow_never_claims_the_one_off_bias_backfill(
         self, seeded_store, plant

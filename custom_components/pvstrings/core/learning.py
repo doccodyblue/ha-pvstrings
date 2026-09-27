@@ -104,6 +104,64 @@ def daypart(hours_from_solar_noon: float) -> str:
     return "afternoon"
 
 
+#: The three dayparts above, and one-hour slots relative to solar noon.  The
+#: scheme is part of the stored state (cursor ``CURSOR_DAYPART_SCHEME``):
+#: buckets of one scheme mean nothing under the other.
+DAYPART_SCHEME_COARSE = 1
+DAYPART_SCHEME_HOURLY = 2
+CURSOR_DAYPART_SCHEME = "daypart_scheme"
+
+#: Where a branch keeps its three-daypart buckets once it has moved to hours:
+#: the state a rollback restores.  Appended to the branch's scope name.
+COARSE_BACKUP_SUFFIX = "@coarse"
+
+
+def hour_slot(hours_from_solar_noon: float) -> str:
+    """The one-hour bucket an offset from solar noon falls in.
+
+    Edges sit on whole hours, and the closed side follows ``daypart``: before
+    noon ``[k, k+1)``, after it ``(k, k+1]``.  That puts both daypart
+    boundaries (-2 h, which belongs to midday, and +2 h, which does too) on a
+    slot edge, so every slot lies wholly inside one daypart -- the condition
+    for seeding the slots from the dayparts without changing a single
+    forecast.  Slots centred on the hour would straddle both boundaries.
+    """
+    offset = hours_from_solar_noon
+    k = math.floor(offset) if offset < 0.0 else math.ceil(offset) - 1
+    return f"h{k:+d}"
+
+
+def coarse_of(slot: str) -> str:
+    """The daypart a one-hour slot lies in."""
+    return daypart(int(slot[1:]) + 0.5)
+
+
+def part_for(hours_from_solar_noon: float, scheme: int) -> str:
+    """The bucket name for an offset under a daypart scheme."""
+    if scheme == DAYPART_SCHEME_HOURLY:
+        return hour_slot(hours_from_solar_noon)
+    return daypart(hours_from_solar_noon)
+
+
+#: Every slot an offset in [-12, +12) can produce.
+HOUR_SLOTS = tuple(f"h{k:+d}" for k in range(-12, 12))
+
+
+def daypart_slot_table(scheme: int) -> list[dict[str, object]]:
+    """The buckets of a scheme, in order, for anything that has to draw them."""
+    if scheme != DAYPART_SCHEME_HOURLY:
+        return [
+            {"key": "morning", "from_h": -12.0, "to_h": -2.0},
+            {"key": "midday", "from_h": -2.0, "to_h": 2.0},
+            {"key": "afternoon", "from_h": 2.0, "to_h": 12.0},
+        ]
+    return [
+        {"key": slot, "from_h": float(int(slot[1:])), "to_h": float(int(slot[1:]) + 1),
+         "daypart": coarse_of(slot)}
+        for slot in HOUR_SLOTS
+    ]
+
+
 def weather_class(
     clearsky_index: float | None = None,
     clouds_pct: float | None = None,
@@ -348,7 +406,63 @@ class LogRatioModel:
 
     @property
     def observations_seen(self) -> float:
-        return round(sum(e.n_eff for e in self.plant.values()), 2)
+        """Evidence held at plant level, on the three-daypart scale.
+
+        Hourly buckets are averaged within the daypart they lie in before
+        summing.  Seeding copies a daypart's evidence into each of its hours;
+        a plain sum would then report four times the observations on the day
+        of the upgrade, with not one new hour seen.
+        """
+        groups: dict[str, list[float]] = {}
+        for key, effect in self.plant.items():
+            weather, _, part = key.partition("|")
+            if part in HOUR_SLOTS:
+                part = coarse_of(part)
+            groups.setdefault(f"{weather}|{part}", []).append(effect.n_eff)
+        return round(sum(sum(v) / len(v) for v in groups.values()), 2)
+
+    # -- migration --------------------------------------------------------- #
+
+    def seeded_hourly(self) -> "LogRatioModel":
+        """The same model with each daypart spread over its one-hour slots.
+
+        Every slot starts with the value and evidence of the daypart it lies
+        in, so every forecast is unchanged until a slot learns something of
+        its own.  The evidence is not new -- it is a start value that decays
+        with the slot's own observations like any other.  Starting the slots
+        with less evidence would shrink them further towards neutral and
+        change the forecast on the day of the upgrade.
+
+        String offsets are untouched.  Keys already on hours pass through, so
+        seeding a seeded model is a no-op.
+        """
+
+        def spread(rows: dict[str, Effect]) -> dict[str, Effect]:
+            out: dict[str, Effect] = {}
+            for key, effect in rows.items():
+                head, _, part = key.rpartition("|")
+                if part in HOUR_SLOTS:
+                    out[key] = Effect(effect.value, effect.n_eff)
+                    continue
+                for slot in HOUR_SLOTS:
+                    if coarse_of(slot) == part:
+                        out.setdefault(
+                            f"{head}|{slot}", Effect(effect.value, effect.n_eff)
+                        )
+            return out
+
+        return LogRatioModel(
+            plant=spread(self.plant),
+            string={k: Effect(e.value, e.n_eff) for k, e in self.string.items()},
+            string_daypart=spread(self.string_daypart),
+        )
+
+    @property
+    def has_coarse_buckets(self) -> bool:
+        return any(
+            key.rpartition("|")[2] in DAYPARTS
+            for key in (*self.plant, *self.string_daypart)
+        )
 
 
 # --------------------------------------------------------------------------- #
