@@ -1900,8 +1900,12 @@ class Store:
         cursor: str,
         scheme: int,
         now_ts: int,
+        replace: frozenset[str] = frozenset(),
     ) -> None:
         """Write seeded hourly rows and stamp the scheme, atomically.
+
+        Scopes named in ``replace`` become exactly the rows given; all others
+        are upserted row by row.
 
         The caller passes only the slots it means to (re)seed; every other row
         is left alone.  A crash leaves either none of the rows and no stamp,
@@ -1909,6 +1913,8 @@ class Store:
         """
         with self._tx() as conn:
             for scope, rows in scopes.items():
+                if scope in replace:
+                    conn.execute("DELETE FROM model_effects WHERE scope = ?", (scope,))
                 conn.executemany(
                     "INSERT INTO model_effects (scope, key, value, n_eff, updated_at)"
                     " VALUES (?, ?, ?, ?, ?) ON CONFLICT (scope, key) DO UPDATE SET"
@@ -1991,7 +1997,8 @@ class Store:
             conn.execute(
                 "DELETE FROM model_effects"
                 " WHERE (scope = 'string_daypart'"
-                "        OR scope LIKE 'string_daypart#%')"
+                "        OR scope LIKE 'string_daypart#%'"
+                "        OR scope LIKE 'string_daypart~%')"
                 "   AND key LIKE ? || '|%'",
                 (string_id,),
             )
@@ -2151,15 +2158,6 @@ class Store:
         return int(self._query(sql, params)[0]["n"])
 
     # -- model state ------------------------------------------------------- #
-
-    def load_effect_times(self, scope: str) -> dict[str, int]:
-        """When each row of a scope was last written."""
-        return {
-            row["key"]: int(row["updated_at"] or 0)
-            for row in self._query(
-                "SELECT key, updated_at FROM model_effects WHERE scope = ?", (scope,)
-            )
-        }
 
     def load_effects(self, scope: str) -> dict[str, tuple[float, float]]:
         return {

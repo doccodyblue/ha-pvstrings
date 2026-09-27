@@ -51,6 +51,7 @@ from .learning import (
     LogRatioModel,
     Observation,
     CURSOR_DAYPART_SCHEME,
+    SEED_REF_SUFFIX,
     DAYPART_SCHEME_COARSE,
     DAYPART_SCHEME_HOURLY,
     horizon_bucket,
@@ -688,81 +689,105 @@ class ForecastEngine:
     def _move_to_hours(self) -> None:
         """Seed this branch's one-hour slots from its dayparts.
 
-        Additive only: missing slots are written, nothing is deleted or
-        overwritten.  The daypart rows stay in the same scope, frozen -- the
-        hourly model never matches them -- so a version that still works on
-        dayparts, installed over this one, finds exactly the model it left and
-        carries on.  Coming back later fills only the slots still missing.
+        Additive: missing slots are written, and the daypart rows stay in the
+        same scope, frozen -- the hourly model never matches or writes them --
+        so a version that still works on dayparts, installed over this one,
+        finds exactly the model it left and carries on.
 
         Each new slot starts with the value and evidence of its daypart
         (``LogRatioModel.with_hour_slots``), so no forecast changes until a
         slot learns something of its own.  Slots the sun never reaches at the
         plant are not seeded at all.
 
-        The rows and the scheme stamp go in one transaction.  If that fails
-        the branch stays on dayparts for this run and says so, rather than
-        failing the setup or forecasting on half a migration.
+        Coming back after such a downgrade: every seeding records the daypart
+        rows it seeded from, in a scope of its own (``SEED_REF_SUFFIX``) that a
+        daypart version neither knows nor touches.  A daypart row that no
+        longer matches its record was learned on in between; its slots are
+        seeded again from it, so the forecast carries on from the newest
+        state.  A row that merely got written back unchanged keeps its slots,
+        whatever the clock said.
+
+        The rows, the records and the scheme stamp go in one transaction.  If
+        that fails the branch stays on dayparts for this run and says so,
+        rather than failing the setup or forecasting on half a migration.
         """
-        # A daypart row at least as recent as the slots it covers was written
-        # by a daypart version after this one last saved -- a downgrade and
-        # back.  Its slots are then stale: they go, and are seeded afresh from
-        # the daypart, so the forecast carries on from the newest state
-        # instead of jumping back to the day of the downgrade.
-        for scope in (SCOPE_PLANT, SCOPE_STRING_DAYPART):
-            rows = getattr(self.model, scope)
-            stamps = self.store.load_effect_times(self._ns(scope))
-            for key in [k for k in rows if k.rpartition("|")[2] in DAYPARTS]:
-                head, _, part = key.rpartition("|")
-                slots = [
-                    f"{head}|{slot}" for slot in HOUR_SLOTS if coarse_of(slot) == part
-                ]
-                present = [s for s in slots if s in rows]
-                if present and stamps.get(key, 0) >= max(
-                    stamps.get(s, 0) for s in present
-                ):
-                    for s in present:
-                        del rows[s]
-        seeded = self.model.with_hour_slots(self._reachable_slots())
-        stored = {
-            scope: self.store.load_effects(self._ns(scope))
-            for scope in (SCOPE_PLANT, SCOPE_STRING_DAYPART)
+        scopes = (SCOPE_PLANT, SCOPE_STRING_DAYPART)
+        refs = {
+            scope: self.store.load_effects(self._ns(scope) + SEED_REF_SUFFIX)
+            for scope in scopes
         }
-        new_rows = {
-            self._ns(scope): {
+        stale: set[str] = set()
+        for scope in scopes:
+            rows = getattr(self.model, scope)
+            for key, effect in list(rows.items()):
+                head, _, part = key.rpartition("|")
+                if part not in DAYPARTS:
+                    continue
+                recorded = refs[scope].get(key)
+                if recorded is None or recorded == effect.as_tuple():
+                    continue
+                for slot in HOUR_SLOTS:
+                    if coarse_of(slot) == part and f"{head}|{slot}" in rows:
+                        del rows[f"{head}|{slot}"]
+                        stale.add(key)
+        seeded = self.model.with_hour_slots(self._reachable_slots())
+        writes: dict[str, dict[str, tuple[float, float]]] = {}
+        for scope in scopes:
+            stored = self.store.load_effects(self._ns(scope))
+            writes[self._ns(scope)] = {
                 key: row
                 for key, row in seeded.to_rows(scope).items()
-                if stored[scope].get(key) != row
+                if key.rpartition("|")[2] in HOUR_SLOTS and stored.get(key) != row
             }
-            for scope in (SCOPE_PLANT, SCOPE_STRING_DAYPART)
-        }
+            current = {
+                key: row
+                for key, row in self.model.to_rows(scope).items()
+                if key.rpartition("|")[2] in DAYPARTS
+            }
+            if current != refs[scope]:
+                writes[self._ns(scope) + SEED_REF_SUFFIX] = current
         cursor = self._ns(CURSOR_DAYPART_SCHEME)
         stamped = self.store.get_cursor(cursor, default=DAYPART_SCHEME_COARSE)
-        if stamped >= DAYPART_SCHEME_HOURLY and not any(new_rows.values()):
-            self.daypart_scheme = DAYPART_SCHEME_HOURLY
-            return
-        try:
-            self.store.seed_effects(
-                new_rows,
-                cursor=cursor,
-                scheme=DAYPART_SCHEME_HOURLY,
-                now_ts=int(datetime.now(tz=timezone.utc).timestamp()),
+        if stamped < DAYPART_SCHEME_HOURLY or any(writes.values()):
+            try:
+                self.store.seed_effects(
+                    writes,
+                    cursor=cursor,
+                    scheme=DAYPART_SCHEME_HOURLY,
+                    now_ts=int(datetime.now(tz=timezone.utc).timestamp()),
+                    replace=frozenset(
+                        name for name in writes if name.endswith(SEED_REF_SUFFIX)
+                    ),
+                )
+            except Exception:  # noqa: BLE001 - stay on the old scheme, never half-way
+                _LOGGER.exception(
+                    "pvstrings: %s: could not move learned factors to hours;"
+                    " staying on dayparts for now",
+                    self.plant.name,
+                )
+                self.model = LogRatioModel.from_rows(
+                    plant=self.store.load_effects(self._ns(SCOPE_PLANT)),
+                    string=self.store.load_effects(self._ns(SCOPE_STRING)),
+                    string_daypart=self.store.load_effects(
+                        self._ns(SCOPE_STRING_DAYPART)
+                    ),
+                )
+                self.daypart_scheme = DAYPART_SCHEME_COARSE
+                return
+            seeded_slots = sum(
+                len(rows) for name, rows in writes.items() if not name.endswith(SEED_REF_SUFFIX)
             )
-        except Exception:  # noqa: BLE001 - stay on the old scheme, never half-way
-            _LOGGER.exception(
-                "pvstrings: %s: could not move learned factors to hours;"
-                " staying on dayparts for now",
-                self.plant.name,
-            )
-            self.daypart_scheme = DAYPART_SCHEME_COARSE
-            return
-        if any(new_rows.values()):
-            _LOGGER.info(
-                "pvstrings: %s%s: seeded %d hourly buckets from dayparts;"
-                " daypart factors kept unchanged beside them",
-                self.plant.name,
-                f" [{self.variant}]" if self.variant else "",
-                sum(len(rows) for rows in new_rows.values()),
-            )
+            if seeded_slots:
+                _LOGGER.info(
+                    "pvstrings: %s%s: seeded %d hourly buckets from dayparts%s;"
+                    " daypart factors kept unchanged beside them",
+                    self.plant.name,
+                    f" [{self.variant}]" if self.variant else "",
+                    seeded_slots,
+                    f" (again for {len(stale)} learned on by an older version)"
+                    if stale
+                    else "",
+                )
         self.model = seeded
         self.daypart_scheme = DAYPART_SCHEME_HOURLY
 
@@ -791,9 +816,9 @@ class ForecastEngine:
         for scope in (SCOPE_PLANT, SCOPE_STRING, SCOPE_STRING_DAYPART):
             rows = self.model.to_rows(scope)
             if self.daypart_scheme == DAYPART_SCHEME_HOURLY:
-                # The frozen daypart rows are never written back: their stamp
-                # has to keep saying when a daypart version last learned, which
-                # is how a later start notices a round trip (``_move_to_hours``).
+                # The frozen daypart rows are never written back: they are
+                # compared against their seeding record to notice a round trip
+                # through an older version (``_move_to_hours``).
                 rows = {
                     key: row
                     for key, row in rows.items()

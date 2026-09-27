@@ -250,17 +250,67 @@ class TestMigration:
     def test_the_hourly_model_never_rewrites_the_frozen_rows(self, seeded_store, plant):
         import time
 
+        def stamps():
+            return {
+                r["key"]: r["updated_at"]
+                for r in seeded_store._query(
+                    "SELECT key, updated_at FROM model_effects WHERE scope = 'plant'", ()
+                )
+            }
+
         _store_coarse(seeded_store, coarse_model())
         engine = ForecastEngine(plant, seeded_store)
         engine.load_models()
-        before = seeded_store.load_effect_times("plant")
+        before = stamps()
         engine.save_models(int(time.time()) + 120)
-        after = seeded_store.load_effect_times("plant")
+        after = stamps()
         for key in before:
             if key.rpartition("|")[2] in DAYPARTS:
                 assert after[key] == before[key], key
             else:
                 assert after[key] > before[key], key
+
+    def test_an_unchanged_rewrite_keeps_learned_slots(self, seeded_store, plant):
+        """An older version saves what it loaded without learning: slots stay."""
+        import time
+
+        _store_coarse(seeded_store, coarse_model())
+        engine = ForecastEngine(plant, seeded_store)
+        engine.load_models()
+        engine.model.plant["clear|h+0"] = Effect(0.61, 12.0)
+        engine.save_models(int(time.time()))
+        seeded_store.save_effects(
+            "plant", seeded_store.load_effects("plant"), int(time.time()) + 3600
+        )
+        ForecastEngine(plant, seeded_store).load_models()
+        assert seeded_store.load_effects("plant")["clear|h+0"] == pytest.approx((0.61, 12.0))
+
+    def test_learning_on_an_older_version_is_found_whatever_the_clock(
+        self, seeded_store, plant
+    ):
+        _store_coarse(seeded_store, coarse_model())
+        engine = ForecastEngine(plant, seeded_store)
+        engine.load_models()
+        engine.save_models(2_000_000_000)
+        # the older version learns, with a clock that went backwards
+        seeded_store.save_effects("plant", {"clear|midday": (0.4, 30.0)}, 1_000_000_000)
+        ForecastEngine(plant, seeded_store).load_models()
+        assert seeded_store.load_effects("plant")["clear|h+0"] == pytest.approx((0.4, 30.0))
+
+    def test_slots_without_a_record_are_kept(self, seeded_store, plant):
+        """No record means nothing to compare against: learned slots stay."""
+        _store_coarse(seeded_store, coarse_model())
+        seeded_store.save_effects("plant", {"clear|h+0": (0.77, 15.0)}, DAY_START)
+        ForecastEngine(plant, seeded_store).load_models()
+        assert seeded_store.load_effects("plant")["clear|h+0"] == pytest.approx((0.77, 15.0))
+
+    def test_a_restart_in_the_same_second_keeps_the_slots(self, seeded_store, plant):
+        _store_coarse(seeded_store, coarse_model())
+        ForecastEngine(plant, seeded_store).load_models()
+        again = ForecastEngine(plant, seeded_store)
+        again.load_models()
+        assert "clear|h+0" in again.model.plant
+        assert again.daypart_scheme == DAYPART_SCHEME_HOURLY
 
     def test_normal_restarts_do_not_reseed(self, seeded_store, plant):
         import time

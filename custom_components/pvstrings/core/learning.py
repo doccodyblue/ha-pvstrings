@@ -111,6 +111,12 @@ DAYPART_SCHEME_COARSE = 1
 DAYPART_SCHEME_HOURLY = 2
 CURSOR_DAYPART_SCHEME = "daypart_scheme"
 
+#: Scope suffix for the daypart rows a branch last seeded its hours from.  A
+#: daypart row that no longer matches its record was learned on by an older
+#: version in between -- a value comparison, because a write time says when
+#: something was saved, not whether anything was learned.
+SEED_REF_SUFFIX = "~seeded_from"
+
 def hour_slot(hours_from_solar_noon: float) -> str:
     """The one-hour bucket an offset from solar noon falls in.
 
