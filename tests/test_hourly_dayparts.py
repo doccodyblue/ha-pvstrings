@@ -14,7 +14,6 @@ import pytest
 
 from core.forecast import ForecastEngine
 from core.learning import (
-    COARSE_BACKUP_SUFFIX,
     CURSOR_DAYPART_SCHEME,
     DAYPART_SCHEME_COARSE,
     DAYPART_SCHEME_HOURLY,
@@ -84,7 +83,7 @@ class TestSlots:
 class TestSeeding:
     def test_no_correction_changes(self):
         coarse = coarse_model()
-        hourly = coarse.seeded_hourly()
+        hourly = coarse.with_hour_slots()
         for sid in (*STRINGS, "unknown"):
             for weather in (*WEATHER_CLASSES, "never_seen"):
                 for offset in SWEEP:
@@ -96,31 +95,58 @@ class TestSeeding:
                     )
                     assert after == before, (sid, weather, offset)
 
+    def test_the_daypart_rows_stay_exactly_as_they_were(self):
+        """What a daypart-only version reads after a downgrade."""
+        coarse = coarse_model()
+        hourly = coarse.with_hour_slots()
+        for sid in STRINGS:
+            for weather in WEATHER_CLASSES:
+                for part in DAYPARTS:
+                    assert hourly.log_correction(sid, weather, part) == coarse.log_correction(
+                        sid, weather, part
+                    )
+
     def test_the_observation_count_does_not_jump(self):
         coarse = coarse_model()
-        assert coarse.seeded_hourly().observations_seen == coarse.observations_seen
+        assert coarse.with_hour_slots().observations_seen == coarse.observations_seen
+
+    def test_frozen_dayparts_do_not_count_once_slots_learn(self):
+        hourly = coarse_model().with_hour_slots()
+        for key in list(hourly.plant):
+            if key.startswith("clear|h"):
+                hourly.plant[key] = Effect(hourly.plant[key].value, 20.0)
+        expected = 3 * 20.0 + sum(
+            e.n_eff for k, e in coarse_model().plant.items() if not k.startswith("clear|")
+        )
+        assert hourly.observations_seen == pytest.approx(expected)
 
     def test_string_offsets_are_untouched(self):
         coarse = coarse_model()
-        hourly = coarse.seeded_hourly()
-        assert hourly.to_rows("string") == coarse.to_rows("string")
+        assert coarse.with_hour_slots().to_rows("string") == coarse.to_rows("string")
 
     def test_seeding_twice_changes_nothing(self):
-        once = coarse_model().seeded_hourly()
-        twice = once.seeded_hourly()
+        once = coarse_model().with_hour_slots()
+        twice = once.with_hour_slots()
         for scope in ("plant", "string", "string_daypart"):
             assert twice.to_rows(scope) == once.to_rows(scope)
 
-    def test_no_daypart_keys_survive(self):
-        hourly = coarse_model().seeded_hourly()
-        assert not hourly.has_coarse_buckets
-        assert all(k.rpartition("|")[2] in HOUR_SLOTS for k in hourly.plant)
+    def test_existing_slots_are_never_overwritten(self):
+        model = coarse_model().with_hour_slots()
+        model.plant["clear|h-4"] = Effect(0.33, 7.0)
+        model.plant["clear|morning"] = Effect(-0.5, 20.0)  # a downgrade learned on
+        again = model.with_hour_slots()
+        assert again.plant["clear|h-4"].as_tuple() == (0.33, 7.0)
+
+    def test_only_reachable_slots_are_seeded(self):
+        hourly = coarse_model().with_hour_slots(("h-3", "h+0"))
+        slots = {k.rpartition("|")[2] for k in hourly.plant if k.rpartition("|")[2] in HOUR_SLOTS}
+        assert slots == {"h-3", "h+0"}
 
     def test_slots_learn_on_their_own(self):
         """After seeding, an observation moves its own hour, not its siblings."""
         from core.learning import Observation
 
-        hourly = coarse_model().seeded_hourly()
+        hourly = coarse_model().with_hour_slots()
         before = {k: e.value for k, e in hourly.plant.items()}
         hourly.observe(
             Observation(
@@ -130,6 +156,17 @@ class TestSeeding:
         )
         changed = {k for k, e in hourly.plant.items() if e.value != before[k]}
         assert changed == {"clear|h-4"}
+
+    def test_the_summary_keeps_dayparts_readable(self):
+        """A dashboard that only knows dayparts must not go blank."""
+        coarse = coarse_model()
+        hourly = coarse.with_hour_slots()
+        summary = hourly.summary()
+        for weather in WEATHER_CLASSES:
+            for part in DAYPARTS:
+                key = f"{weather}|{part}"
+                assert summary["plant"][key] == coarse.summary()["plant"][key]
+        assert any(k.endswith("|h+0") for k in summary["plant"])
 
 
 def _store_coarse(store: Store, model: LogRatioModel, ns: str = "") -> None:
@@ -142,31 +179,58 @@ class TestMigration:
     def test_an_installation_moves_without_losing_anything(self, seeded_store, plant):
         coarse = coarse_model()
         _store_coarse(seeded_store, coarse)
-
         engine = ForecastEngine(plant, seeded_store)
         engine.load_models()
 
         assert engine.daypart_scheme == DAYPART_SCHEME_HOURLY
         assert seeded_store.get_cursor(CURSOR_DAYPART_SCHEME) == DAYPART_SCHEME_HOURLY
-        # the daypart state is kept, exactly, for a rollback
-        for scope in ("plant", "string_daypart"):
-            assert seeded_store.load_effects(scope + COARSE_BACKUP_SUFFIX) == pytest.approx(
-                coarse.to_rows(scope)
-            )
-        # the live scopes hold hours only, and exactly the seeded rows
-        seeded = coarse.seeded_hourly()
         for scope in ("plant", "string", "string_daypart"):
-            assert seeded_store.load_effects(scope) == pytest.approx(seeded.to_rows(scope))
+            stored = seeded_store.load_effects(scope)
+            for key, row in coarse.to_rows(scope).items():
+                assert stored[key] == pytest.approx(row), (scope, key)
+        assert any(k.endswith("|h+0") for k in seeded_store.load_effects("plant"))
+
+    def test_night_slots_are_not_seeded(self, seeded_store, plant):
+        _store_coarse(seeded_store, coarse_model())
+        engine = ForecastEngine(plant, seeded_store)
+        engine.load_models()
+        slots = {k.rpartition("|")[2] for k in seeded_store.load_effects("plant")}
+        assert "h+0" in slots and "h-12" not in slots and "h+11" not in slots
+
+    def test_a_downgrade_finds_its_own_model(self, seeded_store, plant):
+        """The previous version, installed over this one, reads only dayparts."""
+        coarse = coarse_model()
+        _store_coarse(seeded_store, coarse)
+        ForecastEngine(plant, seeded_store).load_models()
+        old_view = LogRatioModel.from_rows(
+            plant=seeded_store.load_effects("plant"),
+            string=seeded_store.load_effects("string"),
+            string_daypart=seeded_store.load_effects("string_daypart"),
+        )
+        for sid in STRINGS:
+            for weather in WEATHER_CLASSES:
+                for part in DAYPARTS:
+                    assert old_view.factor(sid, weather, part) == coarse.factor(sid, weather, part)
+
+    def test_a_round_trip_keeps_the_hours_and_fills_only_gaps(self, seeded_store, plant):
+        _store_coarse(seeded_store, coarse_model())
+        ForecastEngine(plant, seeded_store).load_models()
+        slot_row = seeded_store.load_effects("plant")["clear|h+0"]
+        # the old version learns on dayparts, including a class it never saw
+        seeded_store.save_effects(
+            "plant", {"clear|midday": (0.4, 30.0), "snow|midday": (0.1, 3.0)}, DAY_START
+        )
+        again = ForecastEngine(plant, seeded_store)
+        again.load_models()
+        stored = seeded_store.load_effects("plant")
+        assert stored["clear|h+0"] == slot_row
+        assert stored["snow|h+0"] == pytest.approx((0.1, 3.0))
 
     def test_a_second_start_changes_nothing(self, seeded_store, plant):
         _store_coarse(seeded_store, coarse_model())
         ForecastEngine(plant, seeded_store).load_models()
-        snapshot = {
-            s: seeded_store.load_effects(s)
-            for s in ("plant", "string", "string_daypart", "plant@coarse", "string_daypart@coarse")
-        }
-        again = ForecastEngine(plant, seeded_store)
-        again.load_models()
+        snapshot = {s: seeded_store.load_effects(s) for s in ("plant", "string", "string_daypart")}
+        ForecastEngine(plant, seeded_store).load_models()
         for scope, rows in snapshot.items():
             assert seeded_store.load_effects(scope) == rows
 
@@ -175,7 +239,7 @@ class TestMigration:
         engine.load_models()
         assert engine.daypart_scheme == DAYPART_SCHEME_HOURLY
         assert seeded_store.get_cursor(CURSOR_DAYPART_SCHEME) == DAYPART_SCHEME_HOURLY
-        assert seeded_store.load_effects("plant@coarse") == {}
+        assert seeded_store.load_effects("plant") == {}
 
     def test_each_branch_moves_in_its_own_namespace(self, seeded_store, plant):
         live, cal = coarse_model(), coarse_model()
@@ -188,7 +252,6 @@ class TestMigration:
         shade.load_models()
 
         assert seeded_store.get_cursor("daypart_scheme#cal") == DAYPART_SCHEME_HOURLY
-        assert seeded_store.load_effects("plant#cal@coarse")["clear|midday"] == pytest.approx((-0.25, 11.0))
         assert shade.model.plant["clear|h+0"].value == pytest.approx(-0.25)
         assert seeded_store.load_effects("plant")["clear|h+0"][0] != pytest.approx(-0.25)
 
@@ -217,25 +280,26 @@ class TestMigration:
             assert a.potential_kwh == b.potential_kwh
             assert a.correction == b.correction
 
-    def test_a_failed_move_leaves_the_old_state(self, seeded_store):
-        rows = coarse_model().to_rows("plant")
-        seeded_store.save_effects("plant", rows, DAY_START)
-        bad = {"string_daypart": ({}, {"s1|h+0": (None, 1.0)})}  # NOT NULL violation
-        good = {"plant": (rows, coarse_model().seeded_hourly().to_rows("plant"))}
+    def test_a_failed_move_stays_on_dayparts(self, seeded_store, plant, monkeypatch):
+        coarse = coarse_model()
+        _store_coarse(seeded_store, coarse)
+
+        def boom(*_a, **_k):
+            raise RuntimeError("disk full")
+
+        monkeypatch.setattr(seeded_store, "seed_effects", boom)
+        engine = ForecastEngine(plant, seeded_store)
+        engine.load_models()
+        assert engine.daypart_scheme == DAYPART_SCHEME_COARSE
+        assert seeded_store.get_cursor(CURSOR_DAYPART_SCHEME, default=0) == 0
+        assert seeded_store.load_effects("plant") == pytest.approx(coarse.to_rows("plant"))
+        assert engine.model.factor("s1", "clear", "midday") == coarse.factor("s1", "clear", "midday")
+
+    def test_a_crash_inside_the_transaction_leaves_nothing(self, seeded_store):
         with pytest.raises(Exception):
-            seeded_store.move_effects_to_hours(
-                {**good, **bad}, backup_suffix=COARSE_BACKUP_SUFFIX,
+            seeded_store.seed_effects(
+                {"plant": {"clear|h+0": (0.1, 2.0)}, "string_daypart": {"s1|h+0": (None, 1.0)}},
                 cursor=CURSOR_DAYPART_SCHEME, scheme=DAYPART_SCHEME_HOURLY, now_ts=DAY_START,
             )
-        assert seeded_store.load_effects("plant") == pytest.approx(rows)
-        assert seeded_store.load_effects("plant@coarse") == {}
+        assert seeded_store.load_effects("plant") == {}
         assert seeded_store.get_cursor(CURSOR_DAYPART_SCHEME, default=0) == 0
-
-    def test_a_string_reset_also_clears_its_backup(self, seeded_store, plant):
-        _store_coarse(seeded_store, coarse_model())
-        ForecastEngine(plant, seeded_store).load_models()
-        assert any(k.startswith("s1|") for k in seeded_store.load_effects("string_daypart@coarse"))
-        seeded_store.clear_effects_for_string("s1")
-        for scope in ("string_daypart", "string_daypart@coarse"):
-            assert not any(k.startswith("s1|") for k in seeded_store.load_effects(scope))
-            assert any(k.startswith("s2|") for k in seeded_store.load_effects(scope))

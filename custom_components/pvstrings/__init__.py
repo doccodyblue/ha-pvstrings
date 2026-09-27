@@ -605,7 +605,6 @@ def _async_register_services(hass: HomeAssistant) -> None:
             store.clear_effects(SCOPE_CALIBRATION)
             for scope in ("plant#cal", "string#cal", "string_daypart#cal"):
                 store.clear_effects(scope)
-                store.clear_effects(scope + "@coarse")
             store.clear_ghi_bias(f"{coordinator.plant.forecast_source}#cal")
             store.set_cursors({"model_learned#cal": 0})
             # The log holds what the old branch predicted, beside the

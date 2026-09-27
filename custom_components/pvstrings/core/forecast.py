@@ -23,6 +23,7 @@ cannot both chase the same signal:
 from __future__ import annotations
 
 import logging
+import math
 import zlib
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone, tzinfo
@@ -50,11 +51,11 @@ from .learning import (
     LogRatioModel,
     Observation,
     CURSOR_DAYPART_SCHEME,
-    COARSE_BACKUP_SUFFIX,
     DAYPART_SCHEME_COARSE,
     DAYPART_SCHEME_HOURLY,
     horizon_bucket,
     part_for,
+    HOUR_SLOTS,
     weather_class,
 )
 from .physics import PhysicsEngine, to_index
@@ -683,53 +684,83 @@ class ForecastEngine:
         self._shading_fitted_counts = dict(counts)
 
     def _move_to_hours(self) -> None:
-        """Move this branch's daypart buckets onto one-hour slots, once.
+        """Seed this branch's one-hour slots from its dayparts.
 
-        Nothing learned is dropped and no forecast changes: each slot starts
-        with the value and evidence of the daypart it lies in (see
-        ``LogRatioModel.seeded_hourly``) and learns on its own from there.
-        The daypart rows are kept beside the new ones, under the scope name
-        plus ``COARSE_BACKUP_SUFFIX``, as the state a rollback restores.
+        Additive only: missing slots are written, nothing is deleted or
+        overwritten.  The daypart rows stay in the same scope, frozen -- the
+        hourly model never matches them -- so a version that still works on
+        dayparts, installed over this one, finds exactly the model it left and
+        carries on.  Coming back later fills only the slots still missing.
 
-        One transaction for the backup, the replacement and the scheme stamp:
-        a crash in between must leave either the old state or the new one,
-        never daypart rows under an hourly stamp or the reverse.  Idempotent
-        -- a branch already stamped hourly, or with nothing learned yet, only
-        gets the stamp.
+        Each new slot starts with the value and evidence of its daypart
+        (``LogRatioModel.with_hour_slots``), so no forecast changes until a
+        slot learns something of its own.  Slots the sun never reaches at the
+        plant are not seeded at all.
+
+        The rows and the scheme stamp go in one transaction.  If that fails
+        the branch stays on dayparts for this run and says so, rather than
+        failing the setup or forecasting on half a migration.
         """
+        seeded = self.model.with_hour_slots(self._reachable_slots())
+        new_rows = {
+            self._ns(scope): {
+                key: row
+                for key, row in seeded.to_rows(scope).items()
+                if key not in self.model.to_rows(scope)
+            }
+            for scope in (SCOPE_PLANT, SCOPE_STRING_DAYPART)
+        }
         cursor = self._ns(CURSOR_DAYPART_SCHEME)
         stamped = self.store.get_cursor(cursor, default=DAYPART_SCHEME_COARSE)
-        if stamped >= DAYPART_SCHEME_HOURLY and not self.model.has_coarse_buckets:
+        if stamped >= DAYPART_SCHEME_HOURLY and not any(new_rows.values()):
             self.daypart_scheme = DAYPART_SCHEME_HOURLY
             return
-        if not self.model.has_coarse_buckets:
-            self.store.set_cursor(cursor, DAYPART_SCHEME_HOURLY)
-            self.daypart_scheme = DAYPART_SCHEME_HOURLY
+        try:
+            self.store.seed_effects(
+                new_rows,
+                cursor=cursor,
+                scheme=DAYPART_SCHEME_HOURLY,
+                now_ts=int(datetime.now(tz=timezone.utc).timestamp()),
+            )
+        except Exception:  # noqa: BLE001 - stay on the old scheme, never half-way
+            _LOGGER.exception(
+                "pvstrings: %s: could not move learned factors to hours;"
+                " staying on dayparts for now",
+                self.plant.name,
+            )
+            self.daypart_scheme = DAYPART_SCHEME_COARSE
             return
-        seeded = self.model.seeded_hourly()
-        now_ts = int(datetime.now(tz=timezone.utc).timestamp())
-        self.store.move_effects_to_hours(
-            {
-                self._ns(scope): (
-                    self.model.to_rows(scope),
-                    seeded.to_rows(scope),
-                )
-                for scope in (SCOPE_PLANT, SCOPE_STRING_DAYPART)
-            },
-            backup_suffix=COARSE_BACKUP_SUFFIX,
-            cursor=cursor,
-            scheme=DAYPART_SCHEME_HOURLY,
-            now_ts=now_ts,
-        )
-        _LOGGER.info(
-            "pvstrings: %s: learned factors moved from dayparts to hours"
-            " (%d plant, %d string buckets); daypart state kept for rollback",
-            self.plant.name + (f" [{self.variant}]" if self.variant else ""),
-            len(seeded.plant),
-            len(seeded.string_daypart),
-        )
+        if any(new_rows.values()):
+            _LOGGER.info(
+                "pvstrings: %s%s: seeded %d hourly buckets from dayparts;"
+                " daypart factors kept unchanged beside them",
+                self.plant.name,
+                f" [{self.variant}]" if self.variant else "",
+                sum(len(rows) for rows in new_rows.values()),
+            )
         self.model = seeded
         self.daypart_scheme = DAYPART_SCHEME_HOURLY
+
+    def _reachable_slots(self) -> tuple[str, ...]:
+        """The hourly slots the sun can occupy at this latitude, with a margin.
+
+        Longest day of the year from the sunrise equation at the solstice
+        declination, plus an hour either side for refraction, elevation and
+        the width of a slot.  Beyond the polar circles that is every slot.
+        """
+        phi = math.radians(self.plant.latitude)
+        decl = math.radians(23.44)
+        cos_h0 = -math.tan(abs(phi)) * math.tan(decl)
+        if cos_h0 <= -1.0:
+            half_day = 12.0
+        else:
+            half_day = math.degrees(math.acos(max(-1.0, min(1.0, cos_h0)))) / 15.0
+        reach = half_day + 1.0
+        return tuple(
+            slot
+            for slot in HOUR_SLOTS
+            if int(slot[1:]) + 1 > -reach and int(slot[1:]) < reach
+        )
 
     def save_models(self, now_ts: int) -> None:
         for scope in (SCOPE_PLANT, SCOPE_STRING, SCOPE_STRING_DAYPART):

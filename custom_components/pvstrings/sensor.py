@@ -700,6 +700,12 @@ PLANT_SENSORS: tuple[PlantSensorDescription, ...] = (
         value_fn=lambda data, _c: data.model_summary.get("observations"),
         attrs_fn=lambda data, _c: {
             "log_ratio": data.model_summary.get("log_ratio"),
+            # Which buckets the log-ratio keys are: dayparts, or one-hour
+            # slots with their span relative to solar noon and the daypart
+            # each lies in.  A reader that only knows dayparts still finds
+            # them in log_ratio, as the slots add up.
+            "daypart_scheme": data.model_summary.get("daypart_scheme"),
+            "daypart_slots": data.model_summary.get("daypart_slots"),
             "ghi_bias": data.model_summary.get("ghi_bias"),
             "last_learn_cycle": data.learn_stats,
         },
@@ -972,6 +978,11 @@ class PvStringsEntity(CoordinatorEntity[PvStringsCoordinator], SensorEntity):
 
 
 class PlantSensor(PvStringsEntity):
+    # The model tables are for reading live, not for history: on hourly
+    # buckets they run to some fifteen kilobytes, against the recorder's
+    # sixteen per state, and a state over the limit loses all its attributes.
+    _unrecorded_attributes = frozenset({"log_ratio", "ghi_bias", "daypart_slots"})
+
     entity_description: PlantSensorDescription
 
     def __init__(

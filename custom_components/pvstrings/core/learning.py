@@ -111,11 +111,6 @@ DAYPART_SCHEME_COARSE = 1
 DAYPART_SCHEME_HOURLY = 2
 CURSOR_DAYPART_SCHEME = "daypart_scheme"
 
-#: Where a branch keeps its three-daypart buckets once it has moved to hours:
-#: the state a rollback restores.  Appended to the branch's scope name.
-COARSE_BACKUP_SUFFIX = "@coarse"
-
-
 def hour_slot(hours_from_solar_noon: float) -> str:
     """The one-hour bucket an offset from solar noon falls in.
 
@@ -385,66 +380,100 @@ class LogRatioModel:
     # -- introspection ----------------------------------------------------- #
 
     def summary(self) -> dict[str, object]:
+        def row(effect: Effect) -> dict[str, float]:
+            return {"factor": round(math.exp(effect.shrunk), 4), "n_eff": round(effect.n_eff, 2)}
+
+        def published(rows: dict[str, Effect]) -> dict[str, dict[str, float]]:
+            """Hourly slots as they are, plus each daypart as its slots add up.
+
+            The daypart rows themselves are frozen once slots exist and would
+            only show the day of the upgrade.  In their place goes what the
+            slots say about the daypart -- evidence-weighted factor, mean
+            evidence -- so a reader that only knows dayparts keeps seeing
+            current figures.
+            """
+            hourly = any(k.rpartition("|")[2] in HOUR_SLOTS for k in rows)
+            if not hourly:
+                return {k: row(e) for k, e in sorted(rows.items())}
+            out: dict[str, dict[str, float]] = {}
+            grouped: dict[str, list[Effect]] = {}
+            for key, effect in sorted(rows.items()):
+                head, _, part = key.rpartition("|")
+                if part in HOUR_SLOTS:
+                    out[key] = row(effect)
+                    grouped.setdefault(f"{head}|{coarse_of(part)}", []).append(effect)
+            for key, effects in sorted(grouped.items()):
+                weight = sum(e.n_eff for e in effects)
+                if weight <= 0.0:
+                    continue
+                shrunk = sum(e.shrunk * e.n_eff for e in effects) / weight
+                out[key] = {
+                    "factor": round(math.exp(shrunk), 4),
+                    "n_eff": round(weight / len(effects), 2),
+                }
+            return out
+
         return {
-            "plant": {
-                key: {"factor": round(math.exp(e.shrunk), 4), "n_eff": round(e.n_eff, 2)}
-                for key, e in sorted(self.plant.items())
-            },
-            "string": {
-                key: {"factor": round(math.exp(e.shrunk), 4), "n_eff": round(e.n_eff, 2)}
-                for key, e in sorted(self.string.items())
-            },
+            "plant": published(self.plant),
+            "string": {key: row(e) for key, e in sorted(self.string.items())},
             # Every bucket, unfiltered.  These rows are written to the store
             # from the first observation onwards, so a summary that dropped the
             # thin ones made "still filling" and "the write path is dead" look
             # identical from outside -- which is how this got reported as a bug.
-            "string_daypart": {
-                key: {"factor": round(math.exp(e.shrunk), 4), "n_eff": round(e.n_eff, 2)}
-                for key, e in sorted(self.string_daypart.items())
-            },
+            "string_daypart": published(self.string_daypart),
         }
 
     @property
     def observations_seen(self) -> float:
         """Evidence held at plant level, on the three-daypart scale.
 
-        Hourly buckets are averaged within the daypart they lie in before
-        summing.  Seeding copies a daypart's evidence into each of its hours;
-        a plain sum would then report four times the observations on the day
-        of the upgrade, with not one new hour seen.
+        Once hourly slots exist they are what the model uses, and they are
+        averaged within the daypart they lie in before summing: seeding copies
+        a daypart's evidence into each of its hours, and a plain sum would
+        report several times the observations on the day of the upgrade, with
+        not one new hour seen.  The daypart rows kept beside them are frozen
+        and not counted.
         """
+        hourly = any(key.partition("|")[2] in HOUR_SLOTS for key in self.plant)
         groups: dict[str, list[float]] = {}
         for key, effect in self.plant.items():
             weather, _, part = key.partition("|")
             if part in HOUR_SLOTS:
                 part = coarse_of(part)
+            elif hourly:
+                continue
             groups.setdefault(f"{weather}|{part}", []).append(effect.n_eff)
         return round(sum(sum(v) / len(v) for v in groups.values()), 2)
 
     # -- migration --------------------------------------------------------- #
 
-    def seeded_hourly(self) -> "LogRatioModel":
-        """The same model with each daypart spread over its one-hour slots.
+    def with_hour_slots(self, slots: Iterable[str] = HOUR_SLOTS) -> "LogRatioModel":
+        """This model plus one-hour slots seeded from their dayparts.
 
-        Every slot starts with the value and evidence of the daypart it lies
-        in, so every forecast is unchanged until a slot learns something of
-        its own.  The evidence is not new -- it is a start value that decays
-        with the slot's own observations like any other.  Starting the slots
-        with less evidence would shrink them further towards neutral and
+        Every slot that does not exist yet starts with the value and evidence
+        of the daypart it lies in, so no forecast changes until a slot learns
+        something of its own.  Existing slots are left exactly as they are,
+        and so are the daypart rows: they stay in the model, frozen -- the
+        hourly model never reads or writes them, and a version that still
+        works on dayparts finds them where it left them.
+
+        The evidence copied into a slot is not new evidence: it is a start
+        value that decays with the slot's own observations like any other.
+        Starting a slot with less would shrink it further towards neutral and
         change the forecast on the day of the upgrade.
 
-        String offsets are untouched.  Keys already on hours pass through, so
-        seeding a seeded model is a no-op.
+        ``slots`` limits seeding to the hours the sun can occupy at the plant:
+        a slot it never reaches would carry its seed for ever.
         """
+        wanted = tuple(slots)
 
         def spread(rows: dict[str, Effect]) -> dict[str, Effect]:
-            out: dict[str, Effect] = {}
+            out = {key: Effect(e.value, e.n_eff) for key, e in rows.items()}
             for key, effect in rows.items():
                 head, _, part = key.rpartition("|")
-                if part in HOUR_SLOTS:
-                    out[key] = Effect(effect.value, effect.n_eff)
+                if part not in DAYPARTS:
                     continue
-                for slot in HOUR_SLOTS:
+                for slot in wanted:
                     if coarse_of(slot) == part:
                         out.setdefault(
                             f"{head}|{slot}", Effect(effect.value, effect.n_eff)

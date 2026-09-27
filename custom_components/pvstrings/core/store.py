@@ -1893,35 +1893,30 @@ class Store:
                     ],
                 )
 
-    def move_effects_to_hours(
+    def seed_effects(
         self,
-        scopes: Mapping[str, tuple[dict[str, tuple[float, float]], dict[str, tuple[float, float]]]],
+        scopes: Mapping[str, dict[str, tuple[float, float]]],
         *,
-        backup_suffix: str,
         cursor: str,
         scheme: int,
         now_ts: int,
     ) -> None:
-        """Swap learned scopes for their hourly form and stamp the scheme.
+        """Insert rows that do not exist yet and stamp the scheme, atomically.
 
-        ``scopes`` maps a scope to ``(current rows, hourly rows)``.  The
-        current rows go to ``scope + backup_suffix`` (replacing any older
-        backup), the scope itself becomes exactly the hourly rows, and the
-        scheme cursor is written -- all in one transaction, so a crash leaves
-        either the old state or the new one.
+        Never overwrites: a key already present keeps its row.  Used to seed
+        hourly buckets beside the daypart ones; a crash leaves either no new
+        rows and no stamp, or all of them.
         """
         with self._tx() as conn:
-            for scope, (current, hourly) in scopes.items():
-                for target, rows in ((scope + backup_suffix, current), (scope, hourly)):
-                    conn.execute("DELETE FROM model_effects WHERE scope = ?", (target,))
-                    conn.executemany(
-                        "INSERT INTO model_effects (scope, key, value, n_eff, updated_at)"
-                        " VALUES (?, ?, ?, ?, ?)",
-                        [
-                            (target, key, value, n_eff, now_ts)
-                            for key, (value, n_eff) in rows.items()
-                        ],
-                    )
+            for scope, rows in scopes.items():
+                conn.executemany(
+                    "INSERT INTO model_effects (scope, key, value, n_eff, updated_at)"
+                    " VALUES (?, ?, ?, ?, ?) ON CONFLICT (scope, key) DO NOTHING",
+                    [
+                        (scope, key, value, n_eff, now_ts)
+                        for key, (value, n_eff) in rows.items()
+                    ],
+                )
             conn.execute(
                 "INSERT INTO learning_cursor (name, ts_utc) VALUES (?, ?)"
                 " ON CONFLICT (name) DO UPDATE SET ts_utc = excluded.ts_utc",
@@ -1991,15 +1986,10 @@ class Store:
                 " WHERE (scope = 'string' OR scope LIKE 'string#%') AND key = ?",
                 (string_id,),
             )
-            # Every copy of the string x daypart layer: the published one,
-            # other branches ("#cal"), and the daypart backups kept when the
-            # model moved to hours ("@coarse") -- a rollback must not bring
-            # back what the owner just reset.
             conn.execute(
                 "DELETE FROM model_effects"
                 " WHERE (scope = 'string_daypart'"
-                "        OR scope LIKE 'string_daypart#%'"
-                "        OR scope LIKE 'string_daypart@%')"
+                "        OR scope LIKE 'string_daypart#%')"
                 "   AND key LIKE ? || '|%'",
                 (string_id,),
             )
