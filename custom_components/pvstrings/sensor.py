@@ -1039,7 +1039,7 @@ class GroupForecastSensor(PvStringsEntity):
         super().__init__(coordinator)
         self._group_id = group_id
         self._attr_unique_id = f"{entry.entry_id}_{group_id}_forecast_remaining"
-        self._attr_device_info = group_device_info(entry, group_id, name)
+        self._attr_device_info = group_device_info(coordinator.hass, entry, group_id, name)
 
     def _group(self) -> Any:
         data = self.coordinator.data
@@ -1131,7 +1131,7 @@ class GroupConversionSensor(PvStringsEntity):
             key = "forecast_battery_charge"
             self._attr_translation_key = "group_forecast_battery_charge"
         self._attr_unique_id = f"{entry.entry_id}_{group_id}_{key}"
-        self._attr_device_info = group_device_info(entry, group_id, name)
+        self._attr_device_info = group_device_info(coordinator.hass, entry, group_id, name)
 
     def _group(self) -> Any:
         data = self.coordinator.data
@@ -1279,7 +1279,7 @@ class StringSensor(PvStringsEntity):
         self.entity_description = description
         self._string_id = string_id
         self._attr_unique_id = f"{entry.entry_id}_{string_id}_{description.key}"
-        self._attr_device_info = string_device_info(entry, string_id, name)
+        self._attr_device_info = string_device_info(coordinator.hass, entry, string_id, name)
 
     @property
     def available(self) -> bool:

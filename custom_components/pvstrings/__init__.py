@@ -20,6 +20,7 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.exceptions import ConfigEntryNotReady, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.util import dt as dt_util
 
@@ -351,17 +352,38 @@ def seed_geometry(store: Store, entry: ConfigEntry) -> None:
         )
 
 
-def string_device_info(entry: ConfigEntry, string_id: str, name: str) -> DeviceInfo:
+def _via_plant(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
+    """Hang a device under the plant device, the way this HA wants it.
+
+    Newer Home Assistant takes the parent's registry id (``via_device_id``)
+    and deprecates the identifier tuple (``via_device``), which stops working
+    in 2027.8; older releases, back to the 2025.9 this integration supports,
+    only know the tuple.  The plant device is created here if it does not
+    exist yet -- idempotent, and the same device its own sensors attach to.
+    """
+    if "via_device_id" not in DeviceInfo.__annotations__:
+        return {"via_device": (DOMAIN, entry.entry_id)}
+    plant = dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id, **plant_device_info(entry)
+    )
+    return {"via_device_id": plant.id}
+
+
+def string_device_info(
+    hass: HomeAssistant, entry: ConfigEntry, string_id: str, name: str
+) -> DeviceInfo:
     return DeviceInfo(
         identifiers={(DOMAIN, f"{entry.entry_id}_{string_id}")},
         name=name,
         manufacturer="pvstrings",
         model="PV string",
-        via_device=(DOMAIN, entry.entry_id),
+        **_via_plant(hass, entry),
     )
 
 
-def group_device_info(entry: ConfigEntry, group_id: str, name: str) -> DeviceInfo:
+def group_device_info(
+    hass: HomeAssistant, entry: ConfigEntry, group_id: str, name: str
+) -> DeviceInfo:
     """A curtailment group is a real thing -- the inverter the strings sit behind.
 
     Given its own device rather than hung off the plant, for the same reason
@@ -374,7 +396,7 @@ def group_device_info(entry: ConfigEntry, group_id: str, name: str) -> DeviceInf
         name=name,
         manufacturer="pvstrings",
         model="Curtailment group",
-        via_device=(DOMAIN, entry.entry_id),
+        **_via_plant(hass, entry),
     )
 
 
