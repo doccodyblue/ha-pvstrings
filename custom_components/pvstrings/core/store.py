@@ -1792,6 +1792,19 @@ class Store:
 
     # -- shading ----------------------------------------------------------- #
 
+    def delete_shading_obs(self, keys: Iterable[tuple[int, str]]) -> int:
+        """Remove the rows at ``(ts_utc, string_id)``; returns how many went."""
+        payload = [(int(ts), string_id) for ts, string_id in keys]
+        if not payload:
+            return 0
+        with self._tx() as conn:
+            before = conn.total_changes
+            conn.executemany(
+                "DELETE FROM shading_obs WHERE ts_utc = ? AND string_id = ?",
+                payload,
+            )
+            return conn.total_changes - before
+
     def add_shading_obs(self, rows: Iterable[tuple[Any, ...]]) -> None:
         # Rows written before the joint fit existed carry six fields; pad them
         # so one INSERT serves both writers instead of forking the statement.

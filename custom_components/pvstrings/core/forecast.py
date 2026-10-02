@@ -91,6 +91,9 @@ CURSOR_LEARN = "model_learned"
 #: written -- ``learn`` returns before its save when no hour has closed --
 #: so a plant that ran it still needs it.
 CURSOR_BIAS = "ghi_bias_backfilled_v2"
+#: One pass over hours learned before the outage check existed.
+CURSOR_OUTAGE = "outage_rescanned_v1"
+OUTAGE_RESCAN_DAYS = 7
 
 #: How far back that backfill reaches.  The issues live exactly this long
 #: (the score window plus a few days), so it costs one pass over rows that
@@ -508,6 +511,8 @@ class ForecastEngine:
         #: archive can say which experiment a row belongs to.
         self.trial_curve: str | None = None
         self.own_censored: set[tuple[int, str]] = set()
+        #: Dead intervals per string from the last ``evaluate_curtailment``.
+        self.last_outages: dict[str, set[int]] = {}
         self.censored_hours: set[tuple[int, str]] = set()
 
     # ------------------------------------------------------------------ #
@@ -1562,10 +1567,15 @@ class ForecastEngine:
         not the potential.  Only once physics has run can a commanded limit be
         told apart from an effective one.
         """
-        index = self._midpoint_index(start_ts, end_ts)
+        self.last_outages = {}
+        # Padded by an outage run on either side, so a dead inverter whose
+        # quarter hour straddles the window edge is still recognised.  Only
+        # the window itself is judged and written.
+        pad = curt.DEAD_MIN_INTERVALS * INTERVAL_SECONDS
+        index = self._midpoint_index(start_ts - pad, end_ts + pad)
         if len(index) == 0:
             return set()
-        conditions = self._actual_conditions(index, start_ts, end_ts)
+        conditions = self._actual_conditions(index, start_ts - pad, end_ts + pad)
         if conditions is None:
             return set()
 
@@ -1575,25 +1585,34 @@ class ForecastEngine:
             rows[string.string_id] = {
                 int(row["ts_utc"]): row
                 for row in self.store.fivemin_range(
-                    string.string_id, start_ts, end_ts
+                    string.string_id, start_ts - pad, end_ts + pad
                 )
             }
 
         group_flags = self._group_binding(rows, potentials)
+        outages = self._outages(rows, potentials)
 
         updates: list[tuple[int | None, int, str]] = []
         censored: set[tuple[int, str]] = set()
+        outage_hours: set[tuple[int, str]] = set()
         for string in self.plant.strings:
             series = potentials.get(string.string_id)
             if series is None:
                 continue
             for ts, row in rows[string.string_id].items():
+                if not start_ts <= ts < end_ts:
+                    continue
                 physics_w = series.get(ts)
                 own = curt.is_binding(
                     row["power_mean_w"], string.max_power_w, physics_w
                 )
                 shared = group_flags.get(string.curtailment_group_id, {}).get(ts)
-                binding = curt.combine_binding(own, shared)
+                # Never ``False``: an outage verdict can only add censoring,
+                # it must not turn an unevaluated interval into a judged one.
+                dead = True if ts in outages.get(string.string_id, ()) else None
+                if dead:
+                    outage_hours.add((int(ts) // HOUR * HOUR, string.string_id))
+                binding = curt.combine_binding(own, shared, dead)
                 if binding:
                     censored.add((int(ts) // HOUR * HOUR, string.string_id))
                 if binding is None and row["limit_binding"] is None:
@@ -1605,9 +1624,101 @@ class ForecastEngine:
         # about it -- and a branch that inherits the other's would learn a
         # throttled interval as an honest loss.  Only one branch records it;
         # both are told the union, so they learn on the same hours.
+        self.last_outages = {
+            string_id: {ts for ts in stamps if start_ts <= ts < end_ts}
+            for string_id, stamps in outages.items()
+        }
         if write:
             self.store.update_curtailment_flags(updates)
+            for hour, string_id in sorted(outage_hours):
+                self.store.add_exclusion(hour, "inverter_outage", string_id)
         return censored
+
+    def rescan_outages(self, now_ts: int) -> int:
+        """Apply the outage check to the last week already learned, once.
+
+        The check arrived after the outage that prompted it (2 Oct 2026), so
+        those hours were learned without it.  The log-ratio model had already
+        declined them as ratios out of range, but the sky map took every
+        interval as a shadow, and the hours count against the forecast.  This
+        marks the dead intervals, refolds their hours and removes only their
+        shading rows -- observations that were never measurements, not learned
+        state.  Only the outage verdict is written: everything else stays as
+        the learn cycle left it.  Live branch only, claimed before the work,
+        same as the bias backfill.
+        """
+        if self.store.get_cursor(CURSOR_OUTAGE, default=0) > 0:
+            return 0
+        end = self.store.get_cursor(CURSOR_HOURLY, default=0)
+        self.store.set_cursor(CURSOR_OUTAGE, int(now_ts))
+        if end <= 0:
+            return 0
+        removed = 0
+        start = floor_hour(end - OUTAGE_RESCAN_DAYS * 86400)
+        for day_start in range(start, end, 86400):
+            day_end = min(day_start + 86400, end)
+            self.evaluate_curtailment(day_start, day_end, write=False)
+            pairs = sorted(
+                (ts, string_id)
+                for string_id, stamps in self.last_outages.items()
+                for ts in stamps
+            )
+            if not pairs:
+                continue
+            self.store.update_curtailment_flags(
+                (1, ts, string_id) for ts, string_id in pairs
+            )
+            for hour, string_id in sorted({(ts // HOUR * HOUR, sid) for ts, sid in pairs}):
+                self.store.add_exclusion(hour, "inverter_outage", string_id)
+            removed += self.store.delete_shading_obs(pairs)
+            for hour in sorted({ts // HOUR * HOUR for ts, _sid in pairs}):
+                self.materialise_hourly(hour, hour + HOUR)
+        if removed:
+            self.fit_shading(now_ts, force=True)
+            _LOGGER.info(
+                "pvstrings: %s shading observations from inverter outages removed",
+                removed,
+            )
+        return removed
+
+    def _outages(
+        self,
+        rows: dict[str, dict[int, Any]],
+        potentials: dict[str, dict[int, float]],
+    ) -> dict[str, set[int]]:
+        """Intervals in which an inverter converted nothing, per string.
+
+        Judged per inverter -- the curtailment group, or the string alone
+        when it has none -- and only when *every* string of it reporting in
+        that interval sits dead: a grid trip silences all channels at once,
+        while a shadow or snow on one string leaves its siblings alone.  The
+        interval is then censored like a throttled one, which keeps it out of
+        the sky map, the learned corrections and the accuracy figures.
+        """
+        units: dict[str, list[str]] = {}
+        for string in self.plant.strings:
+            unit = string.curtailment_group_id or string.string_id
+            units.setdefault(unit, []).append(string.string_id)
+
+        out: dict[str, set[int]] = {}
+        for members in units.values():
+            stamps = {ts for sid in members for ts in rows.get(sid, {})}
+            dead_at: dict[int, bool] = {}
+            for ts in stamps:
+                verdicts = [
+                    curt.is_dead(
+                        rows[sid][ts]["power_mean_w"],
+                        potentials.get(sid, {}).get(ts),
+                    )
+                    for sid in members
+                    if ts in rows.get(sid, {})
+                ]
+                dead_at[ts] = bool(verdicts) and all(verdicts)
+            dead = curt.dead_runs(dead_at, INTERVAL_SECONDS)
+            if dead:
+                for sid in members:
+                    out[sid] = {ts for ts in dead if ts in rows.get(sid, {})}
+        return out
 
     @staticmethod
     def _binding_span(rows: dict[str, dict[int, Any]]) -> tuple[int, int]:
@@ -2285,6 +2396,7 @@ class ForecastEngine:
         # timestamp is newer than the bucket's.
         if not self.shadow:
             stats.bias_backfilled = self.backfill_ghi_bias(now_ts)
+            self.rescan_outages(now_ts)
         window = self.learn_window(now_ts, max_hours)
         if window is None:
             return stats

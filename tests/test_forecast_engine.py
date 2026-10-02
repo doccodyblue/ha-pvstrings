@@ -434,6 +434,151 @@ class TestCurtailmentEvaluation:
             assert skipped
 
 
+class TestInverterOutage:
+    """An inverter off the grid reports its channels near zero in full sun.
+
+    2 Oct 2026: the Gartenhaus HMS lost the grid for six hours.  Taken at
+    face value that is three strings in total shadow -- the sky map would
+    learn it, and the accuracy figures would bill it to the forecast.
+    """
+
+    def test_a_dead_inverter_is_censored_and_recorded(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        clear_sky_forecast(engine, seeded_store, NOON - HOUR, NOON, 1)
+        write_measurements(seeded_store, "s1", NOON, power_w=0.2)
+        write_measurements(seeded_store, "s2", NOON, power_w=0.1)
+        censored = engine.evaluate_curtailment(NOON, NOON + HOUR)
+
+        for string_id in ("s1", "s2"):
+            rows = seeded_store.fivemin_range(string_id, NOON, NOON + HOUR)
+            assert all(row["limit_binding"] == 1 for row in rows), string_id
+            assert all(row["value_kind"] == "lower_bound" for row in rows)
+            assert (NOON, string_id) in censored
+        reasons = {
+            (row["string_id"], row["reason"])
+            for row in seeded_store.recent_exclusions()
+        }
+        assert ("s1", "inverter_outage") in reasons
+
+    def test_one_dark_string_beside_a_working_sibling_is_not_an_outage(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """Snow or a shadow on one string leaves the rest of the inverter
+        working; only all channels at once is a grid trip."""
+        clear_sky_forecast(engine, seeded_store, NOON - HOUR, NOON, 1)
+        write_measurements(seeded_store, "s1", NOON, power_w=0.2)
+        write_measurements(seeded_store, "s2", NOON, power_w=300.0)
+        engine.evaluate_curtailment(NOON, NOON + HOUR)
+
+        rows = seeded_store.fivemin_range("s1", NOON, NOON + HOUR)
+        assert all(row["value_kind"] == "measured" for row in rows)
+
+    def test_deep_shade_still_counts_as_a_measurement(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """Behind the neighbour's house S4 keeps ~17 % of physics: diffuse
+        light.  That is exactly what the sky map has to learn."""
+        clear_sky_forecast(engine, seeded_store, NOON - HOUR, NOON, 1)
+        write_measurements(seeded_store, "s3", NOON, power_w=40.0)
+        engine.evaluate_curtailment(NOON, NOON + HOUR)
+
+        rows = seeded_store.fivemin_range("s3", NOON, NOON + HOUR)
+        assert all(row["limit_binding"] is None for row in rows)
+
+    def test_a_single_dead_reading_is_not_an_outage(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        clear_sky_forecast(engine, seeded_store, NOON - HOUR, NOON, 1)
+        write_measurements(seeded_store, "s3", NOON, power_w=300.0)
+        seeded_store.upsert_5min(
+            [
+                (NOON + step * 300, "s3", 0.2 * 300 / 3600, 0.2, 1.0, 10, None, None, "measured")
+                for step in (4, 5)
+            ]
+        )
+        engine.evaluate_curtailment(NOON, NOON + HOUR)
+
+        rows = seeded_store.fivemin_range("s3", NOON, NOON + HOUR)
+        assert all(row["limit_binding"] is None for row in rows)
+
+    def test_an_outage_across_the_window_edge_is_still_seen(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """Two dead intervals at the end of one hour, more in the next: a
+        quarter hour in total, judged per window it would never qualify."""
+        clear_sky_forecast(engine, seeded_store, NOON - HOUR, NOON, 2)
+        write_measurements(seeded_store, "s3", NOON, power_w=300.0)
+        write_measurements(seeded_store, "s3", NOON + HOUR, power_w=300.0)
+        seeded_store.upsert_5min(
+            [
+                (ts, "s3", 0.2 * 300 / 3600, 0.2, 1.0, 10, None, None, "measured")
+                for ts in range(NOON + HOUR - 600, NOON + HOUR + 600, 300)
+            ]
+        )
+        engine.evaluate_curtailment(NOON, NOON + HOUR)
+
+        edge = {
+            row["ts_utc"]: row["limit_binding"]
+            for row in seeded_store.fivemin_range("s3", NOON, NOON + HOUR)
+        }
+        assert edge[NOON + HOUR - 300] == 1
+        assert edge[NOON + HOUR - 600] == 1
+        assert edge[NOON] is None
+
+
+class TestOutageRescan:
+    """The hours learned before the outage check existed get it once."""
+
+    def test_the_shading_rows_of_a_past_outage_go_and_nothing_else(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        from core.forecast import CURSOR_HOURLY
+
+        clear_sky_forecast(engine, seeded_store, NOON - HOUR, NOON, 1)
+        write_measurements(seeded_store, "s1", NOON, power_w=0.2)
+        write_measurements(seeded_store, "s2", NOON, power_w=0.1)
+        write_measurements(seeded_store, "s3", NOON, power_w=300.0)
+        seeded_store.add_shading_obs(
+            [
+                (ts, sid, 180.0, 60.0, 0.001, 1.0, 600.0, 0.8)
+                for ts in range(NOON, NOON + HOUR, 300)
+                for sid in ("s1", "s2", "s3")
+            ]
+        )
+        seeded_store.set_cursor(CURSOR_HOURLY, NOON + HOUR)
+
+        removed = engine.rescan_outages(NOON + 2 * HOUR)
+
+        assert removed == 24
+        assert seeded_store.shading_observations_by_string() == {"s3": 12}
+        for row in seeded_store.fivemin_range("s1", NOON, NOON + HOUR):
+            assert row["value_kind"] == "lower_bound"
+        for row in seeded_store.fivemin_range("s3", NOON, NOON + HOUR):
+            assert row["limit_binding"] is None
+        hourly = {
+            row.string_id: row.value_kind
+            for row in seeded_store.hourly_range(NOON, NOON + HOUR)
+        }
+        assert hourly["s1"] == "lower_bound"
+        assert hourly["s3"] == "measured"
+
+    def test_it_runs_once(self, engine: ForecastEngine, seeded_store: Store):
+        from core.forecast import CURSOR_HOURLY
+
+        clear_sky_forecast(engine, seeded_store, NOON - HOUR, NOON, 1)
+        seeded_store.set_cursor(CURSOR_HOURLY, NOON + HOUR)
+        engine.rescan_outages(NOON + 2 * HOUR)
+        write_measurements(seeded_store, "s1", NOON, power_w=0.2)
+        write_measurements(seeded_store, "s2", NOON, power_w=0.1)
+        seeded_store.add_shading_obs(
+            [(NOON, "s1", 180.0, 60.0, 0.001, 1.0, 600.0, 0.8)]
+        )
+
+        assert engine.rescan_outages(NOON + 3 * HOUR) == 0
+        assert seeded_store.shading_observations_by_string() == {"s1": 1}
+
+
 class TestMaterialisation:
     def test_hourly_is_derived_from_five_minute_rows(
         self, engine: ForecastEngine, seeded_store: Store

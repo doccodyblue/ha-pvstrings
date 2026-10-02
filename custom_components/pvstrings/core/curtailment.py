@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import statistics
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from .quality import VALUE_LOWER_BOUND, VALUE_MEASURED, VALUE_RECONSTRUCTED
 
@@ -230,6 +230,41 @@ def full_battery_binding(
     if soc_pct < soc_limit_pct:
         return False
     return physics_sum_w > measured_sum_w * FULL_BATTERY_SHORTFALL
+
+
+#: An inverter that lost the grid (2 Oct 2026, Gartenhaus HMS, six hours) keeps
+#: reporting its channels at a few tenths of a watt in full sun.  That is not a
+#: shadow: even behind a house or under leaf shade a string keeps the diffuse
+#: light, 15-20 % of physics on the reference plant.  Below this share, with
+#: this much on offer, the string was not converting at all.
+DEAD_SHARE = 0.02
+DEAD_FLOOR_W = 2.0
+DEAD_MIN_PHYSICS_W = 50.0
+#: A quarter hour, so a cloud's flicker or one bad sample never qualifies.
+DEAD_MIN_INTERVALS = 3
+
+
+def is_dead(measured_w: float | None, physics_w: float | None) -> bool:
+    """Was the string producing nothing while the sky offered plenty?"""
+    if measured_w is None or physics_w is None or physics_w < DEAD_MIN_PHYSICS_W:
+        return False
+    return measured_w <= max(DEAD_FLOOR_W, DEAD_SHARE * physics_w)
+
+
+def dead_runs(dead_at: Mapping[int, bool], step_s: int = 300) -> set[int]:
+    """Intervals inside a run of at least ``DEAD_MIN_INTERVALS`` dead ones."""
+    out: set[int] = set()
+    run: list[int] = []
+    for ts in sorted(dead_at):
+        if dead_at[ts] and (not run or ts - run[-1] == step_s):
+            run.append(ts)
+            continue
+        if len(run) >= DEAD_MIN_INTERVALS:
+            out.update(run)
+        run = [ts] if dead_at[ts] else []
+    if len(run) >= DEAD_MIN_INTERVALS:
+        out.update(run)
+    return out
 
 
 def combine_binding(*flags: bool | None) -> bool | None:

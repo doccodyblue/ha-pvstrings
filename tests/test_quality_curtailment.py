@@ -263,3 +263,25 @@ class TestPeerReconstruction:
         assert curt.curtailed_fraction([True, False, None, True]) == pytest.approx(
             2 / 3
         )
+
+
+class TestDeadInverter:
+    def test_tenths_of_a_watt_in_full_sun_is_dead(self):
+        assert curt.is_dead(0.3, 600.0)
+
+    def test_diffuse_light_behind_an_obstacle_is_alive(self):
+        assert not curt.is_dead(0.17 * 600.0, 600.0)
+
+    def test_dawn_is_never_judged(self):
+        assert not curt.is_dead(0.0, curt.DEAD_MIN_PHYSICS_W - 1.0)
+
+    def test_unknowns_are_never_dead(self):
+        assert not curt.is_dead(None, 600.0)
+        assert not curt.is_dead(0.0, None)
+
+    def test_only_runs_of_a_quarter_hour_count(self):
+        dead = {0: True, 300: True, 600: False, 900: True, 1200: True, 1500: True}
+        assert curt.dead_runs(dead) == {900, 1200, 1500}
+
+    def test_a_gap_in_the_clock_breaks_a_run(self):
+        assert curt.dead_runs({0: True, 300: True, 1200: True}) == set()
