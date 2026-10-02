@@ -252,6 +252,45 @@ class TestTheNowcastStaysSilent:
         assert sensor_engine.last_nowcast is None
         assert sensor_engine.last_nowcast_reason == REASON_FROZEN
 
+    def test_a_dim_stuck_sensor_in_the_morning_is_named_frozen(
+        self, sensor_engine, seeded_store
+    ):
+        """2 Oct 2026: 4.58 W/m2 from dusk on.  The old darkness excuse read
+        the value, not the sky, and the nowcast ran with kt 0.02."""
+        morning = DAY_START + 7 * HOUR
+        seed_bias(sensor_engine, morning)
+        end = (morning // 300) * 300
+        seeded_store.upsert_weather_actual([
+            (ts, 20.0, 60.0, 2.0, 0.0, 1013.0, 4.58, None)
+            for ts in range(end - 3 * HOUR, end, 300)
+        ])
+
+        sensor_engine.forecast(morning, hours=24, start_ts=DAY_START)
+
+        assert sensor_engine.last_nowcast is None
+        assert sensor_engine.last_nowcast_reason == REASON_FROZEN
+
+    def test_stuck_readings_reach_no_consumer(self, sensor_engine, seeded_store):
+        """Dropped at the one place every learner and the nowcast read from,
+        and only the stuck ones: the recovery right after stays."""
+        morning = DAY_START + 7 * HOUR
+        stuck_until = morning + HOUR // 2
+        rows = [
+            (ts, 20.0, 60.0, 2.0, 0.0, 1013.0, 4.58, None)
+            for ts in range(morning - HOUR, stuck_until, 300)
+        ]
+        rows += [
+            (ts, 20.0, 60.0, 2.0, 0.0, 1013.0, 100.0 + (ts - stuck_until) / 60.0, None)
+            for ts in range(stuck_until, morning + HOUR, 300)
+        ]
+        seeded_store.upsert_weather_actual(rows)
+
+        believed = sensor_engine._measured_ghi(morning, morning + HOUR)
+
+        assert believed is not None
+        assert believed.index.min() == stuck_until
+        assert len(believed) == 6
+
     def test_a_run_without_weather_clears_the_previous_state(
         self, sensor_engine, seeded_store
     ):

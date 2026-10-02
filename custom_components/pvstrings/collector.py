@@ -52,6 +52,15 @@ _LOGGER = logging.getLogger(__name__)
 #: into the window it belongs to.
 BUFFER_RETENTION_S = INTERVAL_SECONDS * 2
 
+#: An irradiance entity that has not reported for this long is dead, whatever
+#: value HA still shows.  A station that drops off the network keeps its last
+#: state, and the watchdog would go on writing it as a fresh reading.  Half an
+#: hour: in daylight irradiance moves every minute.  Some integrations
+#: (Ecowitt) only write on change, so a dark night also goes silent and is
+#: recorded as unknown -- harmless, everything falls back to a forecast that
+#: is zero then too.
+IRRADIANCE_STALE_S = 1800
+
 
 def _usable_pair(in_w: float | None, out_w: float | None) -> bool:
     """Is this interval an efficiency observation at all?
@@ -571,12 +580,36 @@ class Collector:
             return None
         return (start, *values)
 
+    def _reported_recently(self, entity_id: str | None, end: int) -> bool:
+        """Whether the entity has spoken within ``IRRADIANCE_STALE_S`` of ``end``.
+
+        ``last_reported`` moves on every write, changed or not; where an
+        integration writes only on change it moves with the value.  An entity
+        HA does not know is left to the normal path, which already records
+        nothing for it.
+        """
+        if not entity_id:
+            return True
+        state = self.hass.states.get(entity_id)
+        if state is None:
+            return True
+        reported = getattr(state, "last_reported", None) or state.last_updated
+        return end - reported.timestamp() <= IRRADIANCE_STALE_S
+
     def _build_weather_row(self, start: int, end: int) -> tuple[Any, ...] | None:
         sources = self.plant.weather_sources
-        lux = self._mean_entity(
-            sources.illuminance_entity, start, end, units.ILLUMINANCE
+        lux = (
+            self._mean_entity(
+                sources.illuminance_entity, start, end, units.ILLUMINANCE
+            )
+            if self._reported_recently(sources.illuminance_entity, end)
+            else None
         )
-        ghi = self._mean_entity(sources.ghi_entity, start, end, units.IRRADIANCE)
+        ghi = (
+            self._mean_entity(sources.ghi_entity, start, end, units.IRRADIANCE)
+            if self._reported_recently(sources.ghi_entity, end)
+            else None
+        )
         if ghi is None and lux is not None:
             from .core.weather import lux_to_ghi
 

@@ -185,7 +185,7 @@ class TestEngineDropsImplausibleHours:
         """
         store.upsert_weather_actual(
             [
-                (hour + step, None, None, None, None, None, ghi_wm2, None)
+                (hour + step, None, None, None, None, None, ghi_wm2 + step / 3000.0, None)
                 for step in range(0, HOUR, 300)
             ]
         )
@@ -477,7 +477,7 @@ class TestTheGuardActuallyRunsInALearnCycle:
         self._seed_forecast(store, hour, ghi)
         store.upsert_weather_actual(
             [
-                (hour + step, None, None, None, None, None, ghi, None)
+                (hour + step, None, None, None, None, None, ghi + step / 3000.0, None)
                 for step in range(0, HOUR, 300)
             ]
         )
@@ -564,7 +564,7 @@ class TestTheHourMustBeMeasuredBeforeItIsJudged:
     def _seed(self, store: Store, hour: int, ghi_steps: range, watts: float) -> None:
         store.upsert_weather_actual(
             [
-                (hour + step, None, None, None, None, None, 40.0, None)
+                (hour + step, None, None, None, None, None, 40.0 + step / 3000.0, None)
                 for step in ghi_steps
             ]
         )

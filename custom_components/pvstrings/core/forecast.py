@@ -1015,10 +1015,10 @@ class ForecastEngine:
         # instrument drive the nowcast.
         raw = self._raw_measured_ghi(start, end)
         measured = self._measured_ghi(start, end)
-        if measured is None or measured.empty or raw is None:
+        if raw is None or raw.empty:
             return None, persistence.REASON_NO_MEASUREMENT
         # A sensor that fell over must not leave its last factor standing.
-        if int(measured.index.max()) < end - persistence.WINDOW_SECONDS:
+        if int(raw.index.max()) < end - persistence.WINDOW_SECONDS:
             return None, persistence.REASON_STALE
 
         # Hourly weather rows are keyed on the hour, and ``_downscale`` looks
@@ -1044,14 +1044,20 @@ class ForecastEngine:
         epochs = np.array(
             [int(value.timestamp()) - INTERVAL_SECONDS // 2 for value in index]
         )
-        aligned = measured.reindex(epochs).to_numpy(dtype=float)
         aligned_raw = raw.reindex(epochs).to_numpy(dtype=float)
 
         # Fresh rows are not the same as a live sensor: the collector's
         # watchdog stamps every sample with the moment it looked, so an entity
         # that stopped updating still fills the window with a dead value.
-        if persistence.looks_frozen(aligned_raw):
+        if persistence.looks_frozen(aligned_raw, clearsky):
             return None, persistence.REASON_FROZEN
+        # Checked after the freeze so a stuck sensor is named as one: the
+        # believed series has already dropped its stuck readings.
+        if measured is None or measured.empty:
+            return None, persistence.REASON_NO_MEASUREMENT
+        if int(measured.index.max()) < end - persistence.WINDOW_SECONDS:
+            return None, persistence.REASON_STALE
+        aligned = measured.reindex(epochs).to_numpy(dtype=float)
 
         return persistence.sky_state(
             aligned, forecast, clearsky, bias_evidence=self._bias_evidence(now_ts)
@@ -1994,8 +2000,38 @@ class ForecastEngine:
         )
         return series * factors
 
-    def _measured_ghi(self, start_ts: int, end_ts: int) -> pd.Series | None:
+    def _believed_ghi(self, start_ts: int, end_ts: int) -> pd.Series | None:
+        """The calibrated readings minus the ones a stuck sensor produced.
+
+        A station that drops off the network leaves its last value in HA, and
+        the collector's watchdog keeps writing it.  Left in, a morning of
+        4.6 W/m2 reads as a black sky: the nowcast crushes the next hour, the
+        learning physics sees no beam, and the bias model learns a source that
+        overshoots tenfold.  Judged on the raw readings, since a curve would
+        make identical values differ, and over a padded window, so a stuck
+        stretch that began before ``start_ts`` is still recognised.
+        """
         series = self._calibrated_ghi(start_ts, end_ts)
+        if series is None or series.empty:
+            return series
+        pad = persistence.MIN_INTERVALS * INTERVAL_SECONDS
+        raw = self._raw_measured_ghi(start_ts - pad, end_ts + pad)
+        if raw is None or raw.empty:
+            return series
+        epochs = raw.index.to_numpy()
+        clearsky = self.physics.clearsky(
+            to_index(epochs + INTERVAL_SECONDS // 2)
+        )["ghi"].to_numpy()
+        stuck = persistence.frozen_runs(
+            epochs, raw.to_numpy(dtype=float), clearsky, INTERVAL_SECONDS
+        )
+        if not stuck.any():
+            return series
+        kept = series[~series.index.isin(epochs[stuck])]
+        return kept if not kept.empty else None
+
+    def _measured_ghi(self, start_ts: int, end_ts: int) -> pd.Series | None:
+        series = self._believed_ghi(start_ts, end_ts)
         if series is None:
             return None
 
@@ -2045,7 +2081,7 @@ class ForecastEngine:
             # energy the array actually made, and it has to be compared with
             # the irradiance this branch believes in.  Two call paths reach
             # here and they must not disagree about which number that is.
-            series = self._calibrated_ghi(start_ts, end_ts)
+            series = self._believed_ghi(start_ts, end_ts)
         if series is None or series.empty:
             return frozenset()
 

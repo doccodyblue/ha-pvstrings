@@ -52,6 +52,11 @@ KT_MAX = 1.1
 #: Fewer usable intervals than this is not a measurement, it is a sample.
 MIN_INTERVALS = 3
 
+#: Clear-sky irradiance above which a live sensor cannot sit still.  Judged on
+#: clear sky, not on the reading: a dead sensor stuck at 4.6 W/m2 through a
+#: morning (2 Oct 2026) looked like darkness to a test on its own value.
+FROZEN_DAYLIGHT_WM2 = 10.0
+
 #: Bias-model evidence at which the nowcast is believed by half.  Until the
 #: bias buckets have converged, the forecast term and the measured term are
 #: anchored to different scales (a lux sensor reads its own units), and blending
@@ -118,7 +123,9 @@ def halflife_for(spread: float | None) -> float:
     return HALFLIFE_CALM_S if spread <= SPREAD_SPLIT else HALFLIFE_BROKEN_S
 
 
-def looks_frozen(measured: np.ndarray) -> bool:
+def looks_frozen(
+    measured: np.ndarray, clearsky: np.ndarray | None = None
+) -> bool:
     """A sensor repeating one value to the bit has stopped measuring.
 
     The collector's watchdog stamps ``hass.states.get()`` with the time it
@@ -126,14 +133,58 @@ def looks_frozen(measured: np.ndarray) -> bool:
     updating keeps producing fresh-looking rows holding a dead value.  Real
     irradiance never repeats exactly across a quarter hour -- the sun moves.
     Same reasoning as the flatness guard on the conversion curves.
+
+    Darkness is excused by the clear sky when it is known, and only by the
+    reading's own size when it is not.
     """
-    finite = measured[np.isfinite(measured)]
+    usable = np.isfinite(measured)
+    finite = measured[usable]
     if finite.size < MIN_INTERVALS:
         return False
-    # Darkness legitimately sits at a constant zero.
-    if float(np.max(finite)) <= CS_FLOOR_WM2:
+    if clearsky is not None:
+        sky = np.asarray(clearsky, dtype=float)[usable]
+        if not np.any(sky > FROZEN_DAYLIGHT_WM2):
+            return False
+    elif float(np.max(finite)) <= CS_FLOOR_WM2:
         return False
     return bool(np.all(finite == finite[0]))
+
+
+def frozen_runs(
+    epochs: np.ndarray,
+    measured: np.ndarray,
+    clearsky: np.ndarray,
+    step_s: int = 300,
+) -> np.ndarray:
+    """Which readings belong to a stuck stretch of the sensor, per interval.
+
+    A run is ``MIN_INTERVALS`` or more consecutive intervals holding the same
+    value to the bit while the sun was up somewhere in it.  ``looks_frozen``
+    answers that for one window; this marks the readings, so every consumer
+    can drop exactly the dead ones and keep the rest of the hour.
+    """
+    epochs = np.asarray(epochs)
+    values = np.asarray(measured, dtype=float)
+    sky = np.asarray(clearsky, dtype=float)
+    out = np.zeros(len(values), dtype=bool)
+    start = 0
+    for i in range(1, len(values) + 1):
+        continues = (
+            i < len(values)
+            and np.isfinite(values[i])
+            and values[i] == values[i - 1]
+            and epochs[i] - epochs[i - 1] == step_s
+        )
+        if continues:
+            continue
+        if (
+            i - start >= MIN_INTERVALS
+            and np.isfinite(values[start])
+            and np.any(sky[start:i] > FROZEN_DAYLIGHT_WM2)
+        ):
+            out[start:i] = True
+        start = i
+    return out
 
 
 def bias_trust(n_eff: float) -> float:

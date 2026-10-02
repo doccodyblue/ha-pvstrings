@@ -162,6 +162,55 @@ class TestFrozenSensor:
     def test_a_short_window_is_not_judged(self):
         assert not persistence.looks_frozen(np.full(2, 400.0))
 
+    def test_a_dim_stuck_value_in_daylight_is_refused(self):
+        """2 Oct 2026: the station died at dusk and showed 4.58 W/m2 all
+        morning.  Judged on its own size that is darkness; the clear sky says
+        the sun was up."""
+        stuck = np.full(3, 4.58)
+        assert not persistence.looks_frozen(stuck)
+        assert persistence.looks_frozen(stuck, clearsky=np.array([150.0, 160.0, 170.0]))
+
+    def test_darkness_is_still_excused_by_the_clear_sky(self):
+        assert not persistence.looks_frozen(
+            np.full(3, 4.58), clearsky=np.array([0.0, 2.0, 6.0])
+        )
+
+
+class TestFrozenRuns:
+    """Marking the stuck readings so every consumer can drop just those."""
+
+    @staticmethod
+    def epochs(n, start=1_000_000_200):
+        return np.arange(start, start + n * 300, 300)
+
+    def test_a_stuck_morning_is_marked_and_the_recovery_is_not(self):
+        values = np.array([4.58] * 6 + [102.2, 113.5, 98.0])
+        sky = np.linspace(40.0, 300.0, 9)
+        marked = persistence.frozen_runs(self.epochs(9), values, sky)
+        assert marked.tolist() == [True] * 6 + [False] * 3
+
+    def test_night_at_zero_is_left_alone(self):
+        marked = persistence.frozen_runs(self.epochs(6), np.zeros(6), np.zeros(6))
+        assert not marked.any()
+
+    def test_two_equal_readings_are_coincidence(self):
+        values = np.array([300.0, 300.0, 310.0, 305.0])
+        marked = persistence.frozen_runs(self.epochs(4), values, np.full(4, 500.0))
+        assert not marked.any()
+
+    def test_a_gap_breaks_the_run(self):
+        epochs = np.array([0, 300, 1200, 1500])
+        marked = persistence.frozen_runs(
+            epochs, np.full(4, 400.0), np.full(4, 500.0)
+        )
+        assert not marked.any()
+
+    def test_a_run_counts_if_the_sun_rises_inside_it(self):
+        """Stuck since the night: the dark start does not excuse the morning."""
+        values = np.full(5, 4.58)
+        sky = np.array([0.0, 0.0, 3.0, 12.0, 30.0])
+        assert persistence.frozen_runs(self.epochs(5), values, sky).all()
+
 
 class TestUnknownRegime:
     def test_without_forecast_rows_the_sky_counts_as_broken(self):

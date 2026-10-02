@@ -1676,10 +1676,15 @@ class TestTheShadowBranch:
         )
 
     @staticmethod
-    def seed_irradiance(store, hour, wm2=600.0):
+    def seed_irradiance(store, hour, wm2=600.0, stuck=False):
+        # A live sensor never repeats to the bit; a constant hour is a stuck
+        # one and is dropped before anything believes it.
         store.upsert_weather_actual(
             [
-                (hour + step, None, None, None, None, None, wm2, None)
+                (
+                    hour + step, None, None, None, None, None,
+                    wm2 if stuck else wm2 + step / 300.0, None,
+                )
                 for step in range(0, HOUR, 300)
             ]
         )
@@ -1839,7 +1844,7 @@ class TestTheShadowBranch:
         from core import persistence
 
         sensed = self.with_sensor(plant)
-        self.seed_irradiance(seeded_store, NOON, wm2=400.0)
+        self.seed_irradiance(seeded_store, NOON, wm2=400.0, stuck=True)
         shade = self.shadow(sensed, seeded_store)
         _state, reason = shade._sky_now(NOON + HOUR - 1)
         assert reason == persistence.REASON_FROZEN
@@ -1898,7 +1903,7 @@ class TestTheShadowBranch:
         """
         sensed = self.with_sensor(plant)
         # A stuck sensor: the same reading all hour.
-        self.seed_irradiance(seeded_store, NOON, wm2=400.0)
+        self.seed_irradiance(seeded_store, NOON, wm2=400.0, stuck=True)
         shade = self.shadow(sensed, seeded_store)
         raw = shade._raw_measured_ghi(NOON, NOON + HOUR)
         corrected = shade._calibrated_ghi(NOON, NOON + HOUR)
