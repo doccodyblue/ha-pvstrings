@@ -602,6 +602,32 @@
         }
       }
     },
+    "rebase_shading": {
+      "name": "Verschattung nach Geometrie-Korrektur umrechnen",
+      "description": "Die Verschattungsbeobachtungen eines Strangs auf die korrigierte Geometrie umrechnen, statt den Strang zurückzusetzen. Für einen Strang, dessen Azimut oder Neigung vor Version 1.26.1 mit „War von Anfang an falsch“ korrigiert wurde: Alles bis dahin Gesammelte wurde gegen die falsche Fläche gemessen, und die Himmelskarte zeigt weiter Schatten, den es nicht gibt. Gelerntes wird nicht verworfen. Korrekturen ab 1.26.1 erledigen das von selbst. Ein zweiter Aufruf ändert nichts mehr.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Anlage",
+          "description": "Zu welcher Anlage der Strang gehört."
+        },
+        "string_id": {
+          "name": "Strang-ID",
+          "description": "Subentry-ID des Strangs, sichtbar im Diagnose-Download."
+        },
+        "azimuth": {
+          "name": "Früherer Azimut",
+          "description": "Der Azimut, mit dem der Strang vor der Korrektur konfiguriert war. 0 = Nord, 90 = Ost, 180 = Süd, 270 = West."
+        },
+        "tilt": {
+          "name": "Frühere Neigung",
+          "description": "Die Neigung vor der Korrektur. Leer lassen, wenn nur der Azimut geändert wurde."
+        },
+        "corrected_on": {
+          "name": "Korrigiert am",
+          "description": "Der Tag, an dem die Geometrie korrigiert wurde. Beobachtungen ab diesem Tag bleiben unverändert."
+        }
+      }
+    },
     "backfill_shading": {
       "name": "Verschattung aus Verlauf nachtragen",
       "description": "Rekonstruiert Verschattungsbeobachtungen aus den Langzeitstatistiken von Home Assistant und einem historischen Einstrahlungsarchiv. Ein Entwicklerwerkzeug: die geschriebenen Stunden sind Stundenmittel aus einem Reanalyse-Archiv und keine Messung, tragen also nur einen Bruchteil des Gewichts einer Live-Beobachtung. Nahe am Horizont fittet sie außerdem nur eine Anlage mit zwei oder mehr Strängen — ein einzelner Strang hat kein Geschwister, gegen das sich die Fehler der tiefen Sonne herausrechnen ließen. Ein erneuter Lauf ändert nichts an bereits abgedeckten Stunden.",

@@ -329,6 +329,10 @@ Past data keeps being computed against the geometry that was actually up. The
 recorded periods are shown in the edit dialog and in the diagnostics download.
 There is also a `pvstrings.add_geometry` service for automations.
 
+A correction also carries the string's shading observations over to the new
+plane, so the sky map does not have to be relearned. For a correction made
+before v1.26.1, `pvstrings.rebase_shading` does the same after the fact.
+
 ---
 
 ## How the forecast is built
@@ -707,6 +711,7 @@ around 10 % through a battery.
 |---|---|
 | `pvstrings.recalculate` | Fetch fresh weather and rebuild the forecast |
 | `pvstrings.add_geometry` | Record a new mounting geometry period |
+| `pvstrings.rebase_shading` | Carry a string's shading observations over to a geometry corrected before v1.26.1 |
 | `pvstrings.reset_learning` | Drop all learned corrections, keep measurements |
 | `pvstrings.purge` | Delete raw 5-minute data past the retention period |
 | `pvstrings.get_day` | One past day: forecast, day-ahead, baseline and measurement per hour, plus five-minute power (response only) |

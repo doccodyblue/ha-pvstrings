@@ -1868,6 +1868,54 @@ class Store:
                 cur = conn.execute("DELETE FROM shading_obs")
             return cur.rowcount
 
+    def shading_obs_range(
+        self, string_id: str, start_ts: int, end_ts: int
+    ) -> list[sqlite3.Row]:
+        return self._query(
+            "SELECT ts_utc, ratio, weight, physics_w, beam FROM shading_obs "
+            "WHERE string_id = ? AND ts_utc >= ? AND ts_utc < ? ORDER BY ts_utc",
+            (string_id, start_ts, end_ts),
+        )
+
+    def shading_span(self, string_id: str) -> tuple[int, int] | None:
+        """First and last observation of a string, or ``None`` without any."""
+        row = self._query(
+            "SELECT MIN(ts_utc) AS first, MAX(ts_utc) AS last FROM shading_obs "
+            "WHERE string_id = ?",
+            (string_id,),
+        )[0]
+        if row["first"] is None:
+            return None
+        return int(row["first"]), int(row["last"])
+
+    def rewrite_shading_obs(
+        self,
+        string_id: str,
+        updates: Sequence[tuple[int, float, float, float | None]],
+        drops: Sequence[int],
+    ) -> None:
+        """Re-express one string's observations against new physics.
+
+        ``updates`` are ``(ts_utc, ratio, physics_w, beam)``.  One transaction:
+        a string whose rows are half against the old plane and half against
+        the new one fits a map that describes neither.
+        """
+        if not updates and not drops:
+            return
+        with self._tx() as conn:
+            conn.executemany(
+                "UPDATE shading_obs SET ratio = ?, physics_w = ?, beam = ? "
+                "WHERE ts_utc = ? AND string_id = ?",
+                [
+                    (ratio, physics_w, beam, ts, string_id)
+                    for ts, ratio, physics_w, beam in updates
+                ],
+            )
+            conn.executemany(
+                "DELETE FROM shading_obs WHERE ts_utc = ? AND string_id = ?",
+                [(ts, string_id) for ts in drops],
+            )
+
     def replace_effects(
         self, scope: str, effects: dict[str, tuple[float, float]], updated_at: int
     ) -> None:

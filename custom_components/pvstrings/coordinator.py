@@ -42,7 +42,12 @@ from .core.aggregate import (
     thermal_loss_kwh,
     split_source,
 )
-from .core.config import INTERVAL_SECONDS, CurtailmentGroup, PlantConfig
+from .core.config import (
+    INTERVAL_SECONDS,
+    CurtailmentGroup,
+    GeometrySegment,
+    PlantConfig,
+)
 from .core.conversion import CURVE_NEUTRAL, ConversionResult, convert_group
 from .core.learning import SCOPE_CONVERSION_CURVE
 from .core.forecast import (
@@ -1733,6 +1738,40 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
     async def async_recalculate(self) -> None:
         await self.async_fetch_weather(force=True)
         await self.async_request_refresh()
+
+    async def async_rebase_shading(
+        self,
+        string_id: str,
+        previous: GeometrySegment,
+        until_ts: int,
+        trusted: bool = False,
+    ) -> dict[str, int]:
+        """Carry a string's shading observations over to its corrected plane.
+
+        The alternative to resetting the string: the rows are measurements,
+        only their denominator belonged to the wrong geometry.  See
+        ``ForecastEngine.rebase_shading``.
+        """
+        now_ts = int(dt_util.utcnow().timestamp())
+
+        def _rebase() -> dict[str, int]:
+            counts = self.engine.rebase_shading(
+                string_id, previous, until_ts, trusted=trusted
+            )
+            if counts["updated"] or counts["dropped"]:
+                # Both branches read the one map, and neither would notice:
+                # the refit trigger counts rows, and a rebase moves them
+                # without adding any.
+                self.engine.fit_shading(now_ts, force=True)
+                if self.shadow is not None:
+                    self.shadow.fit_shading(now_ts, force=True)
+            return counts
+
+        # Under the learn pass's lock: a pass collecting this string's rows
+        # at the same moment would write against one plane while this reads
+        # against the other.
+        async with self.state_lock:
+            return await self.hass.async_add_executor_job(_rebase)
 
     async def async_reset_learning(self, string_id: str | None = None) -> None:
         """Discard learned corrections -- one string's, or everything.

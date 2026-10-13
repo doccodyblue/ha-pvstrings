@@ -23,6 +23,7 @@ cannot both chase the same signal:
 from __future__ import annotations
 
 import logging
+import math
 import zlib
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone, tzinfo
@@ -38,7 +39,7 @@ from . import curve_learning
 from . import persistence
 from .curve_learning import LearnedCurve
 from .aggregate import hourly_from_5min, interval_mid
-from .config import INTERVAL_SECONDS, GeometrySegment, PlantConfig
+from .config import INTERVAL_SECONDS, GeometrySegment, PlantConfig, StringConfig
 from .learning import (
     SCOPE_CONVERSION_CURVE,
     SCOPE_CONVERSION_SOURCE,
@@ -123,6 +124,26 @@ MIN_SCORED_DAYS = 3
 #: keeps the sun out of the refraction band and leaves the noise to the beam
 #: weight and the per-cell observation floor.
 SHADING_MIN_ELEVATION_DEG = 3.0
+
+#: The collector's floor on an interval's coverage.  Rows below it in the
+#: table are the hourly backfill's (``BACKFILL_WEIGHT``), which is how a
+#: rebase tells the two apart.
+SHADING_MIN_COVERAGE = 0.8
+
+#: Five, not two: a string whose physics runs at two thirds meets genuine
+#: cloud enhancement well above 2.0, and clipping those moments would bias
+#: the joint fit's moment term low.  Truly broken sensors land orders of
+#: magnitude out, not here.
+SHADING_MAX_RATIO = 5.0
+
+#: Below this the two planes explain the rows equally well and the difference
+#: is arithmetic.  Summed log-ratios: a single degree of azimuth over one
+#: morning is several orders of magnitude above it.
+SHADING_REBASE_MIN_VOTE = 1e-6
+
+#: A rebase walks the raw history in pieces so one pvlib pass never holds
+#: more than a week of five-minute intervals.
+SHADING_REBASE_CHUNK_DAYS = 7
 
 #: How much the pile of shading observations must grow before the sky map is
 #: worth rebuilding.  Proportional on purpose: a two-day-old map gains half
@@ -2334,7 +2355,7 @@ class ForecastEngine:
                     continue
                 if row["value_kind"] != VALUE_MEASURED or row["limit_binding"]:
                     continue
-                if row["coverage"] < 0.8:
+                if row["coverage"] < SHADING_MIN_COVERAGE:
                     continue
                 elevation = float(
                     solar_position["apparent_elevation"].iloc[position]
@@ -2345,11 +2366,7 @@ class ForecastEngine:
                 if not physics_w or physics_w <= 0:
                     continue
                 ratio = float(row["power_mean_w"]) / physics_w
-                # Five, not two: a string whose physics runs at two thirds
-                # meets genuine cloud enhancement well above 2.0, and clipping
-                # those moments would bias the joint fit's moment term low.
-                # Truly broken sensors land orders of magnitude out, not here.
-                if not 0.0 <= ratio <= 5.0:
+                if not 0.0 <= ratio <= SHADING_MAX_RATIO:
                     continue
                 beam = beam_series.get(ts)
                 payload.append(
@@ -2366,6 +2383,212 @@ class ForecastEngine:
                 )
         self.store.add_shading_obs(payload)
         stats.shading_observations = len(payload)
+
+    def rebase_shading(
+        self,
+        string_id: str,
+        previous: GeometrySegment,
+        until_ts: int,
+        trusted: bool = False,
+    ) -> dict[str, int]:
+        """Re-express a string's observations after its geometry was corrected.
+
+        A ratio is frozen against the plane the string was configured with
+        when the row was collected.  Correcting that plane after the fact
+        leaves every earlier row measured against the wrong one, and with a
+        two-year half-life the map carries the error for as long.  The
+        measurement itself is intact -- ``ratio * physics_w`` is the watts
+        that were read -- so only the denominator moves, and nothing the
+        plant has seen is thrown away.
+
+        The denominator is scaled by the two planes' physics under the *same*
+        conditions rather than recomputed outright.  Conditions reconstructed
+        today are not the ones the collector saw -- a later weather run, a
+        plausibility verdict that fell the other way -- and that difference
+        cancels in the quotient where it would otherwise land in the map.
+
+        ``until_ts`` is when the correction was made; rows from then on were
+        collected against the current plane and are not read.  ``trusted``
+        is for the caller that has just replaced the segment itself.  Anyone
+        else is describing the past from memory, so the rows are asked first
+        -- see ``_follows_previous`` -- and a repeated call changes nothing.
+        That check guards against applying a correction twice; it is not
+        proof against a plane that was never configured.
+
+        Rows are left as they are where the conditions can no longer be
+        reconstructed, and where they came from the hourly backfill, which has
+        its own weather and its own service to rerun.  A row the collector
+        would not have written against the current plane -- no physics, or a
+        ratio outside its range -- is dropped.
+
+        Returns counts: ``updated``, ``dropped``, ``kept``, ``out_of_reach``.
+        """
+        counts = {"updated": 0, "dropped": 0, "kept": 0, "out_of_reach": 0}
+        history = self.store.geometry_history(string_id)
+        span = self.store.shading_span(string_id)
+        if not history or span is None:
+            return counts
+        string = self.plant.string(string_id)
+        current = history[-1]
+        start = max(floor_hour(span[0]), floor_hour(current.valid_from_ts_utc))
+        end = min(floor_hour(span[1]) + HOUR, int(until_ts))
+        #: ``(ts, ratio, stored physics, previous watts, current watts, beam)``
+        #: -- the beam share already moved to the current plane.
+        candidates: list[tuple[int, float, float, float, float, float]] = []
+        while start < end:
+            stop = min(start + SHADING_REBASE_CHUNK_DAYS * 86400, end)
+            rows = [
+                row
+                for row in self.store.shading_obs_range(string_id, start, stop)
+                if row["physics_w"] is not None
+                and row["physics_w"] > 0
+                and row["weight"] >= SHADING_MIN_COVERAGE
+            ]
+            index = self._midpoint_index(start, stop)
+            conditions = (
+                self._actual_conditions(index, start, stop) if rows else None
+            )
+            if conditions is None:
+                counts["out_of_reach"] += len(rows)
+            else:
+                self._rebase_candidates(
+                    string, previous, current, index, conditions, rows,
+                    candidates, counts,
+                )
+            start = stop
+
+        if not trusted and not self._follows_previous(candidates):
+            counts["kept"] += len(candidates)
+            return counts
+        updates: list[tuple[int, float, float, float | None]] = []
+        drops: list[int] = []
+        for ts, ratio, stored, old_w, new_w, beam in candidates:
+            if new_w <= 0:
+                drops.append(ts)
+                continue
+            ratio = ratio * old_w / new_w
+            if not 0.0 <= ratio <= SHADING_MAX_RATIO:
+                drops.append(ts)
+                continue
+            updates.append(
+                (ts, ratio, stored * new_w / old_w, beam if np.isfinite(beam) else None)
+            )
+        self.store.rewrite_shading_obs(string_id, updates, drops)
+        counts["updated"] = len(updates)
+        counts["dropped"] = len(drops)
+        return counts
+
+    @staticmethod
+    def _follows_previous(
+        candidates: Sequence[tuple[int, float, float, float, float, float]],
+    ) -> bool:
+        """Whether the rows' stored physics follows the previous plane.
+
+        Asked of shape, not of level, and a day at a time.  Today's
+        reconstruction of a day's conditions can sit off the collector's by a
+        constant -- another weather run, a sensor that has since been added --
+        and against a level test that offset alone picks whichever plane
+        happens to be the lower one.  What an offset cannot imitate is how the
+        two planes drift apart over the day, so each day's rows are centred
+        first and then asked which plane leaves less unexplained.
+
+        Rebasing mirrors every row across the two planes, so the answer flips
+        with it: a second call finds the rows following the current plane and
+        stops.  Planes that differ only by a factor leave nothing to ask --
+        the two sums agree to rounding -- and the answer is no.
+        """
+        days: dict[int, list[tuple[float, float]]] = {}
+        for ts, _ratio, stored, old_w, new_w, _beam in candidates:
+            if new_w <= 0:
+                continue
+            # Against the current plane: how far off the row is, and how far
+            # off it would be had it been collected against the previous one.
+            days.setdefault(ts // 86400, []).append(
+                (math.log(stored / new_w), math.log(old_w / new_w))
+            )
+        vote = 0.0
+        for pairs in days.values():
+            off = np.array([pair[0] for pair in pairs])
+            as_previous = off - np.array([pair[1] for pair in pairs])
+            vote += float(
+                np.abs(as_previous - np.median(as_previous)).sum()
+                - np.abs(off - np.median(off)).sum()
+            )
+        return vote < -SHADING_REBASE_MIN_VOTE
+
+    def _plane_power(
+        self,
+        string: StringConfig,
+        segment: GeometrySegment,
+        index: pd.DatetimeIndex,
+        conditions: pd.DataFrame,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Unshaded DC watts and beam share of one plane, aligned with ``index``."""
+        result = self.physics.run(
+            index,
+            segment,
+            ghi=pd.Series(conditions["ghi"].to_numpy(), index=index),
+            dni=pd.Series(conditions["dni"].to_numpy(), index=index),
+            dhi=pd.Series(conditions["dhi"].to_numpy(), index=index),
+            temp_air=pd.Series(conditions["temp_c"].to_numpy(), index=index),
+            wind_speed=pd.Series(conditions["wind_ms"].to_numpy(), index=index),
+            system_efficiency=self.plant.efficiency_of(string.string_id),
+            mount_type=string.mount_type,
+        )
+        return (
+            result.dc_power_w.to_numpy(dtype=float),
+            result.beam_share.to_numpy(dtype=float),
+        )
+
+    def _rebase_candidates(
+        self,
+        string: StringConfig,
+        previous: GeometrySegment,
+        current: GeometrySegment,
+        index: pd.DatetimeIndex,
+        conditions: pd.DataFrame,
+        rows: Sequence[Mapping[str, Any]],
+        candidates: list[tuple[int, float, float, float, float, float]],
+        counts: dict[str, int],
+    ) -> None:
+        was, was_beam = self._plane_power(string, previous, index, conditions)
+        now, now_beam = self._plane_power(string, current, index, conditions)
+        covered = conditions["covered"].to_numpy()
+        position = {
+            int(value.timestamp()) - INTERVAL_SECONDS // 2: offset
+            for offset, value in enumerate(index)
+        }
+        for row in rows:
+            ts = int(row["ts_utc"])
+            offset = position.get(ts)
+            # Intervals the source never covered carry filler, and physics
+            # from filler says nothing about either plane.
+            if offset is None or not covered[offset]:
+                counts["out_of_reach"] += 1
+                continue
+            old_w, new_w = float(was[offset]), float(now[offset])
+            if not np.isfinite(old_w) or old_w <= 0:
+                # The previous plane saw no light here, so it cannot be what
+                # this row was collected against.
+                counts["kept"] += 1
+                continue
+            # Moved by the planes' difference, for the reason the watts are
+            # moved by their quotient: the share as reconstructed today is not
+            # the one the collector stored, and the fit weighs rows by it.
+            beam = row["beam"]
+            shift = float(now_beam[offset]) - float(was_beam[offset])
+            candidates.append(
+                (
+                    ts,
+                    float(row["ratio"]),
+                    float(row["physics_w"]),
+                    old_w,
+                    new_w if np.isfinite(new_w) else 0.0,
+                    float("nan")
+                    if beam is None or not np.isfinite(shift)
+                    else min(max(float(beam) + shift, 0.0), 1.0),
+                )
+            )
 
     def backfill_ghi_bias(self, now_ts: int) -> int:
         """Teach the bias model from the weather rows already on disk, once.
