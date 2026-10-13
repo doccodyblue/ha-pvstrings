@@ -12,6 +12,7 @@ installed at the time.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from typing import Any
 
@@ -136,6 +137,8 @@ from .core.config import (
     selector_step,
 )
 from .core.weather import OPEN_METEO_MODELS, SOURCE_HA_WEATHER, SOURCE_OPEN_METEO
+
+_LOGGER = logging.getLogger(__name__)
 
 # Home Assistant refuses ``async_update_reload_and_abort`` on an entry that has
 # update listeners -- and this integration registers one so the options flow
@@ -1371,9 +1374,27 @@ class StringSubentryFlow(_ReloadingSubentryFlow):
             if coordinator is not None:
                 store = coordinator.store
                 if mode == GEOMETRY_MODE_CORRECTION:
+                    history = await self.hass.async_add_executor_job(
+                        store.geometry_history, subentry.subentry_id
+                    )
                     await self.hass.async_add_executor_job(
                         store.replace_latest_geometry, subentry.subentry_id, segment
                     )
+                    if history:
+                        # Everything collected so far was measured against
+                        # the plane being replaced.  Carried over rather than
+                        # left to age out: the map's half-life is two years.
+                        try:
+                            await coordinator.async_rebase_shading(
+                                subentry.subentry_id,
+                                history[-1],
+                                int(dt_util.utcnow().timestamp()),
+                                trusted=True,
+                            )
+                        except Exception:  # noqa: BLE001 - the correction itself stands
+                            _LOGGER.exception(
+                                "pvstrings: rebasing shading observations failed"
+                            )
                 else:
                     await self.hass.async_add_executor_job(
                         store.add_geometry, subentry.subentry_id, segment

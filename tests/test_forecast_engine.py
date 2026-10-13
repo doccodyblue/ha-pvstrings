@@ -731,6 +731,36 @@ class TestLearningCycle:
         engine.learn(DAY_START + 24 * HOUR, max_hours=24)
         assert seeded_store.shading_count("s1") > 0
 
+    def test_the_collector_takes_what_is_just_inside_its_limits(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """Coverage and ratio, a notch inside and a notch outside each."""
+        self._prepare_day(engine, seeded_store, ratio=0.80)
+        hours = {
+            "covered": (NOON - 2 * HOUR, "coverage = 0.81"),
+            "thin": (NOON - HOUR, "coverage = 0.79"),
+            "bright": (NOON, "power_mean_w = power_mean_w * 4.9 / 0.80"),
+            "absurd": (NOON + HOUR, "power_mean_w = power_mean_w * 5.1 / 0.80"),
+        }
+        with seeded_store._tx() as conn:
+            for hour, change in hours.values():
+                conn.execute(
+                    f"UPDATE string_5min SET {change} "
+                    "WHERE string_id = 's3' AND ts_utc >= ? AND ts_utc < ?",
+                    (hour, hour + HOUR),
+                )
+        engine.learn(DAY_START + 24 * HOUR, max_hours=24)
+
+        def collected(name: str) -> list:
+            hour = hours[name][0]
+            return seeded_store.shading_obs_range("s3", hour, hour + HOUR)
+
+        assert len(collected("covered")) == 12
+        assert collected("thin") == []
+        assert len(collected("bright")) == 12
+        assert collected("absurd") == []
+        assert collected("bright")[0]["ratio"] == pytest.approx(4.9, abs=1e-6)
+
     def test_cursor_prevents_relearning_the_same_hours(
         self, engine: ForecastEngine, seeded_store: Store
     ):
@@ -2383,3 +2413,282 @@ class TestEachBranchAppliesItsOwnVerdict:
         shade._learn_effects(*window, stats)
         assert stats.observations_used > 0
         assert stats.censored_hours == 0
+
+
+class TestRebaseShading:
+    """A corrected geometry carries the string's observations with it.
+
+    s3 really faces 110 degrees and delivers 0.8 of its physics.  It was
+    configured as 78, so the collector divided those watts by the wrong plane.
+    """
+
+    RIGHT = GeometrySegment(0, azimuth_deg=110, tilt_deg=27, kwp=0.95)
+    WRONG = GeometrySegment(0, azimuth_deg=78, tilt_deg=27, kwp=0.95)
+    END = DAY_START + 24 * HOUR
+
+    def _collected_against_the_wrong_plane(
+        self, engine: ForecastEngine, store: Store
+    ) -> None:
+        TestLearningCycle()._prepare_day(engine, store, ratio=0.80)
+        store.replace_latest_geometry("s3", self.WRONG)
+        engine.learn(self.END, max_hours=24)
+        store.replace_latest_geometry("s3", self.RIGHT)
+
+    @staticmethod
+    def _rows(store: Store, string_id: str = "s3") -> dict[int, tuple]:
+        return {
+            int(row["ts_utc"]): (row["ratio"], row["physics_w"], row["beam"])
+            for row in store.shading_obs_range(string_id, 0, 2**40)
+        }
+
+    def test_the_wrong_plane_shows_up_as_shade_that_is_not_there(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        self._collected_against_the_wrong_plane(engine, seeded_store)
+        ratios = [ratio for ratio, _, _ in self._rows(seeded_store).values()]
+        assert max(ratios) - min(ratios) > 0.2, "the scenario must be visible"
+
+    def test_the_rows_land_where_the_right_plane_would_have_put_them(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        self._collected_against_the_wrong_plane(engine, seeded_store)
+        before = self._rows(seeded_store)
+        counts = engine.rebase_shading("s3", self.WRONG, self.END, trusted=True)
+
+        after = self._rows(seeded_store)
+        assert counts["updated"] == len(after) > 0
+        assert counts["updated"] + counts["dropped"] == len(before)
+        for ratio, _, _ in after.values():
+            assert ratio == pytest.approx(0.80, abs=1e-6)
+
+    def test_the_measured_watts_are_what_survives(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        self._collected_against_the_wrong_plane(engine, seeded_store)
+        before = self._rows(seeded_store)
+        engine.rebase_shading("s3", self.WRONG, self.END, trusted=True)
+        for ts, (ratio, physics_w, _) in self._rows(seeded_store).items():
+            assert ratio * physics_w == pytest.approx(
+                before[ts][0] * before[ts][1], rel=1e-9
+            )
+
+    def test_the_beam_share_follows_the_plane(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        self._collected_against_the_wrong_plane(engine, seeded_store)
+        before = self._rows(seeded_store)
+        engine.rebase_shading("s3", self.WRONG, self.END, trusted=True)
+        after = self._rows(seeded_store)
+        assert any(
+            abs(after[ts][2] - before[ts][2]) > 0.02 for ts in after
+        )
+
+    def test_the_beam_share_is_moved_not_replaced(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """What the collector stored stays the starting point.
+
+        A share reconstructed today would overwrite it with another weather
+        run's opinion; only the difference between the planes is applied.
+        """
+        self._collected_against_the_wrong_plane(engine, seeded_store)
+        rows = self._rows(seeded_store)
+        nudged, blank = sorted(ts for ts in rows if abs(ts - NOON) < HOUR)[:2]
+        ratio, physics_w, beam = rows[nudged]
+        seeded_store.rewrite_shading_obs(
+            "s3",
+            [
+                (nudged, ratio, physics_w, beam - 0.10),
+                (blank, rows[blank][0], rows[blank][1], None),
+            ],
+            [],
+        )
+        engine.rebase_shading("s3", self.WRONG, self.END, trusted=True)
+        after = self._rows(seeded_store)
+
+        index = engine._midpoint_index(DAY_START, self.END)
+        conditions = engine._actual_conditions(index, DAY_START, self.END)
+        _, right = engine._interval_power(index, conditions, apply_shading=False)
+        assert after[nudged][2] == pytest.approx(right["s3"][nudged] - 0.10, abs=1e-9)
+        assert after[blank][2] is None
+
+    def test_the_siblings_are_not_touched(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        self._collected_against_the_wrong_plane(engine, seeded_store)
+        before = self._rows(seeded_store, "s1")
+        engine.rebase_shading("s3", self.WRONG, self.END, trusted=True)
+        assert self._rows(seeded_store, "s1") == before
+
+    def test_from_memory_it_is_applied_once_and_only_once(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        self._collected_against_the_wrong_plane(engine, seeded_store)
+        first = engine.rebase_shading("s3", self.WRONG, self.END)
+        once = self._rows(seeded_store)
+        second = engine.rebase_shading("s3", self.WRONG, self.END)
+
+        assert first["updated"] > 0
+        assert second["updated"] == 0 and second["dropped"] == 0
+        assert second["kept"] == first["updated"]
+        assert self._rows(seeded_store) == once
+
+    def test_a_string_that_was_never_wrong_is_left_alone(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        TestLearningCycle()._prepare_day(engine, seeded_store, ratio=0.80)
+        engine.learn(self.END, max_hours=24)
+        before = self._rows(seeded_store)
+        counts = engine.rebase_shading("s3", self.WRONG, self.END)
+
+        assert counts["updated"] == 0 and counts["dropped"] == 0
+        assert self._rows(seeded_store) == before
+
+    def _seen_dimmer(self, store: Store) -> None:
+        """As if the collector had read 0.7 of the light today's rows say."""
+        rows = self._rows(store)
+        store.rewrite_shading_obs(
+            "s3",
+            [(ts, r / 0.7, p * 0.7, beam) for ts, (r, p, beam) in rows.items()],
+            [],
+        )
+
+    def test_a_level_offset_does_not_pass_for_the_other_plane(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        TestLearningCycle()._prepare_day(engine, seeded_store, ratio=0.80)
+        engine.learn(self.END, max_hours=24)
+        self._seen_dimmer(seeded_store)
+        before = self._rows(seeded_store)
+        # Both ways round: whichever plane is the lower one would win a test
+        # on level alone.
+        for azimuth in (78, 142):
+            other = GeometrySegment(0, azimuth_deg=azimuth, tilt_deg=27, kwp=0.95)
+            assert engine.rebase_shading("s3", other, self.END)["updated"] == 0
+        assert self._rows(seeded_store) == before
+
+    def test_a_level_offset_does_not_hide_the_wrong_plane(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        self._collected_against_the_wrong_plane(engine, seeded_store)
+        self._seen_dimmer(seeded_store)
+        assert engine.rebase_shading("s3", self.WRONG, self.END)["updated"] > 0
+
+    def test_a_plane_that_differs_only_by_a_factor_is_not_guessed_at(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        TestLearningCycle()._prepare_day(engine, seeded_store, ratio=0.80)
+        engine.learn(self.END, max_hours=24)
+        before = self._rows(seeded_store)
+        smaller = GeometrySegment(0, azimuth_deg=110, tilt_deg=27, kwp=0.50)
+
+        assert engine.rebase_shading("s3", smaller, self.END)["updated"] == 0
+        assert self._rows(seeded_store) == before
+        # ...but the caller who has just replaced the segment is believed.
+        assert (
+            engine.rebase_shading("s3", smaller, self.END, trusted=True)["updated"]
+            > 0
+        )
+
+    def test_rows_collected_after_the_correction_are_not_read(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        self._collected_against_the_wrong_plane(engine, seeded_store)
+        before = self._rows(seeded_store)
+        engine.rebase_shading("s3", self.WRONG, NOON, trusted=True)
+        after = self._rows(seeded_store)
+
+        assert any(ts < NOON for ts in after)
+        for ts, row in after.items():
+            if ts >= NOON:
+                assert row == before[ts]
+            else:
+                assert row[0] == pytest.approx(0.80, abs=1e-6)
+
+    def test_without_the_weather_nothing_is_guessed(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        self._collected_against_the_wrong_plane(engine, seeded_store)
+        before = self._rows(seeded_store)
+        with seeded_store._tx() as conn:
+            conn.execute("DELETE FROM weather_forecast")
+        counts = engine.rebase_shading("s3", self.WRONG, self.END, trusted=True)
+
+        assert counts["out_of_reach"] == len(before)
+        assert self._rows(seeded_store) == before
+
+    def test_backfilled_hours_are_left_to_the_backfill(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        self._collected_against_the_wrong_plane(engine, seeded_store)
+        ts = NOON + 1800
+        seeded_store.add_shading_obs(
+            [(ts, "s3", 180.0, 55.0, 0.5, 0.79, 400.0, 0.6)]
+        )
+        engine.rebase_shading("s3", self.WRONG, self.END, trusted=True)
+        assert self._rows(seeded_store)[ts] == (0.5, 400.0, 0.6)
+
+    def test_an_interval_just_above_the_coverage_floor_is_carried_over(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        self._collected_against_the_wrong_plane(engine, seeded_store)
+        ts = min(self._rows(seeded_store))
+        with seeded_store._tx() as conn:
+            conn.execute(
+                "UPDATE shading_obs SET weight = 0.81 "
+                "WHERE string_id = 's3' AND ts_utc = ?",
+                (ts,),
+            )
+        engine.rebase_shading("s3", self.WRONG, self.END, trusted=True)
+        assert self._rows(seeded_store)[ts][0] == pytest.approx(0.80, abs=1e-6)
+
+    def test_the_ratio_range_is_the_collectors(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        self._collected_against_the_wrong_plane(engine, seeded_store)
+        rows = self._rows(seeded_store)
+        inside, outside = sorted(rows, key=lambda ts: rows[ts][0])[:2]
+        # ``ratio * 0.80 / stored`` is where a row lands, so these two are
+        # placed either side of the limit.
+        for ts, lands_at in ((inside, 4.9), (outside, 5.1)):
+            stored, physics_w, beam = rows[ts]
+            assert lands_at * stored / 0.80 < 5.0
+            seeded_store.rewrite_shading_obs(
+                "s3", [(ts, lands_at * stored / 0.80, physics_w, beam)], []
+            )
+        counts = engine.rebase_shading("s3", self.WRONG, self.END, trusted=True)
+
+        after = self._rows(seeded_store)
+        assert counts["dropped"] == 1
+        assert outside not in after
+        assert after[inside][0] == pytest.approx(4.9, abs=1e-6)
+
+    def test_a_ratio_the_collector_would_have_refused_is_dropped(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        self._collected_against_the_wrong_plane(engine, seeded_store)
+        rows = self._rows(seeded_store)
+        # Where the wrong plane saw the most light relative to the right one.
+        ts = min(rows, key=lambda ts: rows[ts][0])
+        ratio, physics_w, beam = rows[ts]
+        assert ratio < 0.75
+        # Just inside the range against the wrong plane, outside it against
+        # the right one.
+        seeded_store.rewrite_shading_obs("s3", [(ts, 4.99, physics_w, beam)], [])
+        counts = engine.rebase_shading("s3", self.WRONG, self.END, trusted=True)
+
+        assert counts["dropped"] == 1
+        assert ts not in self._rows(seeded_store)
+
+    def test_the_map_loses_its_phantom(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        self._collected_against_the_wrong_plane(engine, seeded_store)
+        engine.fit_shading(self.END, force=True)
+        phantom = [cell["ratio"] for cell in engine.shading.grid("s3")]
+        engine.rebase_shading("s3", self.WRONG, self.END, trusted=True)
+        engine.fit_shading(self.END, force=True)
+        repaired = [cell["ratio"] for cell in engine.shading.grid("s3")]
+
+        assert max(phantom) - min(phantom) > 0.1
+        assert max(repaired) - min(repaired) < 0.02

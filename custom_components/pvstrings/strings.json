@@ -602,6 +602,32 @@
         }
       }
     },
+    "rebase_shading": {
+      "name": "Rebase shading after a geometry correction",
+      "description": "Carry a string's shading observations over to its corrected geometry instead of resetting it. For a string whose azimuth or tilt was corrected with 'It was wrong from the start' before version 1.26.1: everything collected until then was measured against the wrong plane, and the sky map keeps showing shade that is not there. Nothing learned is discarded. Corrections made from 1.26.1 on do this by themselves. Calling it twice changes nothing the second time.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Plant",
+          "description": "Which plant the string belongs to."
+        },
+        "string_id": {
+          "name": "String ID",
+          "description": "Subentry ID of the string, as shown in the diagnostics download."
+        },
+        "azimuth": {
+          "name": "Previous azimuth",
+          "description": "The azimuth the string was configured with before the correction. 0 = north, 90 = east, 180 = south, 270 = west."
+        },
+        "tilt": {
+          "name": "Previous tilt",
+          "description": "The tilt it was configured with before the correction. Leave empty if only the azimuth changed."
+        },
+        "corrected_on": {
+          "name": "Corrected on",
+          "description": "The day the geometry was corrected. Observations from that day on are left alone."
+        }
+      }
+    },
     "backfill_shading": {
       "name": "Backfill shading from history",
       "description": "Reconstruct shading observations from Home Assistant's long-term statistics and a historical irradiance archive. A development tool: the hours it writes are hourly averages driven by a reanalysis archive, not measurements, so they carry a fraction of a live observation's weight, and near the horizon only a plant with two or more strings fits them at all -- a single string has no sibling to difference the low sun's errors against. Running it again changes nothing for hours it has already covered.",

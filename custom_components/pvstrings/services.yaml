@@ -155,3 +155,34 @@ calibration_trial:
       selector:
         config_entry:
           integration: pvstrings
+
+rebase_shading:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: pvstrings
+    string_id:
+      required: true
+      selector:
+        text:
+    azimuth:
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 360
+          step: 1
+          unit_of_measurement: "°"
+    tilt:
+      selector:
+        number:
+          min: 0
+          max: 90
+          step: 1
+          unit_of_measurement: "°"
+    corrected_on:
+      required: true
+      selector:
+        date:

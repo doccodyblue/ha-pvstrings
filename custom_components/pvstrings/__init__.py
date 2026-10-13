@@ -94,6 +94,7 @@ from .const import (
     DOMAIN,
     NO_GROUP,
     SERVICE_ADD_GEOMETRY,
+    SERVICE_REBASE_SHADING,
     ATTR_FROM_DATE,
     SERVICE_BACKFILL,
     SERVICE_BACKFILL_IRRADIANCE,
@@ -144,6 +145,16 @@ ADD_GEOMETRY_SCHEMA = vol.Schema(
         ),
         vol.Optional("valid_from"): cv.date,
         vol.Optional(CONF_NOTE): cv.string,
+    }
+)
+
+REBASE_SHADING_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
+        vol.Required(ATTR_STRING_ID): cv.string,
+        vol.Required(CONF_AZIMUTH): vol.All(vol.Coerce(float), vol.Range(0, 360)),
+        vol.Optional(CONF_TILT): vol.All(vol.Coerce(float), vol.Range(0, 90)),
+        vol.Required("corrected_on"): cv.date,
     }
 )
 
@@ -774,6 +785,40 @@ def _async_register_services(hass: HomeAssistant) -> None:
         )
         await coordinator.async_request_refresh()
 
+    async def _rebase_shading(call: ServiceCall) -> dict[str, Any]:
+        coordinator = _coordinator_for(hass, call.data[ATTR_CONFIG_ENTRY_ID])
+        string_id = call.data[ATTR_STRING_ID]
+        if string_id not in {s.string_id for s in coordinator.plant.strings}:
+            raise ServiceValidationError(f"unknown string: {string_id}")
+        history = await hass.async_add_executor_job(
+            coordinator.store.geometry_history, string_id
+        )
+        if not history:
+            raise ServiceValidationError(f"no geometry recorded for: {string_id}")
+        current = history[-1]
+        # Only the orientation is asked for.  A plane that differed by its
+        # nameplate alone leaves the rows nothing to be recognised by, and a
+        # call that cannot be checked could be applied twice.
+        previous = GeometrySegment(
+            valid_from_ts_utc=current.valid_from_ts_utc,
+            azimuth_deg=call.data[CONF_AZIMUTH],
+            tilt_deg=call.data.get(CONF_TILT, current.tilt_deg),
+            kwp=current.kwp,
+            temp_coeff=current.temp_coeff,
+        )
+        # The start of that day, not its end: the rows collected that day
+        # before the correction stay as they were, which costs a few hours of
+        # evidence.  The end would move the rows collected after it, and those
+        # are already right.
+        until_ts = int(
+            dt_util.start_of_local_day(call.data["corrected_on"]).timestamp()
+        )
+        counts = await coordinator.async_rebase_shading(
+            string_id, previous, until_ts
+        )
+        await coordinator.async_request_refresh()
+        return dict(counts)
+
     hass.services.async_register(
         DOMAIN, SERVICE_RECALCULATE, _recalculate, schema=ENTRY_SERVICE_SCHEMA
     )
@@ -788,6 +833,13 @@ def _async_register_services(hass: HomeAssistant) -> None:
     )
     hass.services.async_register(
         DOMAIN, SERVICE_ADD_GEOMETRY, _add_geometry, schema=ADD_GEOMETRY_SCHEMA
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_REBASE_SHADING,
+        _rebase_shading,
+        schema=REBASE_SHADING_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register(
         DOMAIN,

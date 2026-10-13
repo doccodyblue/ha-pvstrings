@@ -1,5 +1,31 @@
 # Changelog
 
+## v1.26.1 — 2026-10-13
+
+### Fixed
+
+- **Correcting a geometry no longer leaves the sky map measured against the
+  old one.** Each shading observation is the measured power divided by what
+  the physics expected, and that expectation was frozen against the azimuth
+  and tilt configured at the time. "It was wrong from the start" replaced the
+  geometry and left the observations where they were, so a string corrected by
+  thirty degrees kept showing a band of shade on the side of the sky its old
+  orientation had favoured — and with the map's two-year half-life it would
+  have gone on doing so. The correction now carries the string's observations
+  over to the new plane: the measured power is kept, only the expectation
+  moves. Nothing learned is discarded.
+
+### Added
+
+- **`pvstrings.rebase_shading` repairs a correction that was made before this
+  release.** Give it the string, the azimuth (and tilt, if that changed) it was
+  configured with before, and the day you corrected it. Observations from that
+  day on are left alone, and calling it a second time changes nothing. It
+  reaches as far back as the weather rows do — the raw-data retention, ninety
+  days unless you changed it — which covers any correction made recently
+  enough to matter here. This is the alternative to resetting the string: use
+  it instead of `reset_learning`.
+
 ## v1.26.0 — 2026-09-23
 
 ### Added

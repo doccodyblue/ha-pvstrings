@@ -140,6 +140,7 @@ DEFAULT_DB_DIR: Final = "pvstrings"
 
 SERVICE_RECALCULATE: Final = "recalculate"
 SERVICE_ADD_GEOMETRY: Final = "add_geometry"
+SERVICE_REBASE_SHADING: Final = "rebase_shading"
 SERVICE_RESET_LEARNING: Final = "reset_learning"
 SERVICE_PURGE: Final = "purge"
 SERVICE_BACKFILL: Final = "backfill_shading"
