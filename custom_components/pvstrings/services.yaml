@@ -158,15 +158,13 @@ calibration_trial:
 
 rebase_shading:
   fields:
-    config_entry_id:
+    device_id:
       required: true
       selector:
-        config_entry:
-          integration: pvstrings
-    string_id:
-      required: true
-      selector:
-        text:
+        device:
+          filter:
+            integration: pvstrings
+            model: PV string
     azimuth:
       required: true
       selector:

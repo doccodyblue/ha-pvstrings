@@ -18,7 +18,7 @@
 ### Added
 
 - **`pvstrings.rebase_shading` repairs a correction that was made before this
-  release.** Give it the string, the azimuth (and tilt, if that changed) it was
+  release.** Pick the string from the device list, give the azimuth (and tilt, if that changed) it was
   configured with before, and the day you corrected it. Observations from that
   day on are left alone, and calling it a second time changes nothing. It
   reaches as far back as the weather rows do — the raw-data retention, ninety

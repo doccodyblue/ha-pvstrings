@@ -16,10 +16,11 @@ from typing import Any
 
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import Platform
+from homeassistant.const import ATTR_DEVICE_ID, Platform
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.exceptions import ConfigEntryNotReady, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.util import dt as dt_util
 
@@ -123,6 +124,7 @@ from .core.config import (
     PlantState,
     StringConfig,
     WeatherSources,
+    string_of_device,
 )
 from .core.store import Store
 
@@ -147,10 +149,11 @@ ADD_GEOMETRY_SCHEMA = vol.Schema(
     }
 )
 
+#: Asked by device rather than by plant and subentry ID: the owner picks the
+#: string from a list instead of digging its ID out of the diagnostics.
 REBASE_SHADING_SCHEMA = vol.Schema(
     {
-        vol.Required(ATTR_CONFIG_ENTRY_ID): cv.string,
-        vol.Required(ATTR_STRING_ID): cv.string,
+        vol.Required(ATTR_DEVICE_ID): cv.string,
         vol.Required(CONF_AZIMUTH): vol.All(vol.Coerce(float), vol.Range(0, 360)),
         vol.Optional(CONF_TILT): vol.All(vol.Coerce(float), vol.Range(0, 90)),
         vol.Required("corrected_on"): cv.date,
@@ -767,10 +770,23 @@ def _async_register_services(hass: HomeAssistant) -> None:
         await coordinator.async_request_refresh()
 
     async def _rebase_shading(call: ServiceCall) -> dict[str, Any]:
-        coordinator = _coordinator_for(hass, call.data[ATTR_CONFIG_ENTRY_ID])
-        string_id = call.data[ATTR_STRING_ID]
-        if string_id not in {s.string_id for s in coordinator.plant.strings}:
-            raise ServiceValidationError(f"unknown string: {string_id}")
+        device_id = call.data[ATTR_DEVICE_ID]
+        device = dr.async_get(hass).async_get(device_id)
+        found = None
+        for entry_id in device.config_entries if device else ():
+            entry = hass.config_entries.async_get_entry(entry_id)
+            if entry is None or entry.domain != DOMAIN:
+                continue
+            string_id = string_of_device(device.identifiers, DOMAIN, entry_id)
+            if string_id is None:
+                continue
+            coordinator = _coordinator_for(hass, entry_id)
+            if string_id in {s.string_id for s in coordinator.plant.strings}:
+                found = coordinator, string_id
+                break
+        if found is None:
+            raise ServiceValidationError(f"not a pvstrings string: {device_id}")
+        coordinator, string_id = found
         history = await hass.async_add_executor_job(
             coordinator.store.geometry_history, string_id
         )

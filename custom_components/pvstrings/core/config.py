@@ -513,3 +513,20 @@ class PlantConfig:
 
 def total_kwp(segments: Iterable[GeometrySegment]) -> float:
     return round(sum(segment.kwp for segment in segments), 3)
+
+
+def string_of_device(
+    identifiers: Iterable[tuple[str, str]], domain: str, entry_id: str
+) -> str | None:
+    """The string a device stands for, read back from its identifier.
+
+    ``string_device_info`` names a string's device ``(domain,
+    "<entry_id>_<string_id>")``; the plant's own device carries the bare entry
+    ID and a curtailment group's has the same shape as a string's, so the
+    caller still has to check the result against the plant's strings.
+    """
+    prefix = f"{entry_id}_"
+    for dom, ident in identifiers:
+        if dom == domain and ident.startswith(prefix) and len(ident) > len(prefix):
+            return ident[len(prefix):]
+    return None
