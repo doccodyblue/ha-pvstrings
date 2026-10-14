@@ -606,13 +606,9 @@
       "name": "Verschattung nach Geometrie-Korrektur umrechnen",
       "description": "Die Verschattungsbeobachtungen eines Strangs auf die korrigierte Geometrie umrechnen, statt den Strang zurückzusetzen. Für einen Strang, dessen Azimut oder Neigung vor Version 1.26.1 mit „War von Anfang an falsch“ korrigiert wurde: Alles bis dahin Gesammelte wurde gegen die falsche Fläche gemessen, und die Himmelskarte zeigt weiter Schatten, den es nicht gibt. Gelerntes wird nicht verworfen. Korrekturen ab 1.26.1 erledigen das von selbst. Ein zweiter Aufruf ändert nichts mehr.",
       "fields": {
-        "config_entry_id": {
-          "name": "Anlage",
-          "description": "Zu welcher Anlage der Strang gehört."
-        },
-        "string_id": {
-          "name": "Strang-ID",
-          "description": "Subentry-ID des Strangs, sichtbar im Diagnose-Download."
+        "device_id": {
+          "name": "Strang",
+          "description": "Der Strang, dessen Geometrie korrigiert wurde."
         },
         "azimuth": {
           "name": "Früherer Azimut",

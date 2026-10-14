@@ -394,3 +394,25 @@ class TestConstantsResolve:
         }
         missing = sorted(name for name in used if name not in available)
         assert not missing, f"used but never imported or defined: {missing}"
+
+
+class TestRebaseShadingByDevice:
+    """The string is picked from a device list, and found again from the pick."""
+
+    def test_a_string_device_names_its_string(self):
+        from core.config import string_of_device
+
+        ids = {("pvstrings", "ENTRY_SUB1")}
+        assert string_of_device(ids, "pvstrings", "ENTRY") == "SUB1"
+
+    def test_the_plant_device_names_no_string(self):
+        from core.config import string_of_device
+
+        assert string_of_device({("pvstrings", "ENTRY")}, "pvstrings", "ENTRY") is None
+        assert string_of_device({("pvstrings", "ENTRY_")}, "pvstrings", "ENTRY") is None
+
+    def test_another_plant_or_domain_names_no_string(self):
+        from core.config import string_of_device
+
+        assert string_of_device({("pvstrings", "OTHER_SUB1")}, "pvstrings", "ENTRY") is None
+        assert string_of_device({("mqtt", "ENTRY_SUB1")}, "pvstrings", "ENTRY") is None
