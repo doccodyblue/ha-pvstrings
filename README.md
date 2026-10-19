@@ -191,12 +191,18 @@ Installations set up before 1.24 keep the entity id they were registered
 with, `sensor.YOUR_PLANT_day_ahead_accuracy_30_days`; only the display name
 changed. Home Assistant never renames an entity id behind your automations.
 
-If you would rather see it than query it,
-**[PV Strings Dashboard](https://github.com/doccodyblue/ha-pvstrings-dash)** is a
-separate HACS repository — cards for the sky map, the forecast, the conversion
-path and the per-hour correction chain, plus a strategy that builds a whole
-dashboard from your entity registry without a card editor. It is optional, and
-it draws nothing the integration does not already publish.
+If you would rather see it than query it, the integration ships the
+**[PV Strings Dashboard](https://github.com/doccodyblue/ha-pvstrings-dash)** —
+cards for the sky map, the forecast, the conversion path and the per-hour
+correction chain, plus a strategy that builds a whole dashboard from your
+entity registry without a card editor. It registers itself as a dashboard
+resource on setup; nothing to copy, nothing to add by hand. It is optional,
+and it draws nothing the integration does not already publish. The linked
+repository is where it is developed and documented.
+
+Installed the dashboard separately before 1.26.2? Home Assistant will raise a
+repair asking you to remove that copy: two copies compete for the same card
+names, and the older one can win.
 
 ---
 

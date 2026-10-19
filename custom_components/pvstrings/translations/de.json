@@ -710,5 +710,11 @@
         }
       }
     }
+  },
+  "issues": {
+    "separate_dashboard_card": {
+      "title": "Dashboard-Karte wird aus einer separaten Kopie geladen",
+      "description": "PV Strings liefert die Dashboard-Karte inzwischen selbst mit, Home Assistant lädt aber noch eine weitere Kopie von `{url}`. Zwei Kopien konkurrieren um dieselben Kartennamen; es gewinnt die zuerst geladene, und die kann älter sein als die Integration.\n\nEntferne die separate Kopie: Kam sie aus HACS, entferne dort **PV Strings Dashboard**; sonst lösche die Ressource unter **Einstellungen → Dashboards → ⋮ → Ressourcen**. Nach einem Neustart registriert die Integration ihre eigene Kopie und dieser Hinweis verschwindet."
+    }
   }
 }

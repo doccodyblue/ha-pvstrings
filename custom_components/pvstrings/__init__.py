@@ -110,6 +110,7 @@ from .const import (
     SUBENTRY_GROUP,
     SUBENTRY_STRING,
 )
+from .card import async_register_card, async_unregister_card
 from .coordinator import PvStringsCoordinator
 from .core.config import (
     DEFAULT_ALBEDO,
@@ -508,6 +509,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: PvStringsConfigEntry) ->
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
     _async_register_services(hass)
+    try:
+        await async_register_card(hass)
+    except Exception:  # noqa: BLE001 - the forecast does not need the card
+        _LOGGER.exception("pvstrings: registering the dashboard card failed")
     return True
 
 
@@ -518,6 +523,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: PvStringsConfigEntry) -
         await coordinator.async_shutdown()
         await hass.async_add_executor_job(coordinator.store.close)
     return unloaded
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    if not hass.config_entries.async_entries(DOMAIN):
+        await async_unregister_card(hass)
 
 
 async def _async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:

@@ -710,5 +710,11 @@
         }
       }
     }
+  },
+  "issues": {
+    "separate_dashboard_card": {
+      "title": "Dashboard card is loaded from a separate copy",
+      "description": "PV Strings now ships its dashboard card itself, but Home Assistant still loads another copy from `{url}`. Two copies compete for the same card names, so the one that loads first wins and may be older than the integration.\n\nRemove the separate copy: if it came from HACS, remove **PV Strings Dashboard** there; otherwise delete the resource under **Settings → Dashboards → ⋮ → Resources**. After a restart the integration registers its own copy and this message disappears."
+    }
   }
 }
