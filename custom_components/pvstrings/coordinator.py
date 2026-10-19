@@ -348,6 +348,7 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
             albedo=plant.albedo,
             transposition_model=plant.transposition_model,
             time_zone=plant.time_zone,
+            tz=dt_util.get_default_time_zone(),
         )
         self.engine = ForecastEngine(plant, store, self.physics)
         #: The branch that reads the irradiance sensor through a calibration
