@@ -13,9 +13,8 @@ import zoneinfo
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import pytest
-
 import core.physics
+import pytest
 from core.forecast import ForecastEngine
 from core.physics import PhysicsEngine
 

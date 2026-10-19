@@ -2,6 +2,17 @@
 
 ## v1.26.2 — unreleased
 
+### Changed
+
+- **The dashboard comes with the integration.** The cards and the dashboard
+  strategy from [PV Strings Dashboard](https://github.com/doccodyblue/ha-pvstrings-dash)
+  (v0.22.1) are now shipped inside the integration and registered as a
+  dashboard resource on setup, so the two can no longer drift apart in
+  version. If a separately installed copy is still loaded — from HACS, from
+  `/config/www` — it is left alone and a repair asks you to remove it; after
+  the next restart the bundled copy takes over. Removing the last PV Strings
+  entry removes the resource it created.
+
 ### Fixed
 
 - **Setup no longer reads the time-zone file on the event loop.** The
