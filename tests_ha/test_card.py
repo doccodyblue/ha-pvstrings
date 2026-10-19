@@ -207,3 +207,37 @@ def test_issue_is_translated_everywhere():
         issues = json.loads((ROOT / name).read_text()).get("issues", {})
         entry = issues.get(card.ISSUE_SEPARATE_CARD)
         assert entry and entry["title"] and "{url}" in entry["description"], name
+
+
+class TestRegisteredBeforeAnyEntry:
+    """A dashboard opened while an entry is still refreshing must find the card."""
+
+    def test_async_setup_registers(self, side_effects):
+        import custom_components.pvstrings as integration
+
+        resources = _StorageResources([])
+        assert _run(integration.async_setup(_Hass(resources), {})) is True
+        assert _urls(resources) == [card.card_resource_url()]
+
+    def test_entry_setup_does_not_wait_for_it(self):
+        import ast
+        import inspect
+
+        import custom_components.pvstrings as integration
+
+        tree = ast.parse(inspect.getsource(integration.async_setup_entry))
+        called = {
+            node.func.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        assert "async_register_card" not in called
+
+    def test_a_failure_does_not_stop_the_integration(self, side_effects, monkeypatch):
+        import custom_components.pvstrings as integration
+
+        async def boom(hass):
+            raise RuntimeError("lovelace unavailable")
+
+        monkeypatch.setattr(integration, "async_register_card", boom)
+        assert _run(integration.async_setup(_Hass(_StorageResources([])), {})) is True

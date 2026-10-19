@@ -448,6 +448,23 @@ async def async_migrate_entry(
     return True
 
 
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
+
+async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
+    """Register the dashboard card before any entry sets up.
+
+    Not in ``async_setup_entry``: that runs a first refresh which can take
+    minutes on a slow host, and may fail outright.  A dashboard opened in the
+    meantime would find no card at all.
+    """
+    try:
+        await async_register_card(hass)
+    except Exception:  # noqa: BLE001 - the forecast does not need the card
+        _LOGGER.exception("pvstrings: registering the dashboard card failed")
+    return True
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: PvStringsConfigEntry) -> bool:
     try:
         plant = build_plant_config(hass, entry)
@@ -509,10 +526,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: PvStringsConfigEntry) ->
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
     _async_register_services(hass)
-    try:
-        await async_register_card(hass)
-    except Exception:  # noqa: BLE001 - the forecast does not need the card
-        _LOGGER.exception("pvstrings: registering the dashboard card failed")
     return True
 
 

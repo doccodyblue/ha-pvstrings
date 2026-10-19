@@ -4,6 +4,12 @@
 
 ### Fixed
 
+- **The dashboard no longer fails while PV Strings is still starting.** The
+  card was registered at the end of the entry setup, after the first forecast
+  refresh, which can take minutes on a slow host or fail outright. A dashboard
+  opened in the meantime reported *Timeout waiting for strategy element
+  ll-strategy-dashboard-pvstrings*. The card is now registered when the
+  integration loads, before any entry sets up.
 - **No more deprecation warning about `via_device`.** Home Assistant 2026.8
   deprecated the identifier that hangs each string and group device under the
   plant device, in favour of the plant's registry id, and the old form stops
