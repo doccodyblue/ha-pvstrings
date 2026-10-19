@@ -18,7 +18,7 @@ from __future__ import annotations
 import functools
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from zoneinfo import ZoneInfo
 from typing import Sequence
 
@@ -118,12 +118,17 @@ class PhysicsEngine:
         albedo: float = 0.20,
         transposition_model: str = "perez-driesse",
         time_zone: str = "UTC",
+        tz: tzinfo | None = None,
     ) -> None:
         self.latitude = latitude
         self.longitude = longitude
         self.albedo = albedo
         self.transposition_model = transposition_model
         self.time_zone = time_zone
+        #: Resolved once.  Building a ``ZoneInfo`` can read the zone file, and
+        #: the integration constructs this on the event loop -- it passes
+        #: Home Assistant's already loaded zone instead.
+        self.tz: tzinfo = tz if tz is not None else ZoneInfo(time_zone)
         self.location = Location(
             latitude, longitude, altitude=elevation_m, tz="UTC", name="pvstrings"
         )
@@ -252,9 +257,8 @@ class PhysicsEngine:
         days does not repair that -- the window it should return was never in
         the almanac.  A scan has no dates in it and cannot lose one.
         """
-        tz = ZoneInfo(self.time_zone)
         day = datetime.fromordinal(day_ordinal)
-        midnight = datetime(day.year, day.month, day.day, tzinfo=tz)
+        midnight = datetime(day.year, day.month, day.day, tzinfo=self.tz)
         start = midnight.timestamp()
         # The local day, whatever its length: 23 or 25 hours around a DST
         # change, and the scan must not reach past its end or it picks up the
@@ -283,7 +287,7 @@ class PhysicsEngine:
 
     def daylight_window_for(self, ts_utc: float) -> tuple[float, float] | None:
         """The daylight of the local day this instant falls in."""
-        day = datetime.fromtimestamp(ts_utc, tz=ZoneInfo(self.time_zone)).date()
+        day = datetime.fromtimestamp(ts_utc, tz=self.tz).date()
         return self.daylight_window_ts(day.toordinal())
 
     # -- irradiance components --------------------------------------------- #

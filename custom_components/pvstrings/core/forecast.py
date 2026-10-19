@@ -28,7 +28,6 @@ import zlib
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone, tzinfo
 from typing import Any, Iterable, Mapping, Sequence
-from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -486,7 +485,7 @@ class ForecastEngine:
         self.model = LogRatioModel()
         self.ghi_bias = GhiBiasModel()
         self.shading = ShadingModel()
-        self._tz = ZoneInfo(plant.time_zone)
+        self._tz = self.physics.tz
         self._monthly_weights: list[float] | None = None
         #: Memoised result of the irradiance plausibility check.  One learn
         #: cycle asks for the measured GHI three times over the same window;

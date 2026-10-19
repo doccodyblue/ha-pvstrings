@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.26.2 — unreleased
+
+### Fixed
+
+- **Setup no longer reads the time-zone file on the event loop.** The
+  forecast core resolved the configured zone name itself while the
+  integration was being set up. It now uses the zone Home Assistant has
+  already loaded, and resolves it once instead of on every daylight lookup.
+
 ## v1.26.1 — 2026-10-13
 
 ### Fixed
