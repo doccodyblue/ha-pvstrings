@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.26.3 — unreleased
+
+### Fixed
+
+- **No more deprecation warning about `via_device`.** Home Assistant 2026.8
+  deprecated the identifier that hangs each string and group device under the
+  plant device, in favour of the plant's registry id, and the old form stops
+  working in 2027.8. Where Home Assistant supports it, the devices are now
+  linked by id; older releases back to 2025.9 keep the old link (#8).
+
 ## v1.26.2 — 2026-10-19
 
 ### Changed
