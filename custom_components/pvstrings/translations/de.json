@@ -123,10 +123,11 @@
           "system_efficiency": "Systemwirkungsgrad",
           "transposition_model": "Transpositionsmodell",
           "watchdog_seconds": "Watchdog-Intervall",
-          "learning_enabled": "Gelernte Korrektur anwenden",
+          "learning_enabled": "Korrekturen lernen und anwenden",
           "retention_days": "Aufbewahrung der Rohdaten"
         },
         "data_description": {
+          "learning_enabled": "Aus: Die Prognose rechnet mit reiner Physik, und aus der Erzeugung wird nichts gelernt -- weder Strangkorrekturen noch Himmelskarte noch Wechselrichterkurve. Stunden, die in dieser Zeit vergehen, werden auch später nicht nachgelernt; bereits Gelerntes bleibt erhalten. Gedacht für Arbeiten an der Anlage. Die Korrektur der Einstrahlungsprognose lernt weiter, weil sie gegen den Sensor vergleicht, nicht gegen die Stränge.",
           "albedo": "Bruch 0–1: 0.2 ist Gras, 0.8 frischer Schnee.",
           "system_efficiency": "Bruch 0–1, z. B. 0.90 — Kabel-, Wechselrichter- und Verschmutzungsverluste. Kein Prozentwert.",
           "retention_days": "Gelöscht werden nur die 5-Minuten-Rohwerte; Stundenaggregate und Geometrie-Historie bleiben erhalten."

@@ -123,10 +123,11 @@
           "system_efficiency": "System efficiency",
           "transposition_model": "Transposition model",
           "watchdog_seconds": "Watchdog interval",
-          "learning_enabled": "Apply learned correction",
+          "learning_enabled": "Learn and apply corrections",
           "retention_days": "Raw data retention"
         },
         "data_description": {
+          "learning_enabled": "Off: the forecast falls back to bare physics, and nothing is learned from production -- string corrections, sky map, inverter curve. Hours that pass while it is off are skipped for good; nothing learned before is deleted. Use it while the plant is being worked on. The irradiance forecast correction keeps learning, since it compares against the sensor, not the strings.",
           "albedo": "Fraction 0-1: 0.2 is grass, 0.8 is fresh snow.",
           "system_efficiency": "Fraction 0-1, e.g. 0.90 -- cable, inverter and soiling losses. Not a percentage.",
           "retention_days": "Only the 5-minute raw rows are purged; hourly aggregates and geometry history are kept."
