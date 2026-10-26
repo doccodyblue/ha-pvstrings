@@ -148,7 +148,7 @@ class PhysicsEngine:
         irradiance comes from the forecast, and the GHI bias model absorbs a
         systematic offset in this term anyway.
         """
-        day_of_year = index.dayofyear.to_numpy()
+        day_of_year = index.day_of_year.to_numpy()
         # Northern summer peaks around day 200; flip for the southern hemisphere.
         peak = 200.0 if self.latitude >= 0 else 200.0 - 182.5
         base = 3.5 - 0.01 * abs(self.latitude)
