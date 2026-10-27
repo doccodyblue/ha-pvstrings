@@ -106,3 +106,23 @@ def test_wrong_from_the_start_of_the_last_period_keeps_its_start(monkeypatch):
     assert [(h.valid_from_ts_utc, h.azimuth_deg) for h in store.history] == [(0, 200), (SWITCH, 192)]
     (_sid, periods, _t), = coordinator.rebased
     assert [(p.azimuth_deg, since, until) for p, since, until in periods] == [(190, SWITCH, NOW)]
+
+
+def test_an_unchanged_plane_can_still_be_declared_always_so(monkeypatch):
+    """S2's case: the values are already right, only the history is not."""
+    flow, store, coordinator = _flow(OLD, {"azimuth": 190, "tilt": 55, "kwp": 1.0}, monkeypatch)
+    flow._geometry_values_changed = False
+    form = asyncio.run(flow.async_step_geometry())
+    assert _modes(form) == ["keep", "correction_all"]
+
+    asyncio.run(flow.async_step_geometry({"geometry_mode": "correction_all", "note": ""}))
+    assert [(h.valid_from_ts_utc, h.azimuth_deg) for h in store.history] == [(0, 190)]
+    (_sid, periods, _t), = coordinator.rebased
+    assert [(p.azimuth_deg, since, until) for p, since, until in periods] == [(200, 0, SWITCH)]
+
+
+def test_keeping_the_periods_writes_nothing(monkeypatch):
+    flow, store, coordinator = _flow(OLD, {"azimuth": 190, "tilt": 55, "kwp": 1.0}, monkeypatch)
+    flow._geometry_values_changed = False
+    asyncio.run(flow.async_step_geometry({"geometry_mode": "keep", "note": ""}))
+    assert store.calls == [] and coordinator.rebased == []

@@ -390,6 +390,7 @@
     },
     "geometry_mode": {
       "options": {
+        "keep": "Keep the periods as they are",
         "now": "From now on",
         "from_date": "From a specific date",
         "correction": "It was wrong from the start of this period",

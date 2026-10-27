@@ -79,6 +79,7 @@ GEOMETRY_MODE_NOW: Final = "now"
 GEOMETRY_MODE_DATE: Final = "from_date"
 GEOMETRY_MODE_CORRECTION: Final = "correction"
 GEOMETRY_MODE_CORRECTION_ALL: Final = "correction_all"
+GEOMETRY_MODE_KEEP: Final = "keep"
 
 # -- curtailment group subentry --------------------------------------------- #
 

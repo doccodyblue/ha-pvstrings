@@ -390,6 +390,7 @@
     },
     "geometry_mode": {
       "options": {
+        "keep": "Abschnitte so lassen",
         "now": "Ab jetzt",
         "from_date": "Ab einem bestimmten Datum",
         "correction": "War von Anfang an falsch (nur dieser Abschnitt)",

@@ -120,6 +120,7 @@ from .const import (
     GEOMETRY_MODE_CORRECTION,
     GEOMETRY_MODE_CORRECTION_ALL,
     GEOMETRY_MODE_DATE,
+    GEOMETRY_MODE_KEEP,
     GEOMETRY_MODE_NOW,
     NO_GROUP,
     SUBENTRY_GROUP,
@@ -1229,6 +1230,7 @@ class StringSubentryFlow(_ReloadingSubentryFlow):
         self._concerns: list[str] = []
         self._reconfigure = False
         self._geometry_pending = False
+        self._geometry_values_changed = True
 
     # -- creation ------------------------------------------------------- #
 
@@ -1280,7 +1282,21 @@ class StringSubentryFlow(_ReloadingSubentryFlow):
             if not errors:
                 self._reconfigure = True
                 self._pending = data
-                self._geometry_pending = self._geometry_changed(current, data)
+                self._geometry_values_changed = self._geometry_changed(current, data)
+                # A history of several periods is asked about even when the
+                # values stay: they may be right while the earlier periods
+                # never were, and this is the only place to say so.
+                coordinator = getattr(entry, "runtime_data", None)
+                periods = (
+                    len(
+                        await self.hass.async_add_executor_job(
+                            coordinator.store.geometry_history, subentry.subentry_id
+                        )
+                    )
+                    if coordinator is not None
+                    else 0
+                )
+                self._geometry_pending = self._geometry_values_changed or periods > 1
                 self._concerns = string_concerns(
                     self.hass, entry, data, subentry.subentry_id
                 )
@@ -1370,6 +1386,10 @@ class StringSubentryFlow(_ReloadingSubentryFlow):
             mode = user_input[CONF_GEOMETRY_MODE]
             note = user_input.get(CONF_NOTE)
             now_ts = int(dt_util.utcnow().timestamp())
+            if mode == GEOMETRY_MODE_KEEP:
+                data = dict(self._pending)
+                title = data.pop(CONF_NAME)
+                return self.async_update_and_abort(entry, subentry, title=title, data=data)
             if mode == GEOMETRY_MODE_DATE and user_input.get(CONF_VALID_FROM):
                 stamp = dt_util.start_of_local_day(
                     dt_util.parse_date(str(user_input[CONF_VALID_FROM]))
@@ -1435,14 +1455,17 @@ class StringSubentryFlow(_ReloadingSubentryFlow):
             title = data.pop(CONF_NAME)
             return self.async_update_and_abort(entry, subentry, title=title, data=data)
 
-        modes = [GEOMETRY_MODE_NOW, GEOMETRY_MODE_DATE, GEOMETRY_MODE_CORRECTION]
-        if len(history) > 1:
-            modes.append(GEOMETRY_MODE_CORRECTION_ALL)
+        if self._geometry_values_changed:
+            modes = [GEOMETRY_MODE_NOW, GEOMETRY_MODE_DATE, GEOMETRY_MODE_CORRECTION]
+            if len(history) > 1:
+                modes.append(GEOMETRY_MODE_CORRECTION_ALL)
+        else:
+            modes = [GEOMETRY_MODE_KEEP, GEOMETRY_MODE_CORRECTION_ALL]
         schema = vol.Schema(
             {
-                vol.Required(
-                    CONF_GEOMETRY_MODE, default=GEOMETRY_MODE_NOW
-                ): _select(tuple(modes), "geometry_mode"),
+                vol.Required(CONF_GEOMETRY_MODE, default=modes[0]): _select(
+                    tuple(modes), "geometry_mode"
+                ),
                 vol.Optional(CONF_VALID_FROM): DateSelector(),
                 vol.Optional(CONF_NOTE, default=""): TextSelector(),
             }
