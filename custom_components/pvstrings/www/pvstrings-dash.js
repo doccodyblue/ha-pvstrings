@@ -27,7 +27,7 @@
 
 /* ============================ SECTION: HEADER ============================ */
 
-const PVS_VERSION = "0.22.1";
+const PVS_VERSION = "0.22.2";
 const PVS_MIN_INTEGRATION = "1.8.0";
 
 /* ============================ SECTION: CONST ============================= */
@@ -298,10 +298,6 @@ const STR = {
     "cal_running": "running",
     "cal_not_needed": "no trial needed",
     "cal_no_evidence": "waiting for evidence",
-    "cal_off": "switched off",
-    "cal_offer": "That is what the check found. A trial would learn the whole model again through a correction curve and be published only if it proved better. It costs a second forecast and a second learn cycle every hour, so it stays off until you ask for it:",
-    "cal_where": "Settings → Devices & services → PV Strings → Configure → Advanced → “Run the calibration trial”",
-    "cal_off_nofinding": "The trial is switched off. The sensor check has nothing to say about this sensor yet, so there is nothing a correction curve could be built from.",
     "cal_loading": "reading the trial…",
     "cal_days": "{days} of {needed} clear days",
     "cal_hours_sub": "{archived} hours archived, {clear} of them on clear days",
@@ -760,10 +756,6 @@ const STR = {
     "cal_running": "läuft",
     "cal_not_needed": "kein Versuch nötig",
     "cal_no_evidence": "wartet auf Evidenz",
-    "cal_off": "ausgeschaltet",
-    "cal_offer": "Das hat die Prüfung gefunden. Ein Versuch würde das ganze Modell noch einmal durch eine Korrekturkurve lernen und nur veröffentlicht, wenn er sich als besser erweist. Er kostet eine zweite Prognose und einen zweiten Lernzyklus pro Stunde und bleibt deshalb aus, bis du ihn einschaltest:",
-    "cal_where": "Einstellungen → Geräte & Dienste → PV Strings → Konfigurieren → Erweitert → „Kalibrierungsversuch laufen lassen“",
-    "cal_off_nofinding": "Der Versuch ist ausgeschaltet. Der Sensor-Check hat zu diesem Sensor noch nichts zu sagen — es gibt also auch nichts, woraus sich eine Korrekturkurve bauen ließe.",
     "cal_loading": "Versuch wird gelesen…",
     "cal_days": "{days} von {needed} klaren Tagen",
     "cal_hours_sub": "{archived} Stunden archiviert, davon {clear} an klaren Tagen",
@@ -3900,30 +3892,11 @@ class PvsCalibrationCard extends PvsBaseCard {
       // the trial off reports `not_enabled` — which is exactly why that
       // guard reads the entity and not this field.
       if (reason === "no_sensor") return hide();
-      // The interesting one: the owner can see a skewed sensor and do
-      // something about it. An offer, not a warning — and it names where the
-      // switch is rather than leaving that to be searched for.
-      if (reason === "not_enabled") {
-        const sc = a.sensor_check;
-        const finding = sc?.ratio != null ? scReading(hass, sc.reading) : null;
-        // A sensor the check calls straight needs no trial, so it is not
-        // offered one — the finding stands on its own.
-        const offer = finding && !CAL_AGREES(sc);
-        return card(head(`<span class="pvs-chip">${t(hass, "cal_off")}</span>`) + (offer
-          ? `<div class="cal-finding">${esc(finding)}</div>
-             <div class="cal-chips">
-               <span class="pvs-chip">${t(hass, "sc_overall")} <span class="v">${fmtNum(hass, sc.ratio, 2)}</span></span>
-               ${sc.slope != null ? `<span class="pvs-chip">${t(hass, "sc_slope")}
-                 <span class="v">${fmtNum(hass, sc.slope, 2)}</span></span>` : ""}
-             </div>
-             <div class="cal-note">${t(hass, "cal_offer")}</div>
-             <div class="cal-where">${t(hass, "cal_where")}</div>`
-          // Nothing to offer a trial for: no finding at all, or one that
-          // says the sensor is straight. Suggesting it here would be asking
-          // for a second forecast against an error nobody has measured.
-          : `${finding ? `<div class="cal-finding">${esc(finding)}</div>` : ""}
-             <div class="cal-note">${t(hass, finding ? "cal_note_idle" : "cal_off_nofinding")}</div>`));
-      }
+      // Switched off is silence too.  The trial on the reference plant
+      // (Sep-Oct 2026) found that the layers learning against production had
+      // already absorbed the sensor's error, so the card no longer advertises
+      // a second forecast nobody asked for.  The option stays in the settings.
+      if (reason === "not_enabled") return hide();
       // Switched on, no branch yet: either the check has not gathered enough
       // to build a curve from, or what it has justifies no correction. The
       // published check carries no band's trust, so the two cannot be told

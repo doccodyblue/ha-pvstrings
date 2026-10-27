@@ -28,7 +28,7 @@ _LOGGER = logging.getLogger(__name__)
 CARD_FILE = "pvstrings-dash.js"
 #: ``PVS_VERSION`` of the vendored file; doubles as the cache buster.  A test
 #: holds the two together.
-CARD_VERSION = "0.22.1"
+CARD_VERSION = "0.22.2"
 URL_BASE = f"/{DOMAIN}_static"
 CARD_URL = f"{URL_BASE}/{CARD_FILE}"
 ISSUE_SEPARATE_CARD = "separate_dashboard_card"
