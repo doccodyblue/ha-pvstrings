@@ -392,7 +392,8 @@
       "options": {
         "now": "From now on",
         "from_date": "From a specific date",
-        "correction": "It was wrong from the start (correct the last period)"
+        "correction": "It was wrong from the start of this period",
+        "correction_all": "It was always like this (replace every earlier period)"
       }
     },
     "output_path": {

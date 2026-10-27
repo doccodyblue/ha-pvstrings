@@ -118,6 +118,7 @@ from .const import (
     CONF_WIND_ENTITY,
     DOMAIN,
     GEOMETRY_MODE_CORRECTION,
+    GEOMETRY_MODE_CORRECTION_ALL,
     GEOMETRY_MODE_DATE,
     GEOMETRY_MODE_NOW,
     NO_GROUP,
@@ -1354,21 +1355,37 @@ class StringSubentryFlow(_ReloadingSubentryFlow):
             errors["base"] = "not_loaded"
             user_input = None
 
+        coordinator = getattr(entry, "runtime_data", None)
+        history = (
+            await self.hass.async_add_executor_job(
+                coordinator.store.geometry_history, subentry.subentry_id
+            )
+            if coordinator is not None
+            else []
+        )
+
         if user_input is not None:
             from .core.config import GeometrySegment
 
             mode = user_input[CONF_GEOMETRY_MODE]
             note = user_input.get(CONF_NOTE)
+            now_ts = int(dt_util.utcnow().timestamp())
             if mode == GEOMETRY_MODE_DATE and user_input.get(CONF_VALID_FROM):
                 stamp = dt_util.start_of_local_day(
                     dt_util.parse_date(str(user_input[CONF_VALID_FROM]))
                 )
                 valid_from = int(stamp.timestamp())
+            elif mode == GEOMETRY_MODE_CORRECTION:
+                # The last period was wrong from its own start, which is the
+                # beginning only when it is the sole period.
+                valid_from = history[-1].valid_from_ts_utc if history else 0
+            elif mode == GEOMETRY_MODE_CORRECTION_ALL:
+                valid_from = 0
             else:
-                valid_from = int(dt_util.utcnow().timestamp())
+                valid_from = now_ts
 
             segment = GeometrySegment(
-                valid_from_ts_utc=0 if mode == GEOMETRY_MODE_CORRECTION else valid_from,
+                valid_from_ts_utc=valid_from,
                 azimuth_deg=float(self._pending[CONF_AZIMUTH]),
                 tilt_deg=float(self._pending[CONF_TILT]),
                 kwp=float(self._pending[CONF_KWP]),
@@ -1378,48 +1395,54 @@ class StringSubentryFlow(_ReloadingSubentryFlow):
                 note=note,
             )
 
-            coordinator = getattr(entry, "runtime_data", None)
-            if coordinator is not None:
-                store = coordinator.store
-                if mode == GEOMETRY_MODE_CORRECTION:
-                    history = await self.hass.async_add_executor_job(
-                        store.geometry_history, subentry.subentry_id
+            store = coordinator.store
+            periods: list[tuple[Any, int, int]] = []
+            if mode == GEOMETRY_MODE_CORRECTION:
+                await self.hass.async_add_executor_job(
+                    store.replace_latest_geometry, subentry.subentry_id, segment
+                )
+                if history:
+                    periods = [(history[-1], history[-1].valid_from_ts_utc, now_ts)]
+            elif mode == GEOMETRY_MODE_CORRECTION_ALL:
+                await self.hass.async_add_executor_job(
+                    store.replace_all_geometry, subentry.subentry_id, segment
+                )
+                # Each earlier period from its own start to the next one's;
+                # a period already on the new plane has nothing to carry.
+                ends = [p.valid_from_ts_utc for p in history[1:]] + [now_ts]
+                periods = [
+                    (old, old.valid_from_ts_utc, end)
+                    for old, end in zip(history, ends)
+                    if (old.azimuth_deg, old.tilt_deg, old.kwp)
+                    != (segment.azimuth_deg, segment.tilt_deg, segment.kwp)
+                ]
+            else:
+                await self.hass.async_add_executor_job(
+                    store.add_geometry, subentry.subentry_id, segment
+                )
+            if periods:
+                # Everything collected so far was measured against the plane
+                # being replaced.  Carried over rather than left to age out:
+                # the map's half-life is two years.
+                try:
+                    await coordinator.async_rebase_periods(
+                        subentry.subentry_id, periods, trusted=True
                     )
-                    await self.hass.async_add_executor_job(
-                        store.replace_latest_geometry, subentry.subentry_id, segment
-                    )
-                    if history:
-                        # Everything collected so far was measured against
-                        # the plane being replaced.  Carried over rather than
-                        # left to age out: the map's half-life is two years.
-                        try:
-                            await coordinator.async_rebase_shading(
-                                subentry.subentry_id,
-                                history[-1],
-                                int(dt_util.utcnow().timestamp()),
-                                trusted=True,
-                            )
-                        except Exception:  # noqa: BLE001 - the correction itself stands
-                            _LOGGER.exception(
-                                "pvstrings: rebasing shading observations failed"
-                            )
-                else:
-                    await self.hass.async_add_executor_job(
-                        store.add_geometry, subentry.subentry_id, segment
-                    )
+                except Exception:  # noqa: BLE001 - the correction itself stands
+                    _LOGGER.exception("pvstrings: rebasing shading observations failed")
 
             data = dict(self._pending)
             title = data.pop(CONF_NAME)
             return self.async_update_and_abort(entry, subentry, title=title, data=data)
 
+        modes = [GEOMETRY_MODE_NOW, GEOMETRY_MODE_DATE, GEOMETRY_MODE_CORRECTION]
+        if len(history) > 1:
+            modes.append(GEOMETRY_MODE_CORRECTION_ALL)
         schema = vol.Schema(
             {
                 vol.Required(
                     CONF_GEOMETRY_MODE, default=GEOMETRY_MODE_NOW
-                ): _select(
-                    (GEOMETRY_MODE_NOW, GEOMETRY_MODE_DATE, GEOMETRY_MODE_CORRECTION),
-                    "geometry_mode",
-                ),
+                ): _select(tuple(modes), "geometry_mode"),
                 vol.Optional(CONF_VALID_FROM): DateSelector(),
                 vol.Optional(CONF_NOTE, default=""): TextSelector(),
             }

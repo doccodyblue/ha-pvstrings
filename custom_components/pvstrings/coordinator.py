@@ -1759,12 +1759,33 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         only their denominator belonged to the wrong geometry.  See
         ``ForecastEngine.rebase_shading``.
         """
+        return await self.async_rebase_periods(
+            string_id, [(previous, 0, until_ts)], trusted=trusted
+        )
+
+    async def async_rebase_periods(
+        self,
+        string_id: str,
+        periods: list[tuple[GeometrySegment, int, int]],
+        trusted: bool = False,
+    ) -> dict[str, int]:
+        """Carry each ``(plane, since, until)`` span over to the current plane.
+
+        One pass and one refit for a whole history that was replaced at once.
+        """
         now_ts = int(dt_util.utcnow().timestamp())
 
         def _rebase() -> dict[str, int]:
-            counts = self.engine.rebase_shading(
-                string_id, previous, until_ts, trusted=trusted
-            )
+            counts = {"updated": 0, "dropped": 0, "kept": 0, "out_of_reach": 0}
+            for previous, since_ts, until_ts in periods:
+                part = self.engine.rebase_shading(
+                    string_id, previous, until_ts, trusted=trusted, since_ts=since_ts
+                )
+                for key, value in part.items():
+                    counts[key] = counts.get(key, 0) + value
+            # The form that triggers this shows nothing back; the log is the
+            # only place an owner can see whether rows were out of reach.
+            _LOGGER.info("pvstrings: %s shading rows rebased: %s", string_id, counts)
             if counts["updated"] or counts["dropped"]:
                 # Both branches read the one map, and neither would notice:
                 # the refit trigger counts rows, and a rebase moves them

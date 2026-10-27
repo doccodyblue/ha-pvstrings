@@ -2702,6 +2702,7 @@ class ForecastEngine:
         previous: GeometrySegment,
         until_ts: int,
         trusted: bool = False,
+        since_ts: int = 0,
     ) -> dict[str, int]:
         """Re-express a string's observations after its geometry was corrected.
 
@@ -2720,7 +2721,9 @@ class ForecastEngine:
         cancels in the quotient where it would otherwise land in the map.
 
         ``until_ts`` is when the correction was made; rows from then on were
-        collected against the current plane and are not read.  ``trusted``
+        collected against the current plane and are not read.  ``since_ts``
+        is where ``previous`` began, for a history of several periods that is
+        being replaced as a whole: each period is carried over on its own.  ``trusted``
         is for the caller that has just replaced the segment itself.  Anyone
         else is describing the past from memory, so the rows are asked first
         -- see ``_follows_previous`` -- and a repeated call changes nothing.
@@ -2742,7 +2745,11 @@ class ForecastEngine:
             return counts
         string = self.plant.string(string_id)
         current = history[-1]
-        start = max(floor_hour(span[0]), floor_hour(current.valid_from_ts_utc))
+        start = max(
+            floor_hour(span[0]),
+            floor_hour(current.valid_from_ts_utc),
+            floor_hour(since_ts),
+        )
         end = min(floor_hour(span[1]) + HOUR, int(until_ts))
         #: ``(ts, ratio, stored physics, previous watts, current watts, beam)``
         #: -- the beam share already moved to the current plane.

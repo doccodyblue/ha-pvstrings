@@ -644,6 +644,21 @@ class Store:
             )
         self._geometry_cache.pop(string_id, None)
 
+    def replace_all_geometry(self, string_id: str, segment: GeometrySegment) -> None:
+        """The plane was always this one: every earlier period goes."""
+        with self._tx() as conn:
+            conn.execute("DELETE FROM string_geometry WHERE string_id = ?", (string_id,))
+            conn.execute(
+                """
+                INSERT INTO string_geometry
+                    (string_id, valid_from_ts_utc, azimuth_deg, tilt_deg, kwp,
+                     temp_coeff, note)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                segment.as_row(string_id),
+            )
+        self._geometry_cache.pop(string_id, None)
+
     def delete_geometry(self, string_id: str, valid_from_ts_utc: int) -> None:
         with self._tx() as conn:
             conn.execute(

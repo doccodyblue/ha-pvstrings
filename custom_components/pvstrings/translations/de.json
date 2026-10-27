@@ -392,7 +392,8 @@
       "options": {
         "now": "Ab jetzt",
         "from_date": "Ab einem bestimmten Datum",
-        "correction": "War von Anfang an falsch (letzten Abschnitt korrigieren)"
+        "correction": "War von Anfang an falsch (nur dieser Abschnitt)",
+        "correction_all": "Stand schon immer so (alle früheren Abschnitte ersetzen)"
       }
     },
     "output_path": {

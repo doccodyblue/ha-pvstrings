@@ -2617,6 +2617,22 @@ class TestRebaseShading:
             else:
                 assert row[0] == pytest.approx(0.80, abs=1e-6)
 
+    def test_rows_before_the_period_began_are_not_read(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """Each earlier period is carried over from its own start only."""
+        self._collected_against_the_wrong_plane(engine, seeded_store)
+        before = self._rows(seeded_store)
+        engine.rebase_shading("s3", self.WRONG, self.END, trusted=True, since_ts=NOON)
+        after = self._rows(seeded_store)
+
+        assert any(ts < NOON for ts in after)
+        for ts, row in after.items():
+            if ts < NOON:
+                assert row == before[ts]
+            else:
+                assert row[0] == pytest.approx(0.80, abs=1e-6)
+
     def test_without_the_weather_nothing_is_guessed(
         self, engine: ForecastEngine, seeded_store: Store
     ):

@@ -43,6 +43,16 @@ class TestGeometryHistory:
         assert len(history) == 2
         assert history[-1].tilt_deg == 63
 
+    def test_correcting_the_whole_history_leaves_one_period(self, store: Store):
+        """A plane that was always so: the earlier periods were never true."""
+        store.add_geometry("s1", GeometrySegment(0, 200, 70, 1.0))
+        store.add_geometry("s1", GeometrySegment(1_700_000_000, 190, 55, 1.0))
+        store.replace_all_geometry("s1", GeometrySegment(0, 190, 55, 1.0, note="always"))
+        history = store.geometry_history("s1")
+        assert [(h.valid_from_ts_utc, h.azimuth_deg, h.tilt_deg) for h in history] == [
+            (0, 190, 55)
+        ]
+
     def test_unknown_string_has_no_geometry(self, store: Store):
         assert store.geometry_at("nope", 1_700_000_000) is None
 
