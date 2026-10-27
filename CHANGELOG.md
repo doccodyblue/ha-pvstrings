@@ -1,5 +1,48 @@
 # Changelog
 
+## v1.27.0 — 2026-10-27
+
+### Changed
+
+- **Learned corrections now resolve the hour, not three parts of the day.**
+  The last correction layer kept one factor for the morning, one for midday
+  and one for the afternoon. That was too coarse for a string shaded by a
+  tree until half past twelve and in full sun after: both ended up in one
+  factor, too low in the morning and too high after. Each hour relative to
+  solar noon now learns on its own.
+
+  Nothing learned is thrown away. Every hour starts from the value and the
+  evidence of the part of the day it lies in, so the forecast is identical
+  at the moment of the switch and only moves as the hours learn. The old
+  factors stay where 1.26 looks for them, so going back a version finds its
+  model. Scored once on held-out data (28 Sep to 25 Oct, 279 hours, criterion
+  written down beforehand): the day-ahead error fell from 33.6 to 31.0
+  percent, the next-hour error did not get worse.
+
+- **The learning switch says what it does.** *Apply learned correction* is
+  now *Learn and apply corrections*, with a description: switched off, the
+  forecast falls back to physics and nothing is learned from production,
+  which is what you want while the plant is being worked on.
+
+### Fixed
+
+- **A weather station that went silent no longer passes for a measurement.**
+  Home Assistant keeps showing the last value of a station that dropped off
+  the network, and the collector stored it every five minutes as fresh. A
+  reading not reported for more than thirty minutes is no longer stored, and
+  three identical readings in a row while the sun is up are treated as a
+  frozen sensor.
+- **An inverter that lost the grid is no longer learned as a shadow.** Its
+  channels report a few tenths of a watt in full sun, which the sky map took
+  for total shade. When every channel of an inverter sits below two percent
+  of what the sky offers for a quarter of an hour, those intervals are now
+  censored like curtailment. The last seven days are checked once after the
+  update.
+- **A geometry edit sent while PV Strings is reloading is refused** instead
+  of half-saved. The form kept the new values, the forecast kept the old
+  plane, and nothing said so.
+- No pandas deprecation warning about `dayofyear`.
+
 ## v1.26.3 — 2026-10-19
 
 ### Fixed
