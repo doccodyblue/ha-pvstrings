@@ -474,6 +474,18 @@ class TestInverterOutage:
         rows = seeded_store.fivemin_range("s1", NOON, NOON + HOUR)
         assert all(row["value_kind"] == "measured" for row in rows)
 
+    def test_one_dark_string_with_a_silent_sibling_is_not_an_outage(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """A sibling that reported nothing is no evidence of a grid trip; the
+        dark channel alone could be snow or a shadow."""
+        clear_sky_forecast(engine, seeded_store, NOON - HOUR, NOON, 1)
+        write_measurements(seeded_store, "s1", NOON, power_w=0.2)
+        engine.evaluate_curtailment(NOON, NOON + HOUR)
+
+        rows = seeded_store.fivemin_range("s1", NOON, NOON + HOUR)
+        assert all(row["value_kind"] == "measured" for row in rows)
+
     def test_deep_shade_still_counts_as_a_measurement(
         self, engine: ForecastEngine, seeded_store: Store
     ):

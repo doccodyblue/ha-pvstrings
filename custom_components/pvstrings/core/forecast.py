@@ -1708,8 +1708,8 @@ class ForecastEngine:
         """Intervals in which an inverter converted nothing, per string.
 
         Judged per inverter -- the curtailment group, or the string alone
-        when it has none -- and only when *every* string of it reporting in
-        that interval sits dead: a grid trip silences all channels at once,
+        when it has none -- and only when *every* string of it reported in
+        that interval and sits dead: a grid trip silences all channels at once,
         while a shadow or snow on one string leaves its siblings alone.  The
         interval is then censored like a throttled one, which keeps it out of
         the sky map, the learned corrections and the accuracy figures.
@@ -1724,15 +1724,16 @@ class ForecastEngine:
             stamps = {ts for sid in members for ts in rows.get(sid, {})}
             dead_at: dict[int, bool] = {}
             for ts in stamps:
-                verdicts = [
-                    curt.is_dead(
+                # Every channel has to have reported: a silent sibling is no
+                # evidence that the whole inverter went dark.
+                dead_at[ts] = all(
+                    ts in rows.get(sid, {})
+                    and curt.is_dead(
                         rows[sid][ts]["power_mean_w"],
                         potentials.get(sid, {}).get(ts),
                     )
                     for sid in members
-                    if ts in rows.get(sid, {})
-                ]
-                dead_at[ts] = bool(verdicts) and all(verdicts)
+                )
             dead = curt.dead_runs(dead_at, INTERVAL_SECONDS)
             if dead:
                 for sid in members:
