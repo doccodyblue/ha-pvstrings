@@ -242,7 +242,8 @@
       "error": {
         "helper_overlaps": "Dieser Helfer fasst Entitäten zusammen, die bereits ein anderer Strang nutzt. Jeden Strang direkt auf seinen physischen Kanal zeigen lassen.",
         "efficiency_out_of_range": "Wirkungsgrad als Bruch zwischen 0.5 und 1.0 eingeben (0 = Anlagenwert), nicht in Prozent.",
-        "must_acknowledge": "Zum Fortfahren abhaken, oder den Dialog schließen und den Wert ändern."
+        "must_acknowledge": "Zum Fortfahren abhaken, oder den Dialog schließen und den Wert ändern.",
+        "not_loaded": "PV Strings lädt gerade neu, die neue Geometrie wurde deshalb nicht gespeichert. Bitte gleich noch einmal absenden."
       }
     },
     "curtailment_group": {

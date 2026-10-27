@@ -242,7 +242,8 @@
       "error": {
         "helper_overlaps": "This helper aggregates entities that another string already uses. Point each string at its physical channel instead.",
         "efficiency_out_of_range": "Enter the efficiency as a fraction between 0.5 and 1.0 (0 inherits the plant value), not as a percentage.",
-        "must_acknowledge": "Tick this to continue, or close the dialog and change the value."
+        "must_acknowledge": "Tick this to continue, or close the dialog and change the value.",
+        "not_loaded": "PV Strings is still loading, so the new geometry could not be saved. Submit again in a moment."
       }
     },
     "curtailment_group": {

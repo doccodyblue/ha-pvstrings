@@ -1345,6 +1345,14 @@ class StringSubentryFlow(_ReloadingSubentryFlow):
         """
         entry = self._get_entry()
         subentry = self._get_reconfigure_subentry()
+        errors: dict[str, str] = {}
+
+        if user_input is not None and getattr(entry, "runtime_data", None) is None:
+            # Mid-reload there is no store to write the period to.  Saving the
+            # form anyway would leave it and the database disagreeing, with the
+            # forecast quietly on the old plane, so nothing is saved.
+            errors["base"] = "not_loaded"
+            user_input = None
 
         if user_input is not None:
             from .core.config import GeometrySegment
@@ -1419,6 +1427,7 @@ class StringSubentryFlow(_ReloadingSubentryFlow):
         return self.async_show_form(
             step_id="geometry",
             data_schema=schema,
+            errors=errors,
             description_placeholders={"history": await self._history_text()},
         )
 
