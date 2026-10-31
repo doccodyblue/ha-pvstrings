@@ -397,7 +397,10 @@ class TestMigration:
         engine.load_models()
         assert engine.daypart_scheme == DAYPART_SCHEME_COARSE
         assert seeded_store.get_cursor(CURSOR_DAYPART_SCHEME, default=0) == 0
-        assert seeded_store.load_effects("plant") == pytest.approx(coarse.to_rows("plant"))
+        stored, expected = seeded_store.load_effects("plant"), coarse.to_rows("plant")
+        assert stored.keys() == expected.keys()
+        for key, value in expected.items():
+            assert stored[key] == pytest.approx(value), key
         assert engine.model.factor("s1", "clear", "midday") == coarse.factor("s1", "clear", "midday")
 
     def test_a_crash_inside_the_transaction_leaves_nothing(self, seeded_store):
