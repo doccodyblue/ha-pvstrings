@@ -27,7 +27,7 @@
 
 /* ============================ SECTION: HEADER ============================ */
 
-const PVS_VERSION = "0.22.2";
+const PVS_VERSION = "0.23.0";
 const PVS_MIN_INTEGRATION = "1.8.0";
 
 /* ============================ SECTION: CONST ============================= */
@@ -584,6 +584,8 @@ const STR = {
     "help_conversion": "**Conversion**: AC is energy behind the inverter, capped at its AC rating when clipping applies but never at regulatory limits; battery charge is DC into the storage — the two are never added. Curves are configured (datasheet or self-entered); where measured DC/AC pairs exist and learning is on, the plant corrects that curve with its own measurement. *Unconverted* means no curve configured, not a measured 0 % loss.",
     "help_hp": "**Day-ahead error by hour**: the same scored pairs the 30-day figure is built from, folded by local hour, in kWh per scored day. The strip is the gap between promised and arrived — above the line the forecast promised more than came. Read it to see *where in the day* the forecast is weak, and what that costs; the percentage per hour is in the tooltip. Dimmed hours rest on fewer than three days.",
     "help_nowcast": "**Nowcast**: the forecast reacting to your own irradiance sensor. The measured clearness of the last quarter hour is blended into the coming intervals and fades back to the provider's forecast with a half-life that depends on how broken the sky is — reach is two hours, past hours are never touched. The blue mark is what the weather source expects for now on the same scale — the gap between the two is what the nowcast corrects. Inactive at night and without a sensor is the normal case; then the reason is the interesting figure.",
+    "hp_plant": "Plant",
+    "hp_no_string_week": "This week was stored before per-string profiles existed, so it has the plant only. Its day-ahead runs are gone, so it cannot be rebuilt.",
     "hp_no_hours": "No scored hour yet. The profile fills from the first complete day — it is not held back until the accuracy figures are.",
     // history (response services get_day / get_weeks)
     "hist_prev": "earlier", "hist_next": "later", "hist_pick": "pick a day",
@@ -1027,6 +1029,8 @@ const STR = {
     "help_conversion": "**Wandlung**: AC ist Energie hinter dem Wechselrichter, bei Clipping am AC-Nennwert gedeckelt, aber nie an Regel- oder Rechtslimits; Akkuladung ist DC-Energie in den Speicher — die beiden werden nie addiert. Kennlinien sind konfiguriert (Datenblatt oder selbst eingetragen); wo gemessene DC/AC-Paare vorliegen und das Lernen an ist, korrigiert die Anlage die Kennlinie mit der eigenen Messung. „Ungewandelt“ heißt: keine Kennlinie konfiguriert, nicht 0 % Verlust gemessen.",
     "help_hp": "**Day-Ahead-Fehler nach Stunde**: dieselben gescorten Paare, aus denen die 30-Tage-Zahl gebildet wird, nach lokaler Stunde gefaltet, in kWh pro gescorten Tag. Der Streifen ist die Differenz zwischen versprochen und gekommen — über der Linie hat die Prognose mehr versprochen als kam. Damit liest man, *wo im Tag* die Prognose schwach ist und was das kostet; der Prozentwert je Stunde steht im Tooltip. Gedimmte Stunden stehen auf weniger als drei Tagen.",
     "help_nowcast": "**Nowcast**: die Prognose reagiert auf den eigenen Einstrahlungs-Sensor. Die gemessene Klarheit der letzten Viertelstunde wird in die kommenden Intervalle eingeblendet und mit einer Halbwertszeit, die vom Himmel abhängt, zur Anbieterprognose zurückgeführt — Reichweite zwei Stunden, vergangene Stunden bleiben unangetastet. Die blaue Marke ist, was die Wetterquelle für jetzt erwartet, auf derselben Skala — der Abstand zwischen beiden ist das, was der Nowcast korrigiert. Nachts und ohne Sensor ist „läuft nicht“ der Normalfall; dann ist der Grund die interessantere Zahl.",
+    "hp_plant": "Anlage",
+    "hp_no_string_week": "Diese Woche wurde gespeichert, bevor es Profile je Strang gab, und hat nur die Anlage. Ihre Day-Ahead-Läufe sind weg, nachbauen geht nicht.",
     "hp_no_hours": "Noch keine gescorte Stunde. Das Profil füllt sich ab dem ersten vollständigen Tag — es wartet nicht auf die Genauigkeitszahlen.",
     // Historie (Services get_day / get_weeks)
     "hist_prev": "früher", "hist_next": "später", "hist_pick": "Tag auswählen",
@@ -5021,6 +5025,8 @@ class PvsHourProfileCard extends PvsBaseCard {
   setConfig(config) {
     this._sel = null;          // null = the live 30 days; else a week_start
     this._weeksState = null;
+    this._str = null;          // null = the plant; else a string_id
+    this._strings = null;      // [{id, name}] of this plant, from the registry
     super.setConfig(config);
   }
 
@@ -5046,6 +5052,28 @@ class PvsHourProfileCard extends PvsBaseCard {
       this._weeksState = { weeks, at: Date.now() };
     } catch (e) {
       this._weeksState = { problem: esc(e?.message ?? String(e)), at: Date.now() };
+    }
+    this._render();
+  }
+  // The plant's own strings only: the registry model holds every plant, and
+  // a string's id is its subentry id (scopeId), the key the integration uses.
+  async _ensureStrings() {
+    if (this._strings || this._stringsLoading) return;
+    const hass = this._hass, cfg = this._config;
+    if (!cfg?.entity) return;
+    this._stringsLoading = true;
+    try {
+      const m = await getRegistryModel(hass);
+      const info = m.byEntityId.get(cfg.entity);
+      const plant = info?.level === "plant" ? info.node : info?.node?.plant;
+      this._strings = plant
+        ? m.strings.filter((s) => s.plant === plant && s.scopeId)
+          .map((s) => ({ id: s.scopeId, name: s.name }))
+        : [];
+    } catch (_e) {
+      this._strings = [];
+    } finally {
+      this._stringsLoading = false;
     }
     this._render();
   }
@@ -5082,11 +5110,28 @@ class PvsHourProfileCard extends PvsBaseCard {
     if (!need.ok) return card(problemHTML(hass, { entity: cfg.entity, missing: need.missing }));
 
     this._ensureWeeks();
+    this._ensureStrings();
     const week = this._selWeek();
+    // Per string only where the integration publishes it (1.27.1+); older
+    // ones keep the card exactly as it was, without a selector.
+    const live = st.attributes;
+    const strs = live.hourly_profile_by_string && typeof live.hourly_profile_by_string === "object"
+      ? (this._strings ?? []) : [];
+    if (this._str != null && !strs.some((s) => s.id === this._str)) this._str = null;
+    const byStr = week ? week.hourly_profile_by_string : live.hourly_profile_by_string;
+    // A week stored before per-string profiles existed has none. The plant
+    // curve is not shown in its place: under a string's chip it would read
+    // as that string's numbers.
+    const noStringWeek = this._str != null && !(byStr && typeof byStr === "object");
+    const profile = this._str == null
+      ? (week ? week.hourly_profile : live.hourly_profile)
+      : (byStr?.[this._str] ?? []);
     // a week is drawn exactly like the live month — only the rows differ
-    const a = week
-      ? { hourly_profile: week.hourly_profile, days_scored: week.days_scored ?? null }
-      : st.attributes;
+    const a = { hourly_profile: profile,
+      days_scored: week ? week.days_scored ?? null : live.days_scored };
+    const selector = strs.length ? `<div class="d-sel">${[{ id: null, name: t(hass, "hp_plant") }, ...strs]
+      .map((s) => `<span class="pvs-chip${s.id === this._str ? " on" : ""}" data-str="${esc(s.id ?? "")}">${esc(s.name)}</span>`)
+      .join("")}</div>` : "";
     const title = cfg.title ?? t(hass, "hp_title");
     const weekChips = !week ? "" : [
       week.complete === false ? `<span class="pvs-chip">${t(hass, "week_running")}</span>` : "",
@@ -5096,7 +5141,8 @@ class PvsHourProfileCard extends PvsBaseCard {
       <span class="pvs-title clickable" data-more-info="${cfg.entity}">${esc(title)}</span>
       ${a.days_scored != null ? `<span class="pvs-chip${week ? "" : " clickable"}"${week ? "" : ` data-more-info="${cfg.entity}"`}>${tn(hass, "hp_days_scored", a.days_scored)}</span>` : ""}
       ${weekChips}${extraChip}${this._stepHTML()}${helpChip("hp")}
-    </div>`;
+    </div>${selector}`;
+    if (noStringWeek) return card(head() + withheldHTML(t(hass, "hp_no_string_week")));
 
     // Rows worth drawing. Two kinds get dropped, for two different reasons:
     // a 0/0 night row is an aged leftover from before the integration's
@@ -5236,6 +5282,13 @@ class PvsHourProfileCard extends PvsBaseCard {
     if (this._wired) return;
     this._wired = true;
     this.shadowRoot.addEventListener("click", (ev) => {
+      const c = ev.target.closest?.("[data-str]");
+      if (c) {
+        ev.stopPropagation();
+        this._str = c.getAttribute("data-str") || null;
+        this._render();
+        return;
+      }
       const b = ev.target.closest?.("[data-step]");
       if (!b || b.disabled) return;
       ev.stopPropagation();
@@ -5270,6 +5323,10 @@ class PvsHourProfileCard extends PvsBaseCard {
 
 const HP_CSS = `
   .fc-wrap svg { width: 100%; height: auto; display: block; }
+  .d-sel { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 8px; }
+  .d-sel .pvs-chip { cursor: pointer; border-color: var(--pvs-hairline); }
+  .d-sel .pvs-chip.on { color: var(--primary-text-color); border-color: var(--pvs-model);
+    background: color-mix(in srgb, var(--pvs-model) 14%, transparent); }
 `;
 
 const WEATHERS = ["clear", "partly_cloudy", "overcast", "rain"];
