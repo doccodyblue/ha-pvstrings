@@ -187,6 +187,15 @@ it as a discount on tomorrow's window sum. The hours are already local, so no
 until three days are in — the `days` field says how thin the basis is, and
 thin is what a fresh installation has to work with.
 
+Next to it, `hourly_profile_by_string` holds the same fold per string, keyed
+by string id (`strings_detail` maps names to ids). Errors of opposite sign
+cancel in the plant sum — one string shaded in the morning, another facing
+east — and only show here. Per hour the strings add up to the plant. Both
+profiles count every paired hour, including those an inverter limit cut
+short; hours without a measurement are left out. The per-string profile is
+not written to the recorder: next to the daily history it would push the
+entity toward the recorder's size limit.
+
 Installations set up before 1.24 keep the entity id they were registered
 with, `sensor.YOUR_PLANT_day_ahead_accuracy_30_days`; only the display name
 changed. Home Assistant never renames an entity id behind your automations.
@@ -536,7 +545,9 @@ learned layer switched off** (no source bias, no nowcast, no sky map, no
 correction factor) on the same weather run. It is not "pure physics" in any
 stronger sense, and the distance between the two is what learning has saved.
 Weeks are stored when they close, because the day-ahead issues they need are
-gone a few weeks later.
+gone a few weeks later. Each week carries the hourly profile, plant and per
+string; weeks closed before 1.27.1 have the plant profile only and are not
+rebuilt, since the evening runs they were scored against are gone.
 
 The baseline is logged from 1.25 on. The weeks already in the issue window
 on the first start are rebuilt once and marked `backfilled`: their day-ahead

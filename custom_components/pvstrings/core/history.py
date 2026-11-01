@@ -25,6 +25,7 @@ from .forecast import (
     DAY_AHEAD_ISSUE_HOUR_LOCAL,
     HOUR,
     _hourly_profile,
+    _hourly_profile_by_string,
     _ScoreTally,
     is_uncensored,
 )
@@ -367,6 +368,10 @@ def week_payload(
         "baseline": baseline,
         # All paired hours, like the attribute of the 30-day sensor.
         "hourly_profile": _hourly_profile(full),
+        # Per string, keyed by string_id.  Weeks closed before this existed
+        # lack the key; they are not rebuilt, because the evening runs they
+        # were scored against are compacted away by now.
+        "hourly_profile_by_string": _hourly_profile_by_string(full),
         "maturity": maturity,
     }
 

@@ -296,6 +296,23 @@ def _hourly_profile(tally: "_ScoreTally") -> list[dict[str, Any]]:
     install has to work with.  Hours without a scored pair are left out
     rather than published as zero.
     """
+    return _profile_rows(tally.hourly)
+
+
+def _hourly_profile_by_string(tally: "_ScoreTally") -> dict[str, list[dict[str, Any]]]:
+    """The same fold per string, keyed by string_id.
+
+    Errors of opposite sign cancel in the plant sum -- one string shaded in
+    the morning, another facing east -- and only show here.  Same pairs as
+    the plant profile, so per hour the strings add up to it.
+    """
+    return {
+        string_id: _profile_rows(hours)
+        for string_id, hours in sorted(tally.hourly_by_string.items())
+    }
+
+
+def _profile_rows(hours: Mapping[int, list[Any]]) -> list[dict[str, Any]]:
     return [
         {
             "hour": hour,
@@ -303,7 +320,7 @@ def _hourly_profile(tally: "_ScoreTally") -> list[dict[str, Any]]:
             "actual_kwh": round(values[1], 3),
             "days": len(values[2]),
         }
-        for hour, values in sorted(tally.hourly.items())
+        for hour, values in sorted(hours.items())
     ]
 
 
@@ -373,6 +390,9 @@ class _ScoreTally:
     #: the day the error sits, which no daily figure can say and which is the
     #: question behind "how much margin do I need before 11:00".
     hourly: dict[int, list[Any]] = field(default_factory=dict)
+    #: ``string_id -> local hour -> [predicted, actual, {days}]``; per hour the
+    #: strings add up to ``hourly``.
+    hourly_by_string: dict[str, dict[int, list[Any]]] = field(default_factory=dict)
     #: The same hours again, split into what the irradiance input cost and
     #: what the chain did with it.  Only hours the sensor covered enter here,
     #: so it is a subset of the score above and never replaces it.
@@ -3063,6 +3083,7 @@ class ForecastEngine:
         result["issue_hour_local"] = DAY_AHEAD_ISSUE_HOUR_LOCAL
         result["history"] = _day_ahead_history(tally, self._running_day_ahead(now_ts))
         result["hourly_profile"] = _hourly_profile(tally)
+        result["hourly_profile_by_string"] = _hourly_profile_by_string(tally)
         result["attribution"] = self._attribution(tally)
         if result["days_scored"] < MIN_SCORED_DAYS:
             # Silent about the number, honest about the basis: the counts stay
@@ -3303,6 +3324,11 @@ class ForecastEngine:
                 slot[0] += predicted
                 slot[1] += actual
                 slot[2].add(day)
+                own = tally.hourly_by_string.setdefault(str(row["string_id"]), {})
+                own_slot = own.setdefault(local.hour, [0.0, 0.0, set()])
+                own_slot[0] += predicted
+                own_slot[1] += actual
+                own_slot[2].add(day)
                 chain = row["chain_kwh"]
                 if chain is not None:
                     # All three on the same hours, or the numbers would answer

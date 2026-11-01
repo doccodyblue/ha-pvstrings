@@ -218,6 +218,49 @@ class TestTheHourlyProfile:
         assert profile[0]["forecast_kwh"] == pytest.approx(21.0 / 12, abs=1e-3)
         assert profile[0]["actual_kwh"] == pytest.approx(14.0 / 12, abs=1e-3)
 
+    def test_each_string_has_its_own_profile_and_they_add_up(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """Per string the same fold: s1 over-, s2 underforecast.  In the
+        plant sum the two partly cancel, which is what the split is for."""
+        seed_day(engine, seeded_store, DAY_START, actual_kwh=10.0, predicted_kwh=15.0)
+        seed_day(
+            engine, seeded_store, DAY_START, actual_kwh=6.0, predicted_kwh=4.0,
+            string_id="s2",
+        )
+        result = engine.score_day_ahead(3, DAY_START + DAY + 12 * HOUR)
+        by_string = result["hourly_profile_by_string"]
+
+        assert set(by_string) == {"s1", "s2"}
+        s1 = {row["hour"]: row for row in by_string["s1"]}
+        s2 = {row["hour"]: row for row in by_string["s2"]}
+        assert s1[9]["forecast_kwh"] == pytest.approx(15.0 / 12, abs=1e-3)
+        assert s2[9]["actual_kwh"] == pytest.approx(6.0 / 12, abs=1e-3)
+        assert all(row["days"] == 1 for row in by_string["s2"])
+        for row in result["hourly_profile"]:
+            hour = row["hour"]
+            for key in ("forecast_kwh", "actual_kwh"):
+                assert row[key] == pytest.approx(s1[hour][key] + s2[hour][key], abs=2e-3)
+
+    def test_a_string_without_data_leaves_its_hours_out(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """An inverter that stopped reporting: s2's hours are stored as
+        missing.  It gets no profile rows, and the plant carries only s1."""
+        seed_day(engine, seeded_store, DAY_START, actual_kwh=10.0, predicted_kwh=15.0)
+        seed_day(
+            engine, seeded_store, DAY_START, actual_kwh=6.0, predicted_kwh=4.0,
+            string_id="s2",
+        )
+        seeded_store._conn.execute(
+            "UPDATE string_hourly SET quality = 'missing', energy_kwh = 0, coverage = 0 "
+            "WHERE string_id = 's2'"
+        )
+        result = engine.score_day_ahead(3, DAY_START + DAY + 12 * HOUR)
+
+        assert set(result["hourly_profile_by_string"]) == {"s1"}
+        assert result["hourly_profile"][0]["forecast_kwh"] == pytest.approx(15.0 / 12, abs=1e-3)
+
     def test_not_gated_on_the_day_count(
         self, engine: ForecastEngine, seeded_store: Store
     ):

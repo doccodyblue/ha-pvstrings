@@ -542,6 +542,11 @@ PLANT_SENSORS: tuple[PlantSensorDescription, ...] = (
             # over its own window gets the margin that window needs, which
             # the daily figures above cannot give it.
             "hourly_profile": data.scores_day_ahead.get(30, {}).get("hourly_profile"),
+            # The same per string, keyed by string_id: errors of opposite
+            # sign cancel in the plant sum.
+            "hourly_profile_by_string": data.scores_day_ahead.get(30, {}).get(
+                "hourly_profile_by_string"
+            ),
         },
     ),
     PlantSensorDescription(
@@ -981,7 +986,11 @@ class PlantSensor(PvStringsEntity):
     # The model tables are for reading live, not for history: on hourly
     # buckets they run to some fifteen kilobytes, against the recorder's
     # sixteen per state, and a state over the limit loses all its attributes.
-    _unrecorded_attributes = frozenset({"log_ratio", "ghi_bias", "daypart_slots"})
+    # The per-string hour profile sits next to the 30-day history for the
+    # same reason.
+    _unrecorded_attributes = frozenset(
+        {"log_ratio", "ghi_bias", "daypart_slots", "hourly_profile_by_string"}
+    )
 
     entity_description: PlantSensorDescription
 

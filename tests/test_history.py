@@ -354,6 +354,8 @@ class TestWeek:
         )
         assert week["hours_uncensored"] == score["hours_uncensored"]
         assert week["hourly_profile"] == score["hourly_profile"]
+        assert week["hourly_profile_by_string"] == score["hourly_profile_by_string"]
+        assert set(week["hourly_profile_by_string"]) == {"s1", "s2", "s3"}
         # Daily, not weekly: the over- and undershoots must not cancel.
         assert day_ahead["abs_error_kwh"] > abs(
             day_ahead["forecast_kwh"] - day_ahead["actual_kwh"]
@@ -482,6 +484,28 @@ class TestWhereTheBaselineCameFrom:
         stored = next(w for w in weeks if w["week_start"] == MONDAY.isoformat())
         assert stored["baseline"] is not None
         assert stored["baseline_basis"] == history.BASIS_UNKNOWN
+
+
+    def test_a_week_stored_without_strings_is_not_rebuilt(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        """Old weeks keep the plant only: their evening runs are compacted
+        away, so a rebuilt per-string fold could miss hours the stored plant
+        profile still holds."""
+        for offset in range(7):
+            measured_day(engine, seeded_store, MONDAY + timedelta(days=offset),
+                         FACTORS[offset], baseline_factor=1.3)
+        payload = history.week_payload(engine, MONDAY, self.NOW, None)
+        payload.pop("hourly_profile_by_string")
+        start, end = history.week_bounds(MONDAY, TZ)
+        assert seeded_store.insert_week(
+            MONDAY.isoformat(), start, end, self.NOW, False, 2, json.dumps(payload)
+        )
+
+        weeks = history.weeks_payload(engine, self.NOW)["weeks"]
+        stored = next(w for w in weeks if w["week_start"] == MONDAY.isoformat())
+        assert stored["hourly_profile"]
+        assert "hourly_profile_by_string" not in stored
 
 
 class TestTheErrorTwoWays:
