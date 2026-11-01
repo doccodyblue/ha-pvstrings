@@ -176,6 +176,50 @@ class TestDay:
         assert plant["11:00"]["actual_kwh"] is None
         assert payload["strings"]["s2"]["hours"] == []
 
+    def test_an_hour_without_data_is_a_gap_not_a_dark_hour(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        # The inverter behind s2 stopped reporting: its hour is stored as
+        # "missing" with zero energy.  Read as zero, the plant would look as
+        # if the forecast had overshot by everything s2 was meant to make.
+        day = date(2025, 6, 21)
+        noon = midnight(day) + 12 * HOUR
+        seeded_store.log_forecast([(noon - HOUR, noon, "s1", 0.6, "c")])
+        seeded_store.log_forecast([(noon - HOUR, noon, "s2", 0.4, "c")])
+        seeded_store.upsert_hourly(
+            [
+                (noon, "s1", 0.5, 1.0, 0.0, None, None, None, "measured", "exact"),
+                (noon, "s2", 0.0, 0.0, 0.0, None, None, None, "measured", "missing"),
+            ]
+        )
+        payload = history.day_payload(engine, day)
+
+        s2 = payload["strings"]["s2"]["hours"][0]
+        assert s2["forecast_kwh"] == 0.4
+        assert s2["actual_kwh"] is None
+        plant = payload["plant"]["hours"][0]
+        assert plant["forecast_kwh"] == pytest.approx(0.6)
+        assert plant["actual_kwh"] == pytest.approx(0.5)
+        assert plant["incomplete"] is True
+
+    def test_yesterdays_announcement_leaves_out_hours_without_data(
+        self, engine: ForecastEngine, seeded_store: Store
+    ):
+        day = date(2025, 6, 21)
+        start = midnight(day)
+        noon = start + 12 * HOUR
+        cutoff = engine.day_ahead_cutoff(start)
+        seeded_store.log_forecast([(cutoff, noon, "s1", 0.6, "c")])
+        seeded_store.log_forecast([(cutoff, noon, "s2", 0.4, "c")])
+        seeded_store.upsert_hourly(
+            [
+                (noon, "s1", 0.5, 1.0, 0.0, None, None, None, "measured", "exact"),
+                (noon, "s2", 0.0, 0.0, 0.0, None, None, None, "measured", "missing"),
+            ]
+        )
+        assert engine.announced_kwh(start, start + 86400) == pytest.approx(0.6)
+        assert engine.announced_kwh(start + 86400, start + 2 * 86400) is None
+
     def test_censored_is_the_scores_own_rule(self, engine: ForecastEngine,
                                              seeded_store: Store):
         day = date(2025, 6, 23)

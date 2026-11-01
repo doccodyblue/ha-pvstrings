@@ -28,6 +28,7 @@ from .forecast import (
     _ScoreTally,
     is_uncensored,
 )
+from .quality import QUALITY_MISSING
 
 if TYPE_CHECKING:
     from .forecast import ForecastEngine
@@ -114,6 +115,9 @@ def day_payload(engine: "ForecastEngine", day: date) -> dict[str, Any]:
             fc = lead0.get((ts, string_id))
             da = ahead.get((ts, string_id))
             act = actual.get((ts, string_id))
+            # Stored with zero energy when the source stopped reporting; that
+            # is an unknown amount, not a dark hour.
+            gap = act is not None and act.quality == QUALITY_MISSING
             censored = (
                 None
                 if act is None or act.energy_kwh is None
@@ -126,14 +130,20 @@ def day_payload(engine: "ForecastEngine", day: date) -> dict[str, Any]:
                 "day_ahead_issued_at": _iso(da["issued_at_utc"], tz) if da else None,
                 "baseline_kwh": _r(fc["baseline_kwh"]) if fc else None,
                 "unshaded_kwh": _r(fc["unshaded_kwh"]) if fc else None,
-                "actual_kwh": _r(act.energy_kwh) if act else None,
+                "actual_kwh": _r(act.energy_kwh) if act and not gap else None,
                 "censored": bool(censored),
                 "value_kind": act.value_kind if act else None,
                 "curtailed_fraction": _r(act.curtailed_fraction) if act else None,
                 "coverage": _r(act.coverage) if act else None,
             }
             out.append(entry)
-            _fold_plant_hour(plant_hours.setdefault(ts, {"start": entry["start"]}), entry)
+            bucket = plant_hours.setdefault(ts, {"start": entry["start"]})
+            if gap:
+                # Its forecast stays out of the plant too, or the plant hour
+                # would compare all strings' forecast with some strings' yield.
+                bucket["incomplete"] = True
+            else:
+                _fold_plant_hour(bucket, entry)
         strings[string_id] = {
             "hours": out,
             "intervals": _intervals(raw, start, end, tz, string_id),
@@ -181,6 +191,7 @@ def _finish_plant_hour(bucket: dict[str, Any]) -> dict[str, Any]:
         "day_ahead_issued_at": bucket.get("day_ahead_issued_at"),
         "actual_kwh": _r(bucket.get("actual_kwh")),
         "censored": bool(bucket.get("censored", False)),
+        "incomplete": bool(bucket.get("incomplete", False)),
     }
 
 

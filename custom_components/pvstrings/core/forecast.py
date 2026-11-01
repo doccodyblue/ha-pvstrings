@@ -70,6 +70,7 @@ from .plausibility import (
 from .irradiance_check import Calibration
 from .shading import METHOD_DIFFERENTIAL, ShadingModel
 from .quality import (
+    QUALITY_MISSING,
     QUALITY_NIGHT,
     VALUE_LOWER_BOUND,
     VALUE_MEASURED,
@@ -3073,6 +3074,23 @@ class ForecastEngine:
                 result[bucket] = {**result[bucket], **blank}
         return result
 
+    def announced_kwh(self, start_ts: int, end_ts: int) -> float | None:
+        """What the evening-before run said a window would bring.
+
+        Hours without measurements are left out, as in the score: a string
+        whose inverter stopped reporting produced an unknown amount, not
+        nothing, and counting its forecast would read as a huge overshoot.
+        """
+        rows = self.store.forecast_vs_actual_before(
+            start_ts, end_ts, self.day_ahead_cutoff(start_ts)
+        )
+        predicted = [
+            row["potential_kwh"]
+            for row in rows
+            if row["potential_kwh"] and row["quality"] != QUALITY_MISSING
+        ]
+        return sum(predicted) if predicted else None
+
     def store_chain_potential(self, start_ts: int, end_ts: int) -> int:
         """Re-run the chain over closed hours with the irradiance that occurred.
 
@@ -3268,7 +3286,7 @@ class ForecastEngine:
             predicted = row["potential_kwh"]
             if actual is None or predicted is None:
                 continue
-            if row["quality"] in (QUALITY_NIGHT, "missing"):
+            if row["quality"] in (QUALITY_NIGHT, QUALITY_MISSING):
                 continue
             local = datetime.fromtimestamp(int(row["ts_utc"]), tz=self._tz)
             day = local.strftime("%Y-%m-%d")

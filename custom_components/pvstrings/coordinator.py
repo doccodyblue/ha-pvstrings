@@ -1004,7 +1004,7 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         data.produced_yesterday_kwh = self.store.energy_kwh_between(
             yesterday_start, day_start
         )
-        data.forecast_yesterday_kwh = self._logged_forecast_sum(
+        data.forecast_yesterday_kwh = self.engine.announced_kwh(
             yesterday_start, day_start
         )
 
@@ -1503,20 +1503,6 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
             # measurement is believed only in part.
             "nowcast_trust": round(state.trust, 3),
         }
-
-    def _logged_forecast_sum(self, start_ts: int, end_ts: int) -> float | None:
-        """What we said the day would bring, as of the evening before.
-
-        Deliberately not the nowcast sum: "deviation yesterday" reads as a
-        comparison against an announcement, and summing forecasts issued
-        minutes before each hour is not an announcement -- it flattered the
-        number without answering the question anybody was asking of it.
-        """
-        rows = self.store.forecast_vs_actual_before(
-            start_ts, end_ts, self.engine.day_ahead_cutoff(start_ts)
-        )
-        predicted = [row["potential_kwh"] for row in rows if row["potential_kwh"]]
-        return sum(predicted) if predicted else None
 
     def _delivery_factor(
         self,
