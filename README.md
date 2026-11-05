@@ -219,12 +219,16 @@ names, and the older one can win.
 
 ### HACS (recommended)
 
-Search for **PV Strings** in HACS, install, then restart Home Assistant.
+[![Open in HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=doccodyblue&repository=ha-pvstrings&category=integration)
 
-Not there yet? The repository is awaiting inclusion in the HACS default store,
-which takes a while. Until then add it by hand: HACS → ⋮ → *Custom
-repositories* → `https://github.com/doccodyblue/ha-pvstrings`, type
-*Integration*.
+PV Strings is in the HACS default store. Search for **PV Strings** in HACS,
+install, then restart Home Assistant.
+
+Added it earlier as a custom repository? Nothing to do — updates keep coming
+the same way. Copied the files by hand? Install once through HACS so it can
+track updates; it replaces the copied folder. Configuration and everything
+learned live outside it (in the config entries and `config/pvstrings/`) and
+are kept.
 
 ### Manual
 
