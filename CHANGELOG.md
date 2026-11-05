@@ -1,5 +1,39 @@
 # Changelog
 
+## v1.27.1 — 2026-11-05
+
+### Added
+
+- **Day-ahead error by hour, per string.** The 30-day day-ahead sensor
+  publishes `hourly_profile_by_string` next to `hourly_profile`, and every
+  week closed from now on carries it too. Per hour the strings add up to the
+  plant. The bundled dashboard card gets chips to switch between the plant
+  and each string: errors of opposite sign, an east string too high in the
+  morning and a west one too low in the afternoon, cancel in the plant sum
+  and only show per string. Weeks closed before this version keep the plant
+  profile only; their evening forecasts are no longer on disk to rebuild
+  them from.
+
+### Changed
+
+- **A geometry correction can say the plane was always this one.** *Wrong
+  from the start* replaced only the newest period. With more than one period
+  on record a second choice now replaces the whole history, and the sky-map
+  observations of each earlier period are carried over to the corrected
+  plane. The choice also comes up when the values stay the same, for a string
+  whose current values are right but whose earlier periods never were.
+
+### Fixed
+
+- **Hours an inverter did not report are left out, not counted as dark.**
+  The accuracy scores already skipped them, but *Deviation yesterday*
+  compared the whole day's forecast against the hours that were measured
+  (+303 % on a day one inverter was offline), and the day view drew those
+  hours as zero. Both now leave them out and mark the day as incomplete.
+- **The dashboard card escapes config and state values.** An entity id
+  typed into a card config, or pasted with a shared dashboard, could be
+  rendered as HTML when the entity did not exist. Card v0.23.1.
+
 ## v1.27.0 — 2026-10-27
 
 ### Changed
