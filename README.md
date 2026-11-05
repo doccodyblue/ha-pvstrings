@@ -1,4 +1,4 @@
-![ha-pvstrings — PV String Monitoring for Home Assistant](docs/banner.png)
+![ha-pvstrings — PV String Monitoring for Home Assistant](https://raw.githubusercontent.com/doccodyblue/ha-pvstrings/main/docs/banner.png)
 
 # PV Strings
 
@@ -18,6 +18,28 @@ not what decides — two panels on a balcony and a 30 kWp roof across three face
 both carry detail that a plant total hides. What it does need is one
 measurement channel per string, the kind an MPPT-per-string inverter or a set
 of micro-inverters already gives you.
+
+![Forecast and actual for today](https://raw.githubusercontent.com/doccodyblue/ha-pvstrings/main/docs/img/dash-forecast-wide.png)
+
+### Dashboard included
+
+The integration ships its own cards and a dashboard that builds itself from
+your setup — overview, one section per string, accuracy, and a nerd view for
+the learning. Nothing to install separately, no card editor. Add a new
+dashboard, open the raw configuration editor and replace everything with:
+
+```yaml
+strategy:
+  type: custom:pvstrings
+```
+
+| | |
+|---|---|
+| ![Sky map: where one string loses what, by sun position](https://raw.githubusercontent.com/doccodyblue/ha-pvstrings/main/docs/img/dash-sky-map.png) | ![Conversion: DC potential, AC potential and clipping](https://raw.githubusercontent.com/doccodyblue/ha-pvstrings/main/docs/img/dash-conversion.png) |
+
+![Day-ahead error by hour](https://raw.githubusercontent.com/doccodyblue/ha-pvstrings/main/docs/img/dash-hour-profile.png)
+
+Screenshots show demo data.
 
 ---
 
