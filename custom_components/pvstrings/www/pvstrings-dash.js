@@ -27,7 +27,7 @@
 
 /* ============================ SECTION: HEADER ============================ */
 
-const PVS_VERSION = "0.23.0";
+const PVS_VERSION = "0.23.1";
 const PVS_MIN_INTEGRATION = "1.8.0";
 
 /* ============================ SECTION: CONST ============================= */
@@ -1083,11 +1083,20 @@ function langOf(hass) {
   return l.startsWith("de") ? "de" : "en";
 }
 
+// Markup a caller means to pass into t() as a substitution.
+class Markup {
+  constructor(s) { this.s = String(s); }
+}
+const markup = (s) => new Markup(s);
+
+// Substitutions are escaped: they carry entity ids, names and messages, and
+// the result lands in innerHTML.  Deliberate markup goes in as markup(...).
+// An unknown key comes back escaped too -- some keys are built from data.
 function t(hass, key, vars) {
   const lang = typeof hass === "string" ? hass : langOf(hass);
-  let s = STR[lang]?.[key] ?? STR.en[key] ?? key;
+  let s = STR[lang]?.[key] ?? STR.en[key] ?? esc(key);
   if (vars) for (const [k, v] of Object.entries(vars)) {
-    s = s.replaceAll(`{${k}}`, String(v));
+    s = s.replaceAll(`{${k}}`, v instanceof Markup ? v.s : esc(v));
   }
   return s;
 }
@@ -1759,15 +1768,15 @@ function stepperHTML(hass, label, { prev, next, past, pick = null }) {
 
 function problemHTML(hass, { reason, entity, missing = [], hint }) {
   const lines = missing.map((mi) =>
-    `<div>${t(hass, "needs_attr", { attr: `<code>${mi.attr}</code>`, entity: `<code>${entity ?? "?"}</code>`, since: mi.since })}</div>`
+    `<div>${t(hass, "needs_attr", { attr: markup(`<code>${esc(mi.attr)}</code>`), entity: markup(`<code>${esc(entity ?? "?")}</code>`), since: mi.since })}</div>`
   ).join("");
   return `<div class="pvs-problem">
     <span class="ico">⚠︎</span>
     <div>
       ${reason ? `<div>${reason}</div>` : ""}
       ${lines}${missing.length ? `<div>${t(hass, "found_without")}</div>` : ""}
-      ${entity ? `<div class="ent">${entity}</div>` : ""}
-      ${hint ? `<div class="ent">${hint}</div>` : ""}
+      ${entity ? `<div class="ent">${esc(entity)}</div>` : ""}
+      ${hint ? `<div class="ent">${esc(hint)}</div>` : ""}
     </div>
   </div>`;
 }
@@ -1790,7 +1799,7 @@ function miniMd(s) {
 // newer integration must still render, only less prettily.
 function keyLabel(hass, key) {
   const s = STR[langOf(hass)]?.["lbl_" + key] ?? STR.en["lbl_" + key];
-  return s ?? String(key).replaceAll("_", " ");
+  return s ?? esc(String(key).replaceAll("_", " "));
 }
 
 function esc(s) {
@@ -2045,9 +2054,9 @@ class PvsSkyMapCard extends PvsBaseCard {
     const fitTxt = t(hass, attrs.fit_method === "differential"
       ? "sky_fit_differential" : "sky_fit_absolute");
     const levelBadge = level == null
-      ? `<span class="pvs-chip clickable" data-more-info="${cfg.entity}"
+      ? `<span class="pvs-chip clickable" data-more-info="${esc(cfg.entity)}"
            title="${esc(t(hass, "sky_level_none"))}">${fitTxt}</span>`
-      : `<span class="pvs-chip clickable" data-more-info="${cfg.entity}"
+      : `<span class="pvs-chip clickable" data-more-info="${esc(cfg.entity)}"
            title="${esc(t(hass, "sky_level_tip"))}">
            ${t(hass, "sky_level")} <span class="v">${fmtNum(hass, level, 2)}</span>
            <span class="pvs-sub">· ${fitTxt}</span></span>`;
@@ -2055,7 +2064,7 @@ class PvsSkyMapCard extends PvsBaseCard {
     const lat = hass.config?.latitude;
     const annual = lat != null ? annualSkyCells(lat) : null;
     const share = annual ? Math.round((pooledCount / annual) * 100) : null;
-    const cellChip = `<span class="pvs-chip clickable" data-more-info="${cfg.entity}">
+    const cellChip = `<span class="pvs-chip clickable" data-more-info="${esc(cfg.entity)}">
         <span class="v">${pooledCount}</span> ${t(hass, "sky_cells", { n: "" }).replace("{n} ", "").trim() || "cells"}
         ${share != null ? `<span class="pvs-sub">· ${t(hass, "sky_share_of_year", { pct: share })}</span>` : ""}
       </span>`;
@@ -2146,7 +2155,7 @@ class PvsSkyMapCard extends PvsBaseCard {
         const clampedX = Math.max(PAD_L + 6, Math.min(W - PAD_R - 6, sx));
         const outside = clampedX !== sx || sy < PAD_T || sy > H - PAD_B;
         sy = Math.max(PAD_T + 6, Math.min(H - PAD_B - 6, sy));
-        sun = `<g class="sun" data-more-info="${this._shadingId}">
+        sun = `<g class="sun" data-more-info="${esc(this._shadingId)}">
           <circle cx="${clampedX}" cy="${sy}" r="7" fill="var(--pvs-sun)"
             stroke="var(--card-background-color)" stroke-width="2"/>
           <circle cx="${clampedX}" cy="${sy}" r="10.5" fill="none"
@@ -2695,7 +2704,7 @@ class PvsForecastCard extends PvsBaseCard {
 
     // hero numbers: the live sensors today, the day's own sums for a past day
     const heroItem = (v, color, label, entity, right) => v == null || isNaN(v) ? "" :
-      `<div class="fc-hero-item${right ? " right" : ""}${entity ? " clickable" : ""}"${entity ? ` data-more-info="${entity}"` : ""}>
+      `<div class="fc-hero-item${right ? " right" : ""}${entity ? " clickable" : ""}"${entity ? ` data-more-info="${esc(entity)}"` : ""}>
         <span class="hv" style="color:var(${color})">${fmtNum(hass, v, 1)}<span class="hu">kWh</span></span>
         <span class="hl">${label}</span></div>`;
     let heroIst, heroProg;
@@ -2795,7 +2804,7 @@ class PvsForecastCard extends PvsBaseCard {
       if (!this._past?.data) {
         const title = cfg.title ?? st.attributes.friendly_name?.replace(/ (Prognose heute|Forecast today)$/i, "") ?? cfg.entity;
         const body = this._past?.problem
-          ? problemHTML(hass, { reason: t(hass, "hist_failed", { error: esc(this._past.problem) }) })
+          ? problemHTML(hass, { reason: t(hass, "hist_failed", { error: this._past.problem }) })
           : `<div class="pvs-sub">…</div>`;
         return card(`<div class="pvs-head"><span class="pvs-title">${esc(title)}</span>${this._stepHTML(day)}</div>${body}`);
       }
@@ -2919,7 +2928,7 @@ class PvsForecastCard extends PvsBaseCard {
     const chips = [];
     const chip = (label, value, entityId, sub) => {
       if (value == null) return;
-      chips.push(`<span class="pvs-chip${entityId ? " clickable" : ""}" ${entityId ? `data-more-info="${entityId}"` : ""}>
+      chips.push(`<span class="pvs-chip${entityId ? " clickable" : ""}" ${entityId ? `data-more-info="${esc(entityId)}"` : ""}>
         ${label} <span class="v">${value}</span>${sub ? ` <span class="pvs-sub">${sub}</span>` : ""}</span>`);
     };
     if (src.past) {
@@ -3184,12 +3193,12 @@ class PvsConversionCard extends PvsBaseCard {
     const outToday = a.today_kwh;
     const chips = [];
     if (!neutral && outToday != null && dcToday > 0) {
-      chips.push(`<span class="pvs-chip clickable" data-more-info="${cfg.entity}"
+      chips.push(`<span class="pvs-chip clickable" data-more-info="${esc(cfg.entity)}"
         title="${esc(t(hass, "conv_eff_tip_" + path))}">
         ${t(hass, "conv_eff_today")} <span class="v">${fmtNum(hass, (outToday / dcToday) * 100, 1)} %</span></span>`);
     }
     if (a.curve_source) {
-      chips.push(`<span class="pvs-chip clickable" data-more-info="${cfg.entity}"
+      chips.push(`<span class="pvs-chip clickable" data-more-info="${esc(cfg.entity)}"
         title="${esc(neutral ? t(hass, "conv_neutral_note")
           : a.curve_source === "fixed_factors" ? t(hass, "conv_fixed_factors_tip")
           : t(hass, "more_info"))}">${curveLabel(hass, a.curve_source, a.conversion_factor, a.curve_prior)}</span>`);
@@ -3199,11 +3208,11 @@ class PvsConversionCard extends PvsBaseCard {
         <span class="ico">⚠︎</span> ${t(hass, "conv_clipped", { v: fmtNum(hass, a.clipped_kwh, 2) })}</span>`);
     }
     const heroDc = dcToday != null
-      ? `<div class="fc-hero-item clickable" data-more-info="${cfg.dc_entity}">
+      ? `<div class="fc-hero-item clickable" data-more-info="${esc(cfg.dc_entity)}">
           <span class="hv" style="color:var(--secondary-text-color)">${fmtNum(hass, dcToday, 1)}<span class="hu">kWh</span></span>
           <span class="hl">${t(hass, "conv_hero_dc")}</span></div>` : "";
     const heroOut = outToday != null
-      ? `<div class="fc-hero-item right clickable" data-more-info="${cfg.entity}">
+      ? `<div class="fc-hero-item right clickable" data-more-info="${esc(cfg.entity)}">
           <span class="hv" style="color:var(--pvs-model)">${fmtNum(hass, outToday, 1)}<span class="hu">kWh</span></span>
           <span class="hl">${t(hass, "conv_hero_" + path)}</span></div>` : "";
     const head = `
@@ -3349,7 +3358,7 @@ class PvsNowcastCard extends PvsBaseCard {
     const stateChip = `<span class="pvs-chip ${on ? "on" : "dim"}">
       <span class="dot${on ? " live" : ""}"></span>${t(hass, on ? "nc_active" : "nc_inactive")}</span>`;
     const head = (extra = "") => `<div class="pvs-head">
-      <span class="pvs-title clickable" data-more-info="${cfg.entity}">${esc(title)}</span>
+      <span class="pvs-title clickable" data-more-info="${esc(cfg.entity)}">${esc(title)}</span>
       ${stateChip}${extra}${helpChip("nowcast")}</div>`;
 
     // ---- inactive: the reason is the whole content ------------------------
@@ -3358,7 +3367,7 @@ class PvsNowcastCard extends PvsBaseCard {
       const known = ["no_source", "no_measurement", "too_dark", "thin_window",
         "stale", "frozen_sensor", "learning_off"].includes(r);
       return card(head() + withheldHTML(known ? t(hass, "nc_reason_" + r)
-        : t(hass, "nc_reason_other", { reason: esc(r ?? "?") })));
+        : t(hass, "nc_reason_other", { reason: r ?? "?" })));
     }
 
     // ---- active -----------------------------------------------------------
@@ -3615,7 +3624,7 @@ class PvsSensorCheckCard extends PvsBaseCard {
         <span class="v">${fmtSigned(hass, tilt, 2)}</span></span>`);
     }
     const head = `<div class="pvs-head">
-      <span class="pvs-title clickable" data-more-info="${cfg.entity}">${esc(cfg.title ?? t(hass, "sc_title"))}</span>
+      <span class="pvs-title clickable" data-more-info="${esc(cfg.entity)}">${esc(cfg.title ?? t(hass, "sc_title"))}</span>
       ${chips.join("")}${helpChip("sensorcheck")}</div>`;
 
     // ---- verdict, translated ------------------------------------------------
@@ -3660,8 +3669,8 @@ class PvsSensorCheckCard extends PvsBaseCard {
       const x = cx - barW / 2;
       const label = String(b.elevation ?? "?").replace("-", "–");
       const data = `data-band="${esc(label)}" data-usable="${b.usable ? 1 : 0}"
-        data-ratio="${b.ratio ?? ""}" data-hours="${b.hours ?? 0}"
-        data-days="${b.days ?? 0}" data-kwh="${b.reference_kwh ?? 0}"`;
+        data-ratio="${esc(b.ratio ?? "")}" data-hours="${esc(b.hours ?? 0)}"
+        data-days="${esc(b.days ?? 0)}" data-kwh="${esc(b.reference_kwh ?? 0)}"`;
       if (b.usable && b.ratio != null) {
         const y = yOf(b.ratio);
         cols += `<rect class="sc-bar" ${data} x="${x.toFixed(1)}" y="${y.toFixed(1)}"
@@ -3873,7 +3882,7 @@ class PvsCalibrationCard extends PvsBaseCard {
 
     const help = helpChip("calibration");
     const head = (chip = "") => `<div class="pvs-head">
-      <span class="pvs-title clickable" data-more-info="${cfg.entity}">${esc(cfg.title ?? t(hass, "cal_title"))}</span>
+      <span class="pvs-title clickable" data-more-info="${esc(cfg.entity)}">${esc(cfg.title ?? t(hass, "cal_title"))}</span>
       ${chip}${help}</div>`;
 
     if (!this._state || this._state.loading) {
@@ -3924,8 +3933,8 @@ class PvsCalibrationCard extends PvsBaseCard {
       <div class="cal-prog">
         <div class="cal-prog-row">
           <span class="cal-prog-lbl">${t(hass, "cal_days", {
-            days: `<b class="pvs-num">${fmtNum(hass, days, 0)}</b>`,
-            needed: `<span class="pvs-num">${fmtNum(hass, needed, 0)}</span>` })}</span>
+            days: markup(`<b class="pvs-num">${fmtNum(hass, days, 0)}</b>`),
+            needed: markup(`<span class="pvs-num">${fmtNum(hass, needed, 0)}</span>`) })}</span>
         </div>
         <div class="cal-track"><div class="cal-fill" style="width:${Math.max(1.5, pct).toFixed(1)}%"></div></div>
         <div class="pvs-sub">${archived > 0
@@ -3948,7 +3957,7 @@ class PvsCalibrationCard extends PvsBaseCard {
         from: fmtNum(hass, first.factor, 2), low: fmtNum(hass, first.elevation, 0),
         to: fmtNum(hass, last.factor, 2), high: fmtNum(hass, last.elevation, 0) })}</span></span>` : ""}
       ${c.capped ? `<span class="pvs-chip warn">${t(hass, "cal_curve_capped")}</span>` : ""}
-      ${c.revision ? `<span class="pvs-chip dim">${t(hass, "cal_curve_rev", { rev: esc(String(c.revision).slice(0, 8)) })}</span>` : ""}
+      ${c.revision ? `<span class="pvs-chip dim">${t(hass, "cal_curve_rev", { rev: String(c.revision).slice(0, 8) })}</span>` : ""}
     </div>` : "";
 
     const tab = (key, label) => `<span class="pvs-chip cal-tab${this._horizon === key ? " on" : ""}"
@@ -3980,7 +3989,7 @@ class PvsCalibrationCard extends PvsBaseCard {
     }
     grid += `<line class="cal-ref" x1="${PAD_L}" y1="${yOf(1).toFixed(1)}" x2="${W - PAD_R}" y2="${yOf(1).toFixed(1)}"/>`;
     for (const x of xs.filter((_, i) => i % Math.ceil(xs.length / 8) === 0)) {
-      grid += `<text class="axis" x="${xOf(x).toFixed(1)}" y="${(H - PAD_B + 13).toFixed(1)}" text-anchor="middle">${x}</text>`;
+      grid += `<text class="axis" x="${xOf(x).toFixed(1)}" y="${(H - PAD_B + 13).toFixed(1)}" text-anchor="middle">${esc(x)}</text>`;
     }
     grid += `<text class="cal-axtitle" x="${(PAD_L + PW / 2).toFixed(1)}" y="${H - 3}" text-anchor="middle">${t(hass, "cal_axis_hour")}</text>`;
 
@@ -4189,7 +4198,7 @@ class PvsCurveCard extends PvsBaseCard {
     const a = st.attributes;
     const title = cfg.title ?? t(hass, "curve_title");
     const head = (extra = "") => `<div class="pvs-head">
-      <span class="pvs-title clickable" data-more-info="${cfg.entity}">${esc(title)}</span>${extra}</div>`;
+      <span class="pvs-title clickable" data-more-info="${esc(cfg.entity)}">${esc(title)}</span>${extra}</div>`;
 
     // Learned state comes from the sensor; anything else needs diagnostics.
     let learning = a.conversion_learning ?? null;
@@ -4361,7 +4370,7 @@ class PvsCurveCard extends PvsBaseCard {
     if (blocked) {
       const known = blocked === "output_appears_derived_from_input";
       stateNote = `<div class="kv-note">${known ? t(hass, "curve_blocked_derived")
-        : t(hass, "curve_blocked_other", { reason: esc(blocked) })}</div>`;
+        : t(hass, "curve_blocked_other", { reason: blocked })}</div>`;
     } else if (!anyLearned) {
       stateNote = `<div class="kv-note">${anyMeasured
         ? t(hass, "curve_collecting") : t(hass, "curve_gathering")}</div>`;
@@ -4549,7 +4558,7 @@ class PvsChainCard extends PvsBaseCard {
             air: fmtNum(hass, row.air_temp_c, 1), wind: fmtNum(hass, row.wind_ms, 1) })}</div>`
         : ""}
       <div class="ch-grid">
-        <div class="lab" data-more-info="${cfg.entity}">${t(hass, "chain_physics")}</div>
+        <div class="lab" data-more-info="${esc(cfg.entity)}">${t(hass, "chain_physics")}</div>
         <div></div><div></div>
         <div class="val">${kwhCell(row.physics_kwh)}</div>
 
@@ -4563,13 +4572,13 @@ class PvsChainCard extends PvsBaseCard {
         <div class="eff pvs-num">${fmtSigned(hass, product - afterShading, 3)}</div>
         <div class="val dim">${kwhCell(product)}</div>
 
-        <div class="lab pub" data-more-info="${cfg.entity}">= ${t(hass, "chain_published")}</div>
+        <div class="lab pub" data-more-info="${esc(cfg.entity)}">= ${t(hass, "chain_published")}</div>
         <div></div><div></div>
         <div class="val pub">${kwhCell(row.potential_kwh)}</div>
 
         ${mismatch ? `<div class="ch-mismatch">⚠︎ ${t(hass, "chain_discrepancy", { a: fmtNum(hass, product, 4), b: fmtNum(hass, row.potential_kwh, 4) })}</div>` : ""}
 
-        <div class="lab meas" ${this._producedId ? `data-more-info="${this._producedId}"` : ""}>${t(hass, "chain_measured")}</div>
+        <div class="lab meas" ${this._producedId ? `data-more-info="${esc(this._producedId)}"` : ""}>${t(hass, "chain_measured")}</div>
         <div class="meas-val">${measuredHtml}</div>
       </div>`);
   }
@@ -4755,7 +4764,7 @@ class PvsDailyCard extends PvsBaseCard {
       this._problem = anyStats ? null
         : { entity: `${tomorrowId}, ${producedId}`, reason: t(hass, "stats_unavailable", { entity: `${tomorrowId} / ${producedId}` }) };
     } catch (e) {
-      this._problem = { reason: String(e) };
+      this._problem = { reason: esc(String(e)) };
     } finally {
       this._loading = false;
       this._cache.set(cfg.entity, { data: this._data, problem: this._problem });
@@ -4842,8 +4851,8 @@ class PvsDailyCard extends PvsBaseCard {
     </div>`;
 
     card(`
-      ${headHTML(`<span class="pvs-chip clickable" data-more-info="${tomorrowId}" title="${esc(t(hass, "more_info"))}: ${tomorrowId}">${t(hass, "daily_soll").split(" ")[0]} ↗</span>
-        <span class="pvs-chip clickable" data-more-info="${producedId}" title="${esc(t(hass, "more_info"))}: ${producedId}">${t(hass, "daily_ist")} ↗</span>`)}
+      ${headHTML(`<span class="pvs-chip clickable" data-more-info="${esc(tomorrowId)}" title="${esc(t(hass, "more_info"))}: ${esc(tomorrowId)}">${t(hass, "daily_soll").split(" ")[0]} ↗</span>
+        <span class="pvs-chip clickable" data-more-info="${esc(producedId)}" title="${esc(t(hass, "more_info"))}: ${esc(producedId)}">${t(hass, "daily_ist")} ↗</span>`)}
       <div class="d-wrap"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="aspect-ratio:${W}/${H}">
         <defs>${hatchPattern("pvs-hatch-d")}${hatchPattern("pvs-hatch-dl")}</defs>
         ${yaxis}${bars}${hits}
@@ -4960,7 +4969,7 @@ class PvsAccuracyCard extends PvsBaseCard {
       const sub = win && days != null ? `<span class="n">${t(hass, "acc_window", { d: days, n: win })}</span>` : "";
       const digits = unit === "%" ? 1 : 2;
       // everything but WMAPE is signed: its sign is the finding
-      return `<div class="acc-stat clickable" data-more-info="${id}">
+      return `<div class="acc-stat clickable" data-more-info="${esc(id)}">
         <div class="l">${label}</div>
         <div class="v">${known
           ? `<span class="pvs-num">${key.startsWith("wmape") ? fmtNum(hass, v, digits) : fmtSigned(hass, v, digits)}</span><span class="u">${esc(unit)}</span>`
@@ -5138,8 +5147,8 @@ class PvsHourProfileCard extends PvsBaseCard {
       week.backfilled ? `<span class="pvs-chip" title="${esc(t(hass, "week_backfilled_tip"))}">${t(hass, "week_backfilled")}</span>` : "",
     ].join("");
     const head = (extraChip = "") => `<div class="pvs-head">
-      <span class="pvs-title clickable" data-more-info="${cfg.entity}">${esc(title)}</span>
-      ${a.days_scored != null ? `<span class="pvs-chip${week ? "" : " clickable"}"${week ? "" : ` data-more-info="${cfg.entity}"`}>${tn(hass, "hp_days_scored", a.days_scored)}</span>` : ""}
+      <span class="pvs-title clickable" data-more-info="${esc(cfg.entity)}">${esc(title)}</span>
+      ${a.days_scored != null ? `<span class="pvs-chip${week ? "" : " clickable"}"${week ? "" : ` data-more-info="${esc(cfg.entity)}"`}>${tn(hass, "hp_days_scored", a.days_scored)}</span>` : ""}
       ${weekChips}${extraChip}${this._stepHTML()}${helpChip("hp")}
     </div>${selector}`;
     if (noStringWeek) return card(head() + withheldHTML(t(hass, "hp_no_string_week")));
@@ -5533,7 +5542,7 @@ class PvsKvTableCard extends PvsBaseCard {
     const title = cfg.title ?? a.friendly_name ?? cfg.entity;
     const helpKey = cfg.help ?? PvsKvTableCard.helpKeyFor(mode);
     const head = `<div class="pvs-head">
-      <span class="pvs-title kv-t clickable" data-more-info="${cfg.entity}">${esc(title)}</span>
+      <span class="pvs-title kv-t clickable" data-more-info="${esc(cfg.entity)}">${esc(title)}</span>
       ${helpKey ? helpChip(helpKey) : ""}
     </div>`;
     const empty = (path) => card(head + withheldHTML(t(hass, "kv_empty", { path, entity: cfg.entity })));
@@ -5609,8 +5618,8 @@ class PvsKvTableCard extends PvsBaseCard {
           <span class="pvs-num">${Math.abs(pct) < 0.5 ? "0" : fmtSigned(hass, pct, 0)}</span></td>`;
       };
       body = `${truth ? `<div class="kv-note ${truth === "measured" ? "" : "warn"}">${truth === "measured" ? "✓ " + t(hass, "nerd_truth_measured") : "⚠︎ " + t(hass, "nerd_truth_nowcast")}</div>` : ""}
-        <table class="hm-table"><tr><th></th>${horizons.map((h) => `<th>${h}</th>`).join("")}</tr>
-        ${hours.map((h) => `<tr><th class="pvs-num">${h}:00</th>
+        <table class="hm-table"><tr><th></th>${horizons.map((h) => `<th>${esc(h)}</th>`).join("")}</tr>
+        ${hours.map((h) => `<tr><th class="pvs-num">${esc(h)}:00</th>
           ${horizons.map((hz) => cellOf(src[`${h}|${hz}`])).join("")}</tr>`).join("")}</table>
         <div class="hm-legend">
           <span class="lbl">−${CLIP} % ${t(hass, "bias_legend_high")}</span>
@@ -5664,7 +5673,7 @@ class PvsKvTableCard extends PvsBaseCard {
           ? "sky_fit_differential" : "sky_fit_absolute") : null;
         const worst = sh?.attributes?.most_shaded?.[0];
         const sector = worst?.sector?.replace("|", "° · ").replace(/-/g, "–") ?? null;
-        return `<tr><th class="clickable" data-more-info="${r.sky}">${esc(r.name)}</th>
+        return `<tr><th class="clickable" data-more-info="${esc(r.sky)}">${esc(r.name)}</th>
           <td><span class="pvs-num">${sa2?.cells?.length ?? "—"}</span></td>
           <td>${lvl != null
             ? `<span class="pvs-num">${fmtNum(hass, lvl, 2)}</span> <span class="n">${fit2}</span>`
@@ -5691,7 +5700,7 @@ class PvsKvTableCard extends PvsBaseCard {
             : `<span class="dim">${esc(JSON.stringify(stages).slice(0, 60))}</span>`;
         const ratio = !neutral && oa.today_kwh != null && d?.attributes?.today_kwh > 0
           ? oa.today_kwh / d.attributes.today_kwh : null;
-        return `<tr><th class="clickable" data-more-info="${r.out}">${esc(r.name)}</th>
+        return `<tr><th class="clickable" data-more-info="${esc(r.out)}">${esc(r.name)}</th>
           <td>${pathTxt}</td>
           <td>${curveTxt}</td>
           <td>${stagesTxt}</td>
@@ -5795,7 +5804,7 @@ class PvsKvTableCard extends PvsBaseCard {
       // presence.
       const caveat = rows5.some((r) => r.a.annual_estimate_caveat === "time_of_use");
       body = `<table>${header}
-        ${rows5.map((r) => `<tr><th class="clickable" data-more-info="${r.id}">${esc(r.name)}</th>
+        ${rows5.map((r) => `<tr><th class="clickable" data-more-info="${esc(r.id)}">${esc(r.name)}</th>
           ${hasPrice ? priceCells(r) : ""}${hasDropped ? dropCell(r) : ""}</tr>`).join("")}</table>
         ${hasPrice ? `<div class="kv-note">${t(hass, "price_note")}</div>` : ""}
         ${hasDropped ? `<div class="kv-note">${t(hass, "price_dropped_note")}</div>` : ""}
@@ -5925,7 +5934,7 @@ class PvsMaturityCard extends PvsBaseCard {
       return `
       <div class="mat-axis">
         <div class="mat-row">
-          <span class="mat-label${moreInfo ? " clickable" : ""}"${moreInfo ? ` data-more-info="${moreInfo}"` : ""}>${esc(label)}</span>
+          <span class="mat-label${moreInfo ? " clickable" : ""}"${moreInfo ? ` data-more-info="${esc(moreInfo)}"` : ""}>${esc(label)}</span>
           <span class="mat-pct pvs-num${good ? " good" : ""}">${m == null ? "—" : fmtNum(hass, m.pct, 0) + " %"}</span>
         </div>
         <div class="mat-track">
@@ -5942,12 +5951,12 @@ class PvsMaturityCard extends PvsBaseCard {
     const sSub = !annual
       ? t(hass, "maturity_no_lat")
       : perString.map((s) =>
-          `<span class="mat-chip clickable" data-more-info="${s.id}">${esc(s.name)} · <span class="pvs-num">${fmtNum(hass, s.pct, 0)} %</span></span>`,
+          `<span class="mat-chip clickable" data-more-info="${esc(s.id)}">${esc(s.name)} · <span class="pvs-num">${fmtNum(hass, s.pct, 0)} %</span></span>`,
         ).join("") || t(hass, "kv_empty", { path: "cells", entity: "sky_map" });
 
     this.shadowRoot.innerHTML = `<style>${BASE_CSS}${MATURITY_CSS}</style><ha-card>
       <div class="pvs-head mat-head">
-        <span class="pvs-title${cfg.entity ? " clickable" : ""}"${cfg.entity ? ` data-more-info="${cfg.entity}"` : ""}>${esc(cfg.title ?? t(hass, "maturity_title"))}</span>
+        <span class="pvs-title${cfg.entity ? " clickable" : ""}"${cfg.entity ? ` data-more-info="${esc(cfg.entity)}"` : ""}>${esc(cfg.title ?? t(hass, "maturity_title"))}</span>
         ${helpChip("maturity")}
       </div>
       <div class="mat-wrap">
@@ -6023,7 +6032,7 @@ class PvsLearningCard extends PvsBaseCard {
       const info = m.byEntityId.get(cfg.entity);
       const node = info?.level === "plant" ? info.node : info?.node?.plant;
       if (!node?.entryId) {
-        this._state = { at: Date.now(), problem: t(hass, "entity_missing", { entity: esc(cfg.entity) }) };
+        this._state = { at: Date.now(), problem: t(hass, "entity_missing", { entity: cfg.entity }) };
       } else {
         const data = await historyWeeks(hass, node.entryId);
         this._state = { at: Date.now(), weeks: data.weeks
@@ -6031,7 +6040,7 @@ class PvsLearningCard extends PvsBaseCard {
           .sort((x, y) => (x.week_start < y.week_start ? -1 : 1)) };
       }
     } catch (e) {
-      this._state = had ?? { at: Date.now(), problem: t(hass, "hist_failed", { error: esc(e?.message ?? String(e)) }) };
+      this._state = had ?? { at: Date.now(), problem: t(hass, "hist_failed", { error: e?.message ?? String(e) }) };
     }
     this._render();
   }
@@ -6192,7 +6201,7 @@ class PvsLearningCard extends PvsBaseCard {
           ${r.pct != null ? row(t(hass, "learn_tip_with"), `${fmtNum(hass, r.pct, 1)} %`) : ""}
           ${r.pctBase != null ? row(t(hass, "learn_tip_without"), `${fmtNum(hass, r.pctBase, 1)} %`) : ""}
           ${r.gain != null ? row(t(hass, "learn_tip_gain"), `${fmtSigned(hass, r.gain, 1)} kWh`) : ""}
-          ${r.days != null ? row(t(hass, "learn_tip_days"), r.days) : ""}
+          ${r.days != null ? row(t(hass, "learn_tip_days"), esc(r.days)) : ""}
           ${r.gain == null ? `<div class="pvs-sub">${t(hass, "learn_tip_no_baseline")}</div>`
             : !r.complete ? `<div class="pvs-sub">${t(hass, "learn_tip_running")}</div>`
             : r.basis && r.basis !== "live" ? `<div class="pvs-sub">${t(hass, `learn_tip_${r.basis}`)}</div>` : ""}`;
@@ -6258,7 +6267,7 @@ class PvsHealthCard extends PvsBaseCard {
     const nameOf = (id) => names.get(id) ?? id.slice(0, 8);
 
     const chip = (label, value, { tone = "", mi = null, title = null } = {}) =>
-      `<span class="pvs-chip hc ${tone}${mi ? " clickable" : ""}"${mi ? ` data-more-info="${mi}"` : ""}${title ? ` title="${esc(title)}"` : ""}>
+      `<span class="pvs-chip hc ${tone}${mi ? " clickable" : ""}"${mi ? ` data-more-info="${esc(mi)}"` : ""}${title ? ` title="${esc(title)}"` : ""}>
         <span class="k">${label}</span><span class="v">${value}</span></span>`;
 
     // ---- chips --------------------------------------------------------------
@@ -6375,7 +6384,7 @@ class PvsHealthCard extends PvsBaseCard {
       : "";
 
     card(`<div class="pvs-head">
-        <span class="pvs-title clickable" data-more-info="${cfg.entity}">${esc(cfg.title ?? t(hass, "health_title"))}</span>
+        <span class="pvs-title clickable" data-more-info="${esc(cfg.entity)}">${esc(cfg.title ?? t(hass, "health_title"))}</span>
         ${helpChip("health")}
       </div>
       <div class="hc-row">${chips.join("")}</div>
@@ -6458,7 +6467,7 @@ class PvsThermalCard extends PvsBaseCard {
     }
     const plantPct = sumRef > 0 ? (sumP / sumRef - 1) * 100 : null;
     const head = `<div class="pvs-head">
-      <span class="pvs-title clickable" data-more-info="${series[0].id}">${esc(title)}</span>
+      <span class="pvs-title clickable" data-more-info="${esc(series[0].id)}">${esc(title)}</span>
       ${plantPct != null ? `<span class="pvs-chip ${plantPct < -3 ? "warn" : ""}" title="${esc(t(hass, "th_note"))}">${t(hass, "th_plant_today")}
         <span class="v">${fmtSigned(hass, plantPct, 1)} %</span> ${t(hass, "th_by_heat")}</span>` : ""}
       ${helpChip("thermal")}
@@ -6472,7 +6481,7 @@ class PvsThermalCard extends PvsBaseCard {
       const eff = ca.thermal_factor != null ? (ca.thermal_factor - 1) * 100 : null;
       const tone = eff == null ? "" : eff < -8 ? "hot" : eff < -3 ? "warm" : "";
       const loss = ca.heat_loss_today_kwh;
-      return `<tr><th class="clickable" data-more-info="${s.cell}"><span class="sw" style="background:${s.color}"></span>${esc(s.name)}</th>
+      return `<tr><th class="clickable" data-more-info="${esc(s.cell)}"><span class="sw" style="background:${s.color}"></span>${esc(s.name)}</th>
         <td>${temp == null ? withheldHTML(t(hass, "not_available")) : `<span class="pvs-num">${fmtNum(hass, temp, 1)}</span> <span class="n">°C</span>`}</td>
         <td class="${tone}">${eff == null ? "—" : `<span class="pvs-num">${fmtSigned(hass, eff, 1)} %</span>`}</td>
         <td>${loss == null ? "—" : `<span class="pvs-num">${fmtSigned(hass, -loss, 3)}</span> <span class="n">kWh</span>`}</td></tr>`;
