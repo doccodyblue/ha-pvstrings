@@ -27,7 +27,7 @@
 
 /* ============================ SECTION: HEADER ============================ */
 
-const PVS_VERSION = "0.23.1";
+const PVS_VERSION = "0.24.0";
 const PVS_MIN_INTEGRATION = "1.8.0";
 
 /* ============================ SECTION: CONST ============================= */
@@ -206,6 +206,8 @@ const STR = {
     "fc_actual_unresolved": "Actual production hidden: could not resolve the production sensor for this entity.",
     "fc_hero_ist": "actual today",
     "fc_hero_prog": "forecast today",
+    "fc_hero_shade": "−{kwh} kWh lost to shading ({pct} %)",
+    "fc_hero_shade_tip": "What the learned sky map takes off this day: unshaded minus forecast, summed over the hours. Trees, buildings, anything fixed — clouds are already in the weather forecast and not counted here. A shadow that also falls on your own irradiance sensor is not visible to the map.",
     "fc_hourly_fallback": "actual drawn from hourly statistics (no 5-minute power data available)",
     // conversion (AC / battery charge)
     "conv_not_ready": "waiting for forecast data",
@@ -679,6 +681,8 @@ const STR = {
     "fc_actual_unresolved": "Ist-Produktion ausgeblendet: Produktionssensor für diese Entity nicht auflösbar.",
     "fc_hero_ist": "Ist heute",
     "fc_hero_prog": "Prognose heute",
+    "fc_hero_shade": "davon −{kwh} kWh durch Verschattung ({pct} %)",
+    "fc_hero_shade_tip": "Was die gelernte Himmelskarte an diesem Tag abzieht: unverschattet minus Prognose, über die Stunden summiert. Bäume, Gebäude, alles Feste — Wolken stecken schon in der Wettervorhersage und zählen hier nicht. Ein Schatten, der auch auf den eigenen Strahlungssensor fällt, ist für die Karte unsichtbar.",
     "fc_hourly_fallback": "Ist aus Stundenstatistik gezeichnet (keine 5-Minuten-Leistungsdaten verfügbar)",
     "conv_not_ready": "warte auf Prognosedaten",
     "conv_dc": "DC-Potenzial",
@@ -2703,19 +2707,34 @@ class PvsForecastCard extends PvsBaseCard {
     }
 
     // hero numbers: the live sensors today, the day's own sums for a past day
-    const heroItem = (v, color, label, entity, right) => v == null || isNaN(v) ? "" :
+    const heroItem = (v, color, label, entity, right, extra = "") => v == null || isNaN(v) ? "" :
       `<div class="fc-hero-item${right ? " right" : ""}${entity ? " clickable" : ""}"${entity ? ` data-more-info="${esc(entity)}"` : ""}>
         <span class="hv" style="color:var(${color})">${fmtNum(hass, v, 1)}<span class="hu">kWh</span></span>
-        <span class="hl">${label}</span></div>`;
+        <span class="hl">${label}</span>${extra}</div>`;
+    // shading loss of the shown day: what the sky map takes off, unshaded
+    // minus forecast. Groups carry no own unshaded series, so none there.
+    let shadeHTML = "";
+    if (!isGroup) {
+      let un = 0, loss = 0;
+      for (const x of rows) {
+        if (x.ms < startMs || x.ms >= startMs + 86400000 || x.unshaded == null) continue;
+        un += x.unshaded; loss += Math.max(0, x.unshaded - x.potential);
+      }
+      const pct = un > 0 ? loss / un * 100 : 0;
+      if (loss >= 0.05 && pct >= 0.5) {
+        shadeHTML = `<span class="hs" title="${esc(t(hass, "fc_hero_shade_tip"))}">${t(hass, "fc_hero_shade",
+          { kwh: fmtNum(hass, loss, 1), pct: fmtNum(hass, pct, 0) })}</span>`;
+      }
+    }
     let heroIst, heroProg;
     if (src.past) {
       heroIst = heroItem(src.totals.actual, "--pvs-measure", t(hass, "hist_hero_actual"), null, false);
-      heroProg = heroItem(src.totals.forecast, "--pvs-model", t(hass, "hist_hero_forecast"), null, true);
+      heroProg = heroItem(src.totals.forecast, "--pvs-model", t(hass, "hist_hero_forecast"), null, true, shadeHTML);
     } else {
       const prodId = r.producedIds?.[0];
       const prodSt = prodId ? hass.states[prodId] : null;
       heroIst = heroItem(prodSt ? parseFloat(prodSt.state) : null, "--pvs-measure", t(hass, "fc_hero_ist"), prodId, false);
-      heroProg = heroItem(isGroup ? st.attributes.today_kwh : parseFloat(st.state), "--pvs-model", t(hass, "fc_hero_prog"), cfg.entity, true);
+      heroProg = heroItem(isGroup ? st.attributes.today_kwh : parseFloat(st.state), "--pvs-model", t(hass, "fc_hero_prog"), cfg.entity, true, shadeHTML);
     }
 
     this._lineGeom = { startMs, windowMs, PAD_L, PW, W };
@@ -3108,6 +3127,7 @@ const FC_CSS = `
   .fc-hero-item .hv { font-family: var(--pvs-mono); font-variant-numeric: tabular-nums; font-size: 24px; font-weight: 700; line-height: 1.1; }
   .fc-hero-item .hu { font-size: 12px; font-weight: 500; margin-left: 3px; opacity: 0.75; }
   .fc-hero-item .hl { font-size: 11px; color: var(--secondary-text-color); }
+  .fc-hero-item .hs { font-size: 11px; color: var(--secondary-text-color); opacity: 0.85; }
   .fc-hero.wide .hv { font-size: 32px; }
   .fc-hero.wide .hu { font-size: 14px; }
   .fc-hero.wide .fc-hero-title { font-size: 15px; }

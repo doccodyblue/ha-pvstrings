@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Shading loss of the day on the forecast card.** Under the forecast total
+  the bundled card shows how much the learned sky map takes off that day —
+  *−2.9 kWh lost to shading (11 %)* — for the plant and for each string, today
+  and on past days. Clouds are not counted: they are already in the weather
+  forecast. Dashboard card v0.24.0.
+
 ## v1.27.1 — 2026-11-05
 
 ### Added
