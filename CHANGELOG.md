@@ -8,7 +8,14 @@
   the bundled card shows how much the learned sky map takes off that day —
   *−2.9 kWh lost to shading (11 %)* — for the plant and for each string, today
   and on past days. Clouds are not counted: they are already in the weather
-  forecast. Dashboard card v0.24.0.
+  forecast.
+
+### Fixed
+
+- **The chain card no longer hangs the browser tab** when it cannot find the
+  string's *produced today* sensor or the recorder statistics fail; it kept
+  reloading the measured hour instead of showing the reason. Dashboard card
+  v0.24.1.
 
 ## v1.27.1 — 2026-11-05
 

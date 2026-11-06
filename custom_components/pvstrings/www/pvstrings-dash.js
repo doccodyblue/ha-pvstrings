@@ -27,7 +27,7 @@
 
 /* ============================ SECTION: HEADER ============================ */
 
-const PVS_VERSION = "0.24.0";
+const PVS_VERSION = "0.24.1";
 const PVS_MIN_INTEGRATION = "1.8.0";
 
 /* ============================ SECTION: CONST ============================= */
@@ -4474,7 +4474,7 @@ class PvsChainCard extends PvsBaseCard {
     this._measured = undefined;
     try {
       const producedId = await sibling(hass, this._config.entity, "string_produced_today");
-      if (!producedId) { this._measured = { err: "unresolved" }; return this._render(); }
+      if (!producedId) { this._measured = { err: "unresolved", hourMs }; return this._render(); }
       this._producedId = producedId;
       const rows = await hourlyActuals(hass, producedId,
         new Date(hourMs).toISOString(), new Date(hourMs + 3600000).toISOString());
@@ -4483,7 +4483,7 @@ class PvsChainCard extends PvsBaseCard {
       this._measured = { kwh: row?.change ?? null, hourMs };
       this._render();
     } catch (_) {
-      if (token === this._renderToken) { this._measured = { err: "stats" }; this._render(); }
+      if (token === this._renderToken) { this._measured = { err: "stats", hourMs }; this._render(); }
     }
   }
 
