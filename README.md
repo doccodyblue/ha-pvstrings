@@ -44,7 +44,7 @@ strategy:
 That is all. The dashboard builds itself from your strings and grows with them:
 overview, one section per string, accuracy, and a nerd view for the learning.
 The cards also work on their own in any dashboard —
-[card reference](https://github.com/doccodyblue/ha-pvstrings-dash).
+[card reference](https://github.com/doccodyblue/ha-pvstrings-dash/blob/master/docs/cards.md).
 
 | | |
 |---|---|
