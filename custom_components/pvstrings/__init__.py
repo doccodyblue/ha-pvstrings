@@ -128,6 +128,7 @@ from .core.config import (
     string_of_device,
 )
 from .core.store import Store
+from .core.weather import effective_model
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -315,7 +316,7 @@ def build_plant_config(hass: HomeAssistant, entry: ConfigEntry) -> PlantConfig:
         transposition_model=config.get(CONF_TRANSPOSITION, "perez-driesse"),
         watchdog_seconds=int(config.get(CONF_WATCHDOG, DEFAULT_WATCHDOG_SECONDS)),
         forecast_source=config.get(CONF_FORECAST_SOURCE, "open_meteo"),
-        forecast_model=config.get(CONF_FORECAST_MODEL, "best_match"),
+        forecast_model=effective_model(config.get(CONF_FORECAST_MODEL)),
         strings=tuple(strings),
         groups=tuple(groups),
         economics=economics,

@@ -143,6 +143,7 @@ async def async_get_config_entry_diagnostics(
             ],
             "forecast_source": plant.forecast_source,
             "forecast_model": plant.forecast_model,
+            "forecast_model_in_use": coordinator.weather_model_in_use,
             "transposition_model": plant.transposition_model,
             "watchdog_seconds": plant.watchdog_seconds,
             "learning_enabled": plant.learning_enabled,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import date
 
 import pytest
@@ -35,7 +36,12 @@ from core.pricing import (
     without_export,
 )
 from core.weather import (
+    BEST_MATCH,
+    OPEN_METEO_MODELS,
     RADIATION_LABEL_OFFSET_S,
+    OpenMeteoModelRejected,
+    effective_model,
+    fetch_open_meteo_rows,
     ghi_from_cloud_cover,
     lux_to_ghi,
     open_meteo_params,
@@ -44,6 +50,72 @@ from core.weather import (
 )
 
 ISSUED = 1_700_000_000
+
+
+class TestModelFallback:
+    """A pinned model must never leave the plant without a forecast."""
+
+    GOOD = {"hourly": {"time": [ISSUED], "shortwave_radiation": [300.0]}}
+    NULL = {"hourly": {"time": [ISSUED], "shortwave_radiation": [None]}}
+
+    def _run(self, model, answers):
+        asked = []
+
+        async def get_json(params):
+            name = params.get("models", BEST_MATCH)
+            asked.append(name)
+            answer = answers[name]
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        rows, used = asyncio.run(
+            fetch_open_meteo_rows(get_json, 52.0, 5.0, 3, 1, model, ISSUED)
+        )
+        return rows, used, asked
+
+    def test_best_match_is_the_default_and_listed_first(self):
+        assert OPEN_METEO_MODELS[0] == BEST_MATCH
+        assert effective_model(None) == BEST_MATCH
+        assert effective_model("") == BEST_MATCH
+
+    def test_unknown_stored_value_falls_back(self):
+        assert effective_model("quatsch_model") == BEST_MATCH
+        assert effective_model("knmi_seamless") == "knmi_seamless"
+
+    def test_pinned_model_is_used_when_it_delivers(self):
+        rows, used, asked = self._run("knmi_seamless", {"knmi_seamless": self.GOOD})
+        assert used == "knmi_seamless"
+        assert asked == ["knmi_seamless"]
+        assert rows[0].ghi_wm2 == 300.0
+
+    def test_rejected_model_falls_back_once(self):
+        rows, used, asked = self._run(
+            "meteoswiss_icon_seamless",
+            {
+                "meteoswiss_icon_seamless": OpenMeteoModelRejected("no data"),
+                BEST_MATCH: self.GOOD,
+            },
+        )
+        assert used == BEST_MATCH
+        assert asked == ["meteoswiss_icon_seamless", BEST_MATCH]
+        assert rows[0].ghi_wm2 == 300.0
+
+    def test_all_null_response_falls_back(self):
+        rows, used, asked = self._run(
+            "dmi_seamless", {"dmi_seamless": self.NULL, BEST_MATCH: self.GOOD}
+        )
+        assert used == BEST_MATCH
+        assert rows[0].ghi_wm2 == 300.0
+
+    def test_unknown_model_is_never_sent(self):
+        _rows, used, asked = self._run("quatsch_model", {BEST_MATCH: self.GOOD})
+        assert asked == [BEST_MATCH]
+        assert used == BEST_MATCH
+
+    def test_other_errors_propagate_without_a_second_request(self):
+        with pytest.raises(TimeoutError):
+            self._run("knmi_seamless", {"knmi_seamless": TimeoutError()})
 
 
 class TestOpenMeteo:

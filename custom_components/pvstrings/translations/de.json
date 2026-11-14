@@ -14,7 +14,7 @@
           "weather_entity": "Wetter-Entität (Ersatzquelle)"
         },
         "data_description": {
-          "forecast_model": "Wird nur genutzt, solange die Einstrahlungsquelle Open-Meteo ist.",
+          "forecast_model": "Empfohlen: Bestes Modell. Open-Meteo wählt dann das feinste Regionalmodell für den Standort und hängt für die späteren Tage gröbere Modelle an. Ein Modell nur festlegen, wenn du es mit eigenen Messungen verglichen hast: Die Prognose ist nur so gut wie das gewählte Modell, und die gelernten Korrekturen brauchen nach einem Wechsel einige Wochen. Liefert ein festgelegtes Modell für den Standort keine Daten, wird stattdessen das beste Modell genutzt. Wird nur genutzt, solange die Einstrahlungsquelle Open-Meteo ist.",
           "weather_entity": "Nur für die Quelle „Home-Assistant-Wetter“ nötig."
         }
       },
@@ -144,7 +144,7 @@
           "weather_entity": "Wetter-Entität (Ersatzquelle)"
         },
         "data_description": {
-          "forecast_model": "Wird nur genutzt, solange die Einstrahlungsquelle Open-Meteo ist.",
+          "forecast_model": "Empfohlen: Bestes Modell. Open-Meteo wählt dann das feinste Regionalmodell für den Standort und hängt für die späteren Tage gröbere Modelle an. Ein Modell nur festlegen, wenn du es mit eigenen Messungen verglichen hast: Die Prognose ist nur so gut wie das gewählte Modell, und die gelernten Korrekturen brauchen nach einem Wechsel einige Wochen. Liefert ein festgelegtes Modell für den Standort keine Daten, wird stattdessen das beste Modell genutzt. Wird nur genutzt, solange die Einstrahlungsquelle Open-Meteo ist.",
           "weather_entity": "Nur für die Quelle „Home-Assistant-Wetter“ nötig."
         }
       }
@@ -356,12 +356,17 @@
     },
     "forecast_model": {
       "options": {
-        "best_match": "Bestes Modell für den Standort",
+        "best_match": "Bestes Modell für den Standort (empfohlen)",
         "icon_seamless": "DWD ICON",
         "gfs_seamless": "NOAA GFS",
         "ecmwf_ifs025": "ECMWF IFS",
         "meteofrance_seamless": "Météo-France",
         "ukmo_seamless": "UK Met Office",
+        "knmi_seamless": "KNMI (Niederlande)",
+        "dmi_seamless": "DMI (Dänemark)",
+        "metno_seamless": "MET Norway (Skandinavien)",
+        "meteoswiss_icon_seamless": "MeteoSwiss ICON (Alpenraum)",
+        "italia_meteo_arpae_icon_2i": "ItaliaMeteo ICON-2I (Italien)",
         "jma_seamless": "JMA",
         "gem_seamless": "GEM"
       }

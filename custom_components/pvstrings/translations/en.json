@@ -14,7 +14,7 @@
           "weather_entity": "Weather entity (fallback source)"
         },
         "data_description": {
-          "forecast_model": "Only used while the irradiance source is Open-Meteo.",
+          "forecast_model": "Recommended: Best match. Open-Meteo then picks the finest regional model for your site and chains coarser models behind it for the later days. Pin a model only if you have compared it against your own measurements: the forecast can only be as good as the model you choose, and learned corrections need a few weeks to settle after a change. If a pinned model has no data for your site, Best match is used instead. Only used while the irradiance source is Open-Meteo.",
           "weather_entity": "Only needed for the Home Assistant weather source."
         }
       },
@@ -144,7 +144,7 @@
           "weather_entity": "Weather entity (fallback source)"
         },
         "data_description": {
-          "forecast_model": "Only used while the irradiance source is Open-Meteo.",
+          "forecast_model": "Recommended: Best match. Open-Meteo then picks the finest regional model for your site and chains coarser models behind it for the later days. Pin a model only if you have compared it against your own measurements: the forecast can only be as good as the model you choose, and learned corrections need a few weeks to settle after a change. If a pinned model has no data for your site, Best match is used instead. Only used while the irradiance source is Open-Meteo.",
           "weather_entity": "Only needed for the Home Assistant weather source."
         }
       }
@@ -356,12 +356,17 @@
     },
     "forecast_model": {
       "options": {
-        "best_match": "Best match for the location",
+        "best_match": "Best match for the location (recommended)",
         "icon_seamless": "DWD ICON",
         "gfs_seamless": "NOAA GFS",
         "ecmwf_ifs025": "ECMWF IFS",
         "meteofrance_seamless": "Meteo-France",
         "ukmo_seamless": "UK Met Office",
+        "knmi_seamless": "KNMI (Netherlands)",
+        "dmi_seamless": "DMI (Denmark)",
+        "metno_seamless": "MET Norway (Nordics)",
+        "meteoswiss_icon_seamless": "MeteoSwiss ICON (Alps)",
+        "italia_meteo_arpae_icon_2i": "ItaliaMeteo ICON-2I (Italy)",
         "jma_seamless": "JMA",
         "gem_seamless": "GEM"
       }

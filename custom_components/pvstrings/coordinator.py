@@ -77,9 +77,8 @@ from .core.store import Store
 from .core.weather import (
     OPEN_METEO_URL,
     SOURCE_HA_WEATHER,
-    SOURCE_OPEN_METEO,
-    open_meteo_params,
-    parse_open_meteo,
+    OpenMeteoModelRejected,
+    fetch_open_meteo_rows,
     rows_from_ha_weather,
 )
 from .collector import Collector
@@ -359,6 +358,9 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         self.collector = Collector(hass, plant, store)
         self._weather_entity: str | None = None
         self._last_weather_fetch: datetime | None = None
+        #: Model that delivered the last Open-Meteo forecast; differs from the
+        #: configured one after a fallback to best_match.
+        self.weather_model_in_use: str | None = None
         self._last_learn_hour: int | None = None
         self._last_purge: date | None = None
         self._baseline_failed = False
@@ -450,19 +452,26 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
 
     async def _fetch_open_meteo(self, now: datetime) -> list[Any]:
         session = async_get_clientsession(self.hass)
-        params = open_meteo_params(
+
+        async def get_json(params: dict[str, Any]) -> Any:
+            async with session.get(
+                OPEN_METEO_URL, params=params, timeout=WEATHER_TIMEOUT
+            ) as response:
+                if response.status == 400:
+                    raise OpenMeteoModelRejected(await response.text())
+                response.raise_for_status()
+                return await response.json()
+
+        rows, self.weather_model_in_use = await fetch_open_meteo_rows(
+            get_json,
             self.plant.latitude,
             self.plant.longitude,
             forecast_days=max(2, FORECAST_HOURS // 24 + 1),
             past_days=1,
             model=self.plant.forecast_model,
+            issued_at_utc=int(now.timestamp()),
         )
-        async with session.get(
-            OPEN_METEO_URL, params=params, timeout=WEATHER_TIMEOUT
-        ) as response:
-            response.raise_for_status()
-            payload = await response.json()
-        return parse_open_meteo(payload, int(now.timestamp()), SOURCE_OPEN_METEO)
+        return rows
 
     async def _fetch_ha_weather(self, now: datetime) -> list[Any]:
         """Fallback path for installations without outbound internet.

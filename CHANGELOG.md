@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **More regional Open-Meteo models to pin:** KNMI (Netherlands), DMI
+  (Denmark), MET Norway (Nordics), MeteoSwiss ICON (Alps) and ItaliaMeteo
+  ICON-2I (Italy) (#9). *Best match* stays the default and is now marked as
+  the recommendation: Open-Meteo already picks the finest regional model for
+  the site — in the Netherlands that is KNMI, hour for hour.
+
+### Changed
+
+- **A pinned model that cannot serve the site falls back to Best match**
+  instead of leaving the plant without a forecast — when Open-Meteo refuses
+  the request, when it answers without any irradiance, or when the stored
+  model is no longer offered. The log says so once; diagnostics show the
+  model actually in use (`forecast_model_in_use`).
+
 ## v1.27.2 — 2026-11-06
 
 ### Added

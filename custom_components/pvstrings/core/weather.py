@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Awaitable, Callable, Iterable, Mapping, Sequence
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -36,18 +36,59 @@ SOURCE_HA_WEATHER = "ha_weather"
 #: URLs above if either ever changes.
 OPEN_METEO_ATTRIBUTION = "Weather data by Open-Meteo.com (CC BY 4.0)"
 
-#: Open-Meteo models worth offering.  ``best_match`` lets the API pick the best
-#: available regional model for the site, which is the right default everywhere.
+#: Open-Meteo models worth offering.  ``best_match`` lets the API pick the
+#: finest regional model covering the site and chain coarser ones behind it
+#: (measured 2026-11-14: NL = knmi_seamless hour for hour, DE = ICON-D2 ->
+#: ICON-EU -> ICON global).  It is the default and the recommendation; a pinned
+#: model is a user choice.  Each entry was probed to return all hourly
+#: variables below.  Not listed: bom_access_global and kma_seamless answer 200
+#: with every value null.
+#: Out of domain the ``*_seamless`` ones fall back to global models silently;
+#: meteoswiss and italia answer 400 -- see ``fetch_open_meteo_rows``.
+BEST_MATCH = "best_match"
 OPEN_METEO_MODELS = (
-    "best_match",
+    BEST_MATCH,
     "icon_seamless",
     "gfs_seamless",
     "ecmwf_ifs025",
     "meteofrance_seamless",
     "ukmo_seamless",
+    "knmi_seamless",
+    "dmi_seamless",
+    "metno_seamless",
+    "meteoswiss_icon_seamless",
+    "italia_meteo_arpae_icon_2i",
     "jma_seamless",
     "gem_seamless",
 )
+
+
+def effective_model(model: str | None) -> str:
+    """The model to request: unknown or empty values fall back to best_match.
+
+    Guards stored config the selector can no longer produce (an entry removed
+    from the list, a hand-edited entry).
+    """
+    if model in OPEN_METEO_MODELS:
+        return model  # type: ignore[return-value]
+    if model:
+        _warn_once(
+            ("unsupported", model),
+            "pvstrings: Open-Meteo model %r is not supported, using %s",
+            model,
+            BEST_MATCH,
+        )
+    return BEST_MATCH
+
+
+#: Fallback warnings already logged this run; the fetch repeats hourly.
+_WARNED: set[tuple[str, str]] = set()
+
+
+def _warn_once(key: tuple[str, str], msg: str, *args: Any) -> None:
+    if key not in _WARNED:
+        _WARNED.add(key)
+        _LOGGER.warning(msg, *args)
 
 _HOURLY_VARIABLES = (
     "shortwave_radiation",
@@ -138,9 +179,69 @@ def open_meteo_params(
         "forecast_days": forecast_days,
         "past_days": past_days,
     }
-    if model and model != "best_match":
+    if model and model != BEST_MATCH:
         params["models"] = model
     return params
+
+
+def has_irradiance(payload: Mapping[str, Any]) -> bool:
+    """Whether a forecast response carries any GHI value at all.
+
+    Some models answer 200 with every series null outside their domain or
+    product range; storing that would leave the plant without a forecast.
+    """
+    hourly = payload.get("hourly") or {}
+    return any(v is not None for v in hourly.get("shortwave_radiation") or ())
+
+
+class OpenMeteoModelRejected(Exception):
+    """The API refused the request for this model (HTTP 400)."""
+
+
+async def fetch_open_meteo_rows(
+    get_json: Callable[[dict[str, Any]], Awaitable[Mapping[str, Any]]],
+    latitude: float,
+    longitude: float,
+    forecast_days: int,
+    past_days: int,
+    model: str,
+    issued_at_utc: int,
+) -> tuple[list[ForecastRow], str]:
+    """Fetch with the configured model, falling back to best_match once.
+
+    ``get_json`` performs the request and raises ``OpenMeteoModelRejected`` on
+    HTTP 400; any other error propagates, because best_match would fail the
+    same way.  Returns the rows and the model that delivered them.
+    """
+    model = effective_model(model)
+
+    async def attempt(name: str) -> Mapping[str, Any]:
+        return await get_json(
+            open_meteo_params(
+                latitude, longitude, forecast_days, past_days, model=name
+            )
+        )
+
+    if model != BEST_MATCH:
+        try:
+            payload = await attempt(model)
+        except OpenMeteoModelRejected as err:
+            reason = f"rejected: {err}"
+        else:
+            if has_irradiance(payload):
+                return parse_open_meteo(payload, issued_at_utc), model
+            reason = "no irradiance in the response"
+        _warn_once(
+            ("unusable", model),
+            "pvstrings: Open-Meteo model %s unusable for this site (%s), "
+            "using %s",
+            model,
+            reason,
+            BEST_MATCH,
+        )
+
+    payload = await attempt(BEST_MATCH)
+    return parse_open_meteo(payload, issued_at_utc), BEST_MATCH
 
 
 def open_meteo_archive_params(
