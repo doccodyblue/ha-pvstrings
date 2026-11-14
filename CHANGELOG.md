@@ -17,6 +17,11 @@
   the request, when it answers without any irradiance, or when the stored
   model is no longer offered. The log says so once; diagnostics show the
   model actually in use (`forecast_model_in_use`).
+- **Bias 7 days now reports the bias per day, not per hour**, like *Bias
+  day-ahead 30 days* already does. The hourly mean (around −0.005 kWh) read
+  as "no bias" while the plant was running about 0.3 kWh a day off; expect the
+  state to jump to that scale after the update. It now also carries the same
+  attributes as the other score sensors (`days_scored`, `uncensored`, …).
 
 ## v1.27.2 — 2026-11-06
 

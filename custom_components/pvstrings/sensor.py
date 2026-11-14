@@ -499,9 +499,12 @@ PLANT_SENSORS: tuple[PlantSensorDescription, ...] = (
         key="bias_7d",
         translation_key="bias_7d",
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        suggested_display_precision=3,
+        suggested_display_precision=2,
         entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=lambda data, _c: _score(data, 7, "bias", censored=False),
+        # Per day, like bias_day_ahead_30d; the hourly mean (-0.005 kWh)
+        # read as "no bias" while the plant ran 0.3 kWh/day off.
+        value_fn=lambda data, _c: _score(data, 7, "daily_bias_kwh", censored=False),
+        attrs_fn=lambda data, _c: _score_attrs(data, 7),
     ),
     PlantSensorDescription(
         key="wmape_day_ahead_7d",
