@@ -24,6 +24,8 @@ MPPT-per-string inverter or a set of micro-inverters already gives you.
 - **Honest accuracy figures** — day-ahead error over 7 and 30 days, by hour;
   with an irradiance sensor also whether the weather service or the model was
   wrong.
+- **Energy dashboard and evcc** — selectable as the solar forecast of the
+  Home Assistant Energy dashboard, which evcc reads directly.
 - **Savings and payback** — from measured energy, with time-of-use tariffs.
 - **Local option** — use your own irradiance sensor, or run without internet
   from a Home Assistant weather entity.

@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Solar forecast for the Energy dashboard and evcc.** A PVStrings entry can
+  now be picked as *Solar production forecast* in Home Assistant's Energy
+  settings; evcc's `homeassistant` solar tariff reads the same forecast. It
+  forecasts what a production meter sees: AC for strings behind a grid
+  inverter, DC × MPPT efficiency behind a charge controller, DC otherwise.
+  Select it on one solar source only — see
+  [Energy dashboard and evcc](docs/sensors.md#energy-dashboard-and-evcc).
+
 ## v1.27.3 — 2026-11-15
 
 ### Added

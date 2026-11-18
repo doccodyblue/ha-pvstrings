@@ -298,6 +298,58 @@ def merge_hourly(
     return sorted((ts, round(value, 4)) for ts, value in merged.items())
 
 
+@dataclass(frozen=True, slots=True)
+class GroupOutput:
+    """What a group hands to ``metered_hourly``."""
+
+    output_path: str
+    #: Inverter output per hour for path "direct"; None when not converted.
+    ac_hourly: Mapping[int, float] | None = None
+    mppt_efficiency: float | None = None
+
+
+def metered_hourly(
+    string_hourly: Mapping[str, Sequence[tuple[int, float]]],
+    string_group: Mapping[str, str | None],
+    groups: Mapping[str, GroupOutput],
+) -> list[tuple[int, float]]:
+    """Plant forecast at the point a solar production meter usually sits.
+
+    For the HA Energy dashboard (and evcc reading it): direct groups count
+    their AC output, storage groups the charge controller's output (DC x MPPT
+    efficiency, before battery losses -- what MPPT yield counters show),
+    everything else DC.  Keyed by string so no string can count twice;
+    hours missing from the source stay missing rather than becoming zero.
+    """
+    total: dict[int, float] = {}
+
+    def add(series: Iterable[tuple[int, float]], factor: float = 1.0) -> None:
+        for ts, value in series:
+            total[ts] = total.get(ts, 0.0) + max(0.0, value) * factor
+
+    members: dict[str, list[str]] = {}
+    for string_id, group_id in string_group.items():
+        if string_id in string_hourly and group_id in groups:
+            members.setdefault(group_id, []).append(string_id)
+
+    covered: set[str] = set()
+    for group_id, ids in members.items():
+        out = groups[group_id]
+        if out.output_path == "direct" and out.ac_hourly is not None:
+            add(out.ac_hourly.items())
+        elif out.output_path == "storage":
+            for string_id in ids:
+                add(string_hourly[string_id], out.mppt_efficiency or 1.0)
+        else:
+            continue
+        covered.update(ids)
+
+    for string_id, series in string_hourly.items():
+        if string_id not in covered:
+            add(series)
+    return sorted((ts, round(value, 4)) for ts, value in total.items())
+
+
 # --------------------------------------------------------------------------- #
 # what is still ahead inside the hour that has already started
 # --------------------------------------------------------------------------- #

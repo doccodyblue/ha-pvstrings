@@ -36,8 +36,10 @@ from .core import economics as econ
 from .core import pricing
 from .core import persistence
 from .core.aggregate import (
+    GroupOutput,
     hour_share_ahead,
     merge_hourly,
+    metered_hourly,
     remaining_kwh as split_remaining,
     thermal_loss_kwh,
     split_source,
@@ -220,6 +222,9 @@ class PvStringsData:
     #: while no group has output_path "direct".  Storage groups are a
     #: different quantity (battery charge) and are deliberately not in here.
     ac_hourly: list[tuple[int, float]] = field(default_factory=list)
+    #: Whole plant at the meter: direct groups AC, storage groups DC x MPPT,
+    #: the rest DC.  Published to the HA Energy dashboard (energy.py).
+    energy_hourly: list[tuple[int, float]] = field(default_factory=list)
     has_direct_conversion: bool = False
     #: Strings the AC sum cannot see: ungrouped, or in a path-"none" group.
     #: A consumer treating the AC sum as "the whole plant" needs the names,
@@ -1002,6 +1007,24 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
                 (ts, round(value, 4)) for ts, value in plant_unshaded.items()
             ),
             plant_fine=sorted(plant_fine.items()),
+            energy_hourly=metered_hourly(
+                {sid: bucket.hourly for sid, bucket in strings.items()},
+                {s.string_id: s.curtailment_group_id for s in self.plant.strings},
+                {
+                    group.group_id: GroupOutput(
+                        output_path=group.output_path,
+                        ac_hourly=(
+                            found.converted.hourly_kwh
+                            if (found := groups.get(group.group_id)) is not None
+                            and found.converted is not None
+                            and group.output_path == OUTPUT_PATH_DIRECT
+                            else None
+                        ),
+                        mppt_efficiency=group.mppt_efficiency,
+                    )
+                    for group in self.plant.groups
+                },
+            ),
         )
 
         for string in self.plant.strings:

@@ -135,3 +135,34 @@ entity toward the recorder's size limit.
 Installations set up before 1.24 keep the entity id they were registered
 with, `sensor.YOUR_PLANT_day_ahead_accuracy_30_days`; only the display name
 changed. Home Assistant never renames an entity id behind your automations.
+
+## Energy dashboard and evcc
+
+PVStrings can be the solar forecast of the Home Assistant Energy dashboard:
+*Settings → Dashboards → Energy*, edit a solar production source, and pick the
+PVStrings entry under *Solar production forecast*.
+
+- **Select it once, on one source.** The entry forecasts the whole plant.
+  Home Assistant fetches each selected entry once and adds all selected
+  forecasts up, so remove other forecasts (Forecast.Solar, Solcast, …) from
+  the remaining sources, or the plant is counted twice.
+- **It forecasts what a production meter sees, not DC.** Strings behind a
+  grid inverter count with their AC output (inverter curve, clipping as
+  configured for the group); strings behind a charge controller count with DC ×
+  MPPT efficiency, before battery losses — what MPPT yield counters report;
+  every other string counts as DC. If your solar meter sits somewhere else
+  (for example a PV-input meter on a hybrid inverter), expect a constant
+  offset of a few percent.
+- **Potential, not dispatch.** A full battery or an export limit is not
+  forecast; on those hours the meter reads less.
+
+[evcc](https://evcc.io) reads exactly this forecast through its Home Assistant
+solar tariff — no extra configuration in PVStrings:
+
+```yaml
+tariffs:
+  solar:
+    - type: template
+      template: homeassistant
+      uri: http://homeassistant.local:8123
+```
