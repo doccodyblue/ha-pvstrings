@@ -12,6 +12,12 @@
   Select it on one solar source only — see
   [Energy dashboard and evcc](docs/sensors.md#energy-dashboard-and-evcc).
 
+### Changed
+
+- **The integration is now declared as a service, not a hub**
+  (`integration_type`). Home Assistant's Energy settings only offer forecasts
+  from service integrations; nothing else changes.
+
 ## v1.27.3 — 2026-11-15
 
 ### Added

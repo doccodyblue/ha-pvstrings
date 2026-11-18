@@ -13,7 +13,7 @@
     "http"
   ],
   "documentation": "https://github.com/doccodyblue/ha-pvstrings",
-  "integration_type": "hub",
+  "integration_type": "service",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/doccodyblue/ha-pvstrings/issues",
   "loggers": [

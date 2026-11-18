@@ -68,3 +68,17 @@ def test_no_coordinator_import_at_module_level():
         if isinstance(node, ast.ImportFrom)
     }
     assert not any("coordinator" in m or m.startswith("core") for m in modules)
+
+
+def test_manifest_declares_a_service_integration():
+    """The Energy settings dialog lists forecast entries of type service only.
+
+    home-assistant/frontend ha-energy-solar-source-editor.ts filters
+    getConfigEntries(..., {type: ["service"]}); as "hub" the backend knew the
+    platform but the entry never appeared in the dialog.
+    """
+    import json
+    from pathlib import Path
+
+    manifest = Path(energy.__file__).with_name("manifest.json")
+    assert json.loads(manifest.read_text())["integration_type"] == "service"
