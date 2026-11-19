@@ -506,6 +506,15 @@
       "forecast_day_after": {
         "name": "Forecast day after tomorrow"
       },
+      "forecast_day_3": {
+        "name": "Forecast in 3 days"
+      },
+      "forecast_day_4": {
+        "name": "Forecast in 4 days"
+      },
+      "forecast_day_5": {
+        "name": "Forecast in 5 days"
+      },
       "potential_now": {
         "name": "Potential this hour"
       },

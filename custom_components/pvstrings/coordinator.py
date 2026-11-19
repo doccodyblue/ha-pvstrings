@@ -26,10 +26,12 @@ from .const import (
     DOMAIN,
     FORECAST_HOURS,
     FORECAST_INTERVAL,
+    OUTLOOK_DAYS,
     OUTPUT_PATH_DIRECT,
     OUTPUT_PATH_NONE,
     OUTPUT_PATH_STORAGE,
     SCORE_WINDOWS,
+    WEATHER_FORECAST_DAYS,
     WEATHER_INTERVAL,
 )
 from .core import economics as econ
@@ -37,6 +39,7 @@ from .core import pricing
 from .core import persistence
 from .core.aggregate import (
     GroupOutput,
+    complete_day_totals,
     hour_share_ahead,
     merge_hourly,
     metered_hourly,
@@ -225,6 +228,9 @@ class PvStringsData:
     #: Whole plant at the meter: direct groups AC, storage groups DC x MPPT,
     #: the rest DC.  Published to the HA Energy dashboard (energy.py).
     energy_hourly: list[tuple[int, float]] = field(default_factory=list)
+    #: Local days +3..+5 (OUTLOOK_DAYS): (ISO date, kWh or None unless the
+    #: whole day is covered).  Separate run, never logged or scored.
+    yield_outlook: list[tuple[str, float | None]] = field(default_factory=list)
     has_direct_conversion: bool = False
     #: Strings the AC sum cannot see: ungrouped, or in a path-"none" group.
     #: A consumer treating the AC sum as "the whole plant" needs the names,
@@ -375,6 +381,7 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         self._irradiance_verdict_memo: dict[str, Any] = {}
         self._reference_fill_day: int | None = None
         self._shadow_failed = False
+        self._outlook_failed = False
         #: Held by anything that changes learned state: the hourly learn pass,
         #: a reset, a sensor swap.  The store locks a transaction at a time,
         #: which is not the same thing -- a learn pass that started before a
@@ -471,7 +478,7 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
             get_json,
             self.plant.latitude,
             self.plant.longitude,
-            forecast_days=max(2, FORECAST_HOURS // 24 + 1),
+            forecast_days=WEATHER_FORECAST_DAYS,
             past_days=1,
             model=self.plant.forecast_model,
             issued_at_utc=int(now.timestamp()),
@@ -825,6 +832,43 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         self._shadow_failed = False
         return {(row.ts_utc, row.string_id): row.potential_kwh for row in rows}
 
+    def _yield_outlook(
+        self, now_ts: int, day_start: int
+    ) -> list[tuple[str, float | None]]:
+        """Days +3..+5 from their own run, after the live one was logged.
+
+        Own window because physics picks one components flag per window: a
+        longer live run could move today's numbers.  ``forecast`` rewrites the
+        nowcast the live run published, so it is restored whatever happens.
+        """
+        bounds = [
+            (self._local_midnight(day_start, day), self._local_midnight(day_start, day + 1))
+            for day in OUTLOOK_DAYS
+        ]
+        dates = [
+            dt_util.as_local(dt_util.utc_from_timestamp(start)).date().isoformat()
+            for start, _end in bounds
+        ]
+        saved = (self.engine.last_nowcast, self.engine.last_nowcast_reason)
+        try:
+            rows = self.engine.forecast(
+                now_ts,
+                hours=(bounds[-1][1] - bounds[0][0]) // 3600,
+                start_ts=bounds[0][0],
+            )
+        except Exception:  # noqa: BLE001 - an outlook is not the forecast
+            if not self._outlook_failed:
+                _LOGGER.exception("pvstrings: outlook forecast failed")
+            self._outlook_failed = True
+            return [(day, None) for day in dates]
+        finally:
+            self.engine.last_nowcast, self.engine.last_nowcast_reason = saved
+        self._outlook_failed = False
+        totals = complete_day_totals(
+            ((row.ts_utc, row.potential_kwh) for row in rows), bounds
+        )
+        return list(zip(dates, totals))
+
     def _build_data(self, now: datetime) -> PvStringsData:
         now_ts = int(now.timestamp())
         day_start, day_end = self._local_day_bounds(now)
@@ -859,6 +903,7 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
         # write that left one out would blank it and drop the hour from the
         # comparison.
         self.engine.log_forecast(now_ts, rows, baseline, calibrated)
+        yield_outlook = self._yield_outlook(now_ts, day_start)
 
         strings: dict[str, StringForecast] = {
             string.string_id: StringForecast(string.string_id, string.name)
@@ -1007,6 +1052,7 @@ class PvStringsCoordinator(DataUpdateCoordinator[PvStringsData]):
                 (ts, round(value, 4)) for ts, value in plant_unshaded.items()
             ),
             plant_fine=sorted(plant_fine.items()),
+            yield_outlook=yield_outlook,
             energy_hourly=metered_hourly(
                 {sid: bucket.hourly for sid, bucket in strings.items()},
                 {s.string_id: s.curtailment_group_id for s in self.plant.strings},

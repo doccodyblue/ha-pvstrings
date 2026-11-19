@@ -506,6 +506,15 @@
       "forecast_day_after": {
         "name": "Prognose übermorgen"
       },
+      "forecast_day_3": {
+        "name": "Prognose in 3 Tagen"
+      },
+      "forecast_day_4": {
+        "name": "Prognose in 4 Tagen"
+      },
+      "forecast_day_5": {
+        "name": "Prognose in 5 Tagen"
+      },
       "potential_now": {
         "name": "Potenzial diese Stunde"
       },

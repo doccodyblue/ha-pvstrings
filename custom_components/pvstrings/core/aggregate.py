@@ -298,6 +298,29 @@ def merge_hourly(
     return sorted((ts, round(value, 4)) for ts, value in merged.items())
 
 
+def complete_day_totals(
+    hourly: Iterable[tuple[int, float]],
+    bounds: Sequence[tuple[int, int]],
+) -> list[float | None]:
+    """kWh per day, or None unless every hour of that day has a value.
+
+    For the outlook sensors: a model whose range ends inside a day must not
+    publish a fraction of that day as if it were a dull one.  Bounds are
+    local midnights, so DST days have 23 or 25 hours.
+    """
+    values: dict[int, float] = {}
+    for ts, value in hourly:
+        values[ts] = values.get(ts, 0.0) + value
+    totals: list[float | None] = []
+    for start, end in bounds:
+        hours = range(start, end, 3600)
+        if all(ts in values for ts in hours):
+            totals.append(round(sum(max(0.0, values[ts]) for ts in hours), 4))
+        else:
+            totals.append(None)
+    return totals
+
+
 @dataclass(frozen=True, slots=True)
 class GroupOutput:
     """What a group hands to ``metered_hourly``."""

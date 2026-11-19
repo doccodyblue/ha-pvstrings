@@ -133,6 +133,14 @@ WEATHER_INTERVAL: Final = timedelta(minutes=30)
 #: figure exists for side-by-side comparison with other forecast services.
 FORECAST_HOURS: Final = 72
 
+#: Outlook sensors for local days +3..+5 (today = 0), from a separate run so
+#: the live 72 h window and its logging stay untouched.  Measured skill at
+#: d4/d5 is a tendency only (_logs/lead-skill-2026-11-19); not beyond d5.
+OUTLOOK_DAYS: Final = (3, 4, 5)
+
+#: Days requested from Open-Meteo: past day + today .. day +5 in UTC.
+WEATHER_FORECAST_DAYS: Final = OUTLOOK_DAYS[-1] + 2
+
 #: Rolling scoring windows.
 SCORE_WINDOWS: Final = (7, 30)
 

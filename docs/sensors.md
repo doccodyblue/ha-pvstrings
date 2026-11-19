@@ -10,6 +10,7 @@ Per plant:
 |---|---|
 | Forecast today / remaining / tomorrow | hourly detail in the `forecast` attribute; *remaining* is a **subset of today**, see [below](#remaining-vs-today) |
 | Forecast next hour, peak hour today | |
+| Forecast in 3 / 4 / 5 days | a tendency for planning ahead, see [below](#forecast-in-3-to-5-days); no hourly detail |
 | Produced today | measured, from the integration's own 5-minute data |
 | Deviation yesterday | what the evening-before forecast said, vs. actual |
 | Day-ahead error 7 d | how wrong "tomorrow" actually is — 0 % would be perfect; see [Accuracy](accuracy.md) |
@@ -135,6 +136,33 @@ entity toward the recorder's size limit.
 Installations set up before 1.24 keep the entity id they were registered
 with, `sensor.YOUR_PLANT_day_ahead_accuracy_30_days`; only the display name
 changed. Home Assistant never renames an entity id behind your automations.
+
+## Forecast in 3 to 5 days
+
+Three sensors give the plant's daily total three, four and five days ahead,
+with the date as attribute. They are meant for decisions like "the next three
+days are dull, day four is sunny — charge the car then":
+
+```yaml
+condition:
+  - condition: template
+    value_template: >
+      {{ states('sensor.YOUR_PLANT_forecast_in_4_days') | float(0)
+         > 2 * states('sensor.YOUR_PLANT_forecast_tomorrow') | float(0) }}
+```
+
+Treat them as a tendency. Measured over two years at one German site, the
+irradiance forecast's daily error grows from about 21 % for tomorrow to 31 % at
+four and 34 % at five days in winter, against 40 % for simply assuming the
+season average; when it says a day four or five days out will be clearly
+sunnier than tomorrow, that held in 86–89 % of cases, against 74–77 % without
+any forecast. Beyond five days the forecast is no better than the season
+average, which is why there is no day six.
+
+A sensor stays empty when the weather source does not cover that whole day —
+some regional models end after two to five days, and a Home Assistant weather
+entity rarely reaches that far. Empty means "unknown", not "dull". These days
+are not part of the accuracy figures or the dashboard card.
 
 ## Energy dashboard and evcc
 

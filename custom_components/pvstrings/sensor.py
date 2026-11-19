@@ -154,6 +154,26 @@ def _score(
     return round(value * 100, 2) if field == "wmape" else round(value, 4)
 
 
+_OUTLOOK_NOTE = (
+    "A tendency, not a plan: at four to five days the irradiance forecast "
+    "still tells sunny from dull days better than the season average, but "
+    "the kWh figure is far less certain than tomorrow's. Empty when the "
+    "weather source does not cover the whole day."
+)
+
+
+def _outlook_value(data: PvStringsData, index: int) -> float | None:
+    if index >= len(data.yield_outlook):
+        return None
+    value = data.yield_outlook[index][1]
+    return None if value is None else round(value, 3)
+
+
+def _outlook_attrs(data: PvStringsData, index: int) -> dict[str, Any]:
+    day = data.yield_outlook[index][0] if index < len(data.yield_outlook) else None
+    return {"date": day, "note": _OUTLOOK_NOTE}
+
+
 _GRANULARITY_NOTE = (
     "wmape and daily_bias_kwh are about whole days; bias, mae_kwh and nmae "
     "are means over single hours. All are errors: 0 would be a perfect "
@@ -399,6 +419,33 @@ PLANT_SENSORS: tuple[PlantSensorDescription, ...] = (
             data.plant_unshaded,
             )
         },
+    ),
+    PlantSensorDescription(
+        key="forecast_day_3",
+        translation_key="forecast_day_3",
+        device_class=SensorDeviceClass.ENERGY,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        suggested_display_precision=1,
+        value_fn=lambda data, _c: _outlook_value(data, 0),
+        attrs_fn=lambda data, _c: _outlook_attrs(data, 0),
+    ),
+    PlantSensorDescription(
+        key="forecast_day_4",
+        translation_key="forecast_day_4",
+        device_class=SensorDeviceClass.ENERGY,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        suggested_display_precision=1,
+        value_fn=lambda data, _c: _outlook_value(data, 1),
+        attrs_fn=lambda data, _c: _outlook_attrs(data, 1),
+    ),
+    PlantSensorDescription(
+        key="forecast_day_5",
+        translation_key="forecast_day_5",
+        device_class=SensorDeviceClass.ENERGY,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        suggested_display_precision=1,
+        value_fn=lambda data, _c: _outlook_value(data, 2),
+        attrs_fn=lambda data, _c: _outlook_attrs(data, 2),
     ),
     PlantSensorDescription(
         key="forecast_next_hour",

@@ -11,6 +11,13 @@
   inverter, DC × MPPT efficiency behind a charge controller, DC otherwise.
   Select it on one solar source only — see
   [Energy dashboard and evcc](docs/sensors.md#energy-dashboard-and-evcc).
+- **Forecast in 3, 4 and 5 days.** Three plant sensors with the daily total
+  further ahead, for automations that plan around the next sunny day (for
+  example deferring EV charging). A tendency, not a plan — see
+  [Forecast in 3 to 5 days](docs/sensors.md#forecast-in-3-to-5-days) for the
+  measured skill. Computed in a separate run, so today's to the day after
+  tomorrow's figures and the accuracy statistics are unchanged; the weather
+  request now covers seven days instead of four.
 
 ### Changed
 
