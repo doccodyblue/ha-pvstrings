@@ -13,7 +13,8 @@ MPPT-per-string inverter or a set of micro-inverters already gives you.
 
 ## Features
 
-- **Forecast per string and per plant** — today, remaining, tomorrow, hourly.
+- **Forecast per string and per plant** — today, remaining, tomorrow, hourly,
+  and a daily tendency up to five days ahead.
   Physics (`pvlib`) from day one, no training period.
 - **Learns your plant** — corrects the weather source, the model and fixed
   shading, separately for every string.
@@ -88,6 +89,26 @@ Manual install: copy `custom_components/pvstrings/` to
 The forecast works right away. Error figures appear after three complete
 scored days; the sky map fills in as the sun crosses new parts of the sky, so
 it takes a year to be complete.
+
+## Forecast entities
+
+For automations — `<plant>` is your plant's name, the suffix follows Home
+Assistant's language (German: `prognose_morgen`, `prognose_in_3_tagen`, …):
+
+| Entity | |
+|---|---|
+| `sensor.<plant>_forecast_today` / `_forecast_remaining_today` | kWh, hourly series in the `forecast` attribute |
+| `sensor.<plant>_forecast_tomorrow` / `_forecast_day_after_tomorrow` | kWh, hourly series in `forecast` |
+| `sensor.<plant>_forecast_in_3_days` / `_in_4_days` / `_in_5_days` | kWh per day, `date` attribute; a tendency, empty when the weather source does not cover the day |
+
+```jinja
+{{ states('sensor.<plant>_forecast_in_4_days') | float(0)
+   > 2 * states('sensor.<plant>_forecast_tomorrow') | float(0) }}
+```
+
+The plant forecast can also be picked as *Solar production forecast* in the
+Energy dashboard, which evcc reads with its `homeassistant` solar tariff — see
+[Sensors](docs/sensors.md#energy-dashboard-and-evcc).
 
 ## Documentation
 
